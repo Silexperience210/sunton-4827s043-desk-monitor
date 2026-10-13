@@ -1,5 +1,7 @@
 # VelohNav Ops — supervision temps réel du parc Vel'OH!
 
+[![build](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/actions/workflows/build.yml/badge.svg)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/actions/workflows/build.yml)
+
 Firmware pour l'écran tactile **Sunton ESP32-4827S043** (ESP32-S3, 4,3" 480×272) qui transforme la
 visualisation de [VelohNav](https://github.com/Silexperience210/velohnav) en **poste de contrôle du
 réseau Vel'OH!** : disponibilités en direct, historique 24 h, prévisions à 2 h, alertes, plan de
@@ -116,6 +118,10 @@ L'étalonnage détecte seul un axe inversé ou des axes échangés et s'enregist
 ## Installation
 
 ### A. Binaire prêt à flasher (le plus simple)
+
+Télécharger le binaire de sa version de carte :
+[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.0.0.bin) ·
+[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.0.0.bin)
 
 Brancher la carte en USB-C, puis :
 
