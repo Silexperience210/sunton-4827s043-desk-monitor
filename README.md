@@ -79,8 +79,8 @@ jour après jour (progression visible dans **Réglages → Prédiction**).
 
 | Version | Tactile | Environnement PlatformIO | Binaire |
 |---|---|---|---|
-| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.0.4.bin` |
-| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.0.4.bin` |
+| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.0.5.bin` |
+| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.0.5.bin` |
 | C monté tête en bas | capacitif, rotation 180° | `esp32-4827s043c-180` | — |
 
 Brochage (dans `src/hal/board.h`), recoupé avec deux références indépendantes
@@ -120,8 +120,8 @@ L'étalonnage détecte seul un axe inversé ou des axes échangés et s'enregist
 ### A. Binaire prêt à flasher (le plus simple)
 
 Télécharger le binaire de sa version de carte :
-[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.0.4.bin) ·
-[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.0.4.bin)
+[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.0.5.bin) ·
+[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.0.5.bin)
 
 **Sans rien installer (Chrome ou Edge)** :
 
@@ -137,7 +137,7 @@ En ligne de commande :
 ```bash
 pip install esptool
 esptool.py --chip esp32s3 --baud 460800 erase_flash
-esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.0.4.bin
+esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.0.5.bin
 ```
 
 ### B. Compilation PlatformIO
@@ -236,8 +236,15 @@ Puis régénérer les STL (OpenSCAD ou `docker run openscad/openscad:latest`).
 - **Sources** : GBFS v3 public de cyclocity (`station_status` toutes les 60 s par défaut — réglable de
   30 s à 5 min — `station_information` toutes les heures, `vehicle_types` chaque jour) et Open-Meteo
   (toutes les 15 min). Aucune clé d'API. Le firmware ne contacte que ces deux services et NTP.
-- **Vélos en trajet** : parc estimé (maximum sur 24 h des vélos en station, hors service compris) moins
-  les vélos actuellement en station. Estimation fiable après ~6 h d'historique.
+- **Vélos en trajet** : le flux GBFS **ne contient pas cette donnée** (ses seuls champs sont
+  `num_vehicles_available`, `vehicle_types_available`, `num_vehicles_disabled`, `num_docks_available`,
+  `num_docks_disabled`, `is_installed` / `is_renting` / `is_returning`, `last_reported`). C'est donc
+  une **estimation** : maximum des vélos en station observé sur 24 h, moins les vélos actuellement en
+  station. Ce maximum n'a de sens que s'il vient du **creux de nuit** (01 h–05 h), seul moment où la
+  quasi-totalité du parc est en station ; tant qu'aucune nuit n'a été observée, le tableau de bord
+  affiche **« — »** et « estimation après une nuit » plutôt qu'un zéro trompeur. Le parc et l'heure de
+  son pic sont affichés dès que l'estimation est valable. Même logique pour la variation sur 1 h et
+  l'activité (retraits / retours) : elles demandent une heure de relevés, sinon l'écran le dit.
 - **Retraits / retours** : déduits des écarts entre deux relevés successifs ; c'est un minimum (deux
   mouvements qui se compensent entre deux relevés ne sont pas vus).
 - **« Aucun mouvement »** : le champ `last_reported` du flux n'est pas fiable (la plupart des bornes y
@@ -258,11 +265,17 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core
-./test_core ../docs/donnees     # 364 vérifications : noms, GBFS, prédiction, alertes, persistance, étalonnage
+./test_core ../docs/donnees     # 378 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage
 ./sim ../docs/donnees /tmp/captures   # scénario tactile, captures, audit des zones tactiles, étalonnage
 ./sim ../docs/donnees /tmp/boot boot              # premier démarrage : sans heure, sans Wi-Fi, sans données
 ./sim ../docs/donnees /tmp/boot2 boot-wifi-ko     # réseau enregistré mais injoignable
+./sim ../docs/donnees /tmp/totaux totaux          # totaux du tableau de bord, sans historique (audit des chiffres)
 ```
+
+`./sim <dossier-json> <sortie> totaux` imprime les totaux calculés par le **code du firmware**
+(stations, vélos, bornes, HS, remplissage, parc, en-trajet, variation) avec les indicateurs de
+validité : c'est l'outil d'audit des chiffres affichés — à confronter à un recalcul indépendant sur
+le **même** instantané de flux (`docs/donnees/`, ou un relevé frais du GBFS).
 
 `docs/donnees/` contient l'instantané des flux utilisé pour les captures.
 `docs/audit_tactile.txt` liste les 313 éléments cliquables de tous les écrans et fiches : pour

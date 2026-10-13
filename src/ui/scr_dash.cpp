@@ -234,11 +234,19 @@ static void refresh() {
 
   // KPI
   fmtInt(b, sizeof(b), t.bikes); lv_label_set_text(s_kpi[0].value, b);
-  fmtSigned(c2, sizeof(c2), t.delta1h);
-  snprintf(b, sizeof(b), "%s sur 1 h", c2); lv_label_set_text(s_kpi[0].sub, b);
-  fmtInt(b, sizeof(b), t.inUse); lv_label_set_text(s_kpi[1].value, b);
+  // Sans une heure de relevés, « +0 sur 1 h » se lit « stable » alors que rien
+  // n'est connu : on affiche l'absence de mesure plutôt qu'un zéro trompeur.
+  if (t.deltaValid) { fmtSigned(c2, sizeof(c2), t.delta1h); snprintf(b, sizeof(b), "%s sur 1 h", c2); }
+  else snprintf(b, sizeof(b), "recul de 1 h requis");
+  lv_label_set_text(s_kpi[0].sub, b);
+  // Idem pour les vélos en circulation : c'est une estimation tirée du parc, qui
+  // ne se lit qu'après un creux de nuit. Tant qu'il n'a pas été observé, la
+  // valeur vaut 0 par construction — l'afficher en gros serait un mensonge.
+  if (t.inUseValid) fmtInt(b, sizeof(b), t.inUse);
+  else snprintf(b, sizeof(b), "\xE2\x80\x94");
+  lv_label_set_text(s_kpi[1].value, b);
   if (t.inUseValid) { fmtInt(c2, sizeof(c2), t.fleet); snprintf(b, sizeof(b), "parc \xE2\x89\x88 %s", c2); }
-  else snprintf(b, sizeof(b), "estimation \xC3\xA0 affiner");
+  else snprintf(b, sizeof(b), "estimation apr\xC3\xA8s une nuit");
   lv_label_set_text(s_kpi[1].sub, b);
   fmtInt(b, sizeof(b), t.docks); lv_label_set_text(s_kpi[2].value, b);
   snprintf(b, sizeof(b), "rempli \xC3\xA0 %.0f %%", t.fillPct); lv_label_set_text(s_kpi[2].sub, b);
@@ -335,8 +343,10 @@ static void refresh() {
   }
   chartInvalidate(s_actChart);
   char a1[16], a2[16];
-  fmtInt(a1, sizeof(a1), t.dep1h); fmtInt(a2, sizeof(a2), t.ret1h);
-  snprintf(b, sizeof(b), "1 h : %s retraits \xC2\xB7 %s retours", a1, a2);
+  if (t.actValid) {
+    fmtInt(a1, sizeof(a1), t.dep1h); fmtInt(a2, sizeof(a2), t.ret1h);
+    snprintf(b, sizeof(b), "1 h : %s retraits \xC2\xB7 %s retours", a1, a2);
+  } else snprintf(b, sizeof(b), "activit\xC3\xA9 : recul de 1 h requis");
   lv_label_set_text(s_actMeta, b);
 
   // Histogramme de remplissage

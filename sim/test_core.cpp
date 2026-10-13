@@ -281,12 +281,68 @@ static void testRuptureStart() {
   CHECK(m2.nEv == 1, "évènement « vient de se vider » (%d)", m2.nEv);
 }
 
+// Le parc (« en trajet ») ne se lit que sur un creux de NUIT observé : ce test
+// fige les trois cas — carte neuve, historique de jour seulement, nuit complète.
+static void testParc() {
+  settingsDefaults(g_set);
+  InfoRec ir[3] = { mkInfo("1", 49.60f, 6.13f, 20), mkInfo("2", 49.61f, 6.14f, 20), mkInfo("3", 49.62f, 6.15f, 20) };
+  StatusRec sr[3];
+
+  // (a) carte fraîchement flashée : un seul relevé, en pleine journée
+  {
+    static Model m;
+    CHECK(m.init(), "init parc (neuf)");
+    const int64_t t0 = 1791842400 + 14 * 3600;             // mardi 13/10 14:00
+    m.applyInfo(ir, 3, t0);
+    for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, 5, 20);
+    m.applyStatus(sr, 3, t0);
+    CHECK(!m.tot.inUseValid, "carte neuve : en-trajet NON valide");
+    CHECK(m.tot.inUse == 0, "carte neuve : en-trajet vaut 0 (l'écran montre un tiret)");
+    CHECK(!m.tot.deltaValid && !m.tot.actValid, "carte neuve : ni variation ni activité annoncées");
+  }
+
+  // (b) 8 h de relevés, mais tous de jour : la profondeur ne suffit pas
+  {
+    static Model m;
+    CHECK(m.init(), "init parc (jour)");
+    const int64_t t0 = 1791842400 + 10 * 3600;             // 10:00
+    m.applyInfo(ir, 3, t0);
+    for (int64_t t = t0; t <= t0 + 8 * 3600; t += 300) {
+      for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, 6 + s, 20);
+      m.applyStatus(sr, 3, t);
+    }
+    CHECK(m.count >= 72, "8 h de relevés (%d échantillons)", m.count);
+    CHECK(!m.tot.inUseValid, "historique de jour seul : en-trajet NON valide");
+    CHECK(m.tot.deltaValid, "8 h de recul : la variation sur 1 h est valide");
+  }
+
+  // (c) une nuit est traversée : tous les vélos sont en station de 01 h à 05 h
+  {
+    static Model m;
+    CHECK(m.init(), "init parc (nuit)");
+    const int64_t t0 = 1791842400 + 20 * 3600;             // mardi 20:00
+    m.applyInfo(ir, 3, t0);
+    for (int64_t t = t0; t <= t0 + 10 * 3600; t += 300) {
+      struct tm lt; plat::localTime(t, &lt);
+      int inStation = (lt.tm_hour >= 1 && lt.tm_hour < 5) ? 20 : 8;
+      for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, inStation, 20);
+      m.applyStatus(sr, 3, t);
+    }
+    CHECK(m.count >= 72, "10 h de relevés (%d échantillons)", m.count);
+    CHECK(m.tot.inUseValid, "creux de nuit observé : en-trajet VALIDE");
+    CHECK(m.tot.fleet == 60, "parc estimé 60 (3 × 20), obtenu %d", m.tot.fleet);
+    CHECK(m.tot.inUse == 36, "en-trajet = parc − en station (36), obtenu %d", m.tot.inUse);
+    CHECK(m.tot.actValid, "activité sur 1 h disponible");
+  }
+}
+
 int main(int argc, char ** argv) {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   testNames();
   testIso();
   if (argc > 1) testParse(argv[1]);
   testModel();
+  testParc();
   testRuptureStart();
   testTouchCal();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);

@@ -460,19 +460,28 @@ void Model::recompute(int64_t now) {
   t.fillPct = (t.bikes + t.docks) ? 100.f * t.bikes / (t.bikes + t.docks) : 0;
   t.balancePct = t.open ? 100.f * t.byStatus[ST_OK] / t.open : 0;
 
-  // Parc estimé + vélos en circulation (max 24 h des vélos en station, HS compris)
+  // Parc estimé + vélos en circulation.
+  // Le parc ne peut se lire que sur le creux de la nuit : c'est le seul moment
+  // où la quasi-totalité des vélos est en station. Un maximum pris en pleine
+  // journée ne mesure que le trafic du moment, d'où une validité qui dépend de
+  // l'HEURE du pic retenu, pas seulement de la profondeur d'historique.
   int fleet = t.bikesRaw + t.bikesDis, span = 0;
+  int64_t fleetAt = 0;
   for (int b = 0; b < count; b++) {
     const NetSample & ns = net[ringIndex(b)];
     if (ns.avail == 0xFFFF) continue;
     int v = ns.bikesRaw + ns.dis;
-    if (v > fleet) fleet = v;
+    if (v > fleet) { fleet = v; fleetAt = ns.t; }
     span = b;
   }
   t.fleet = fleet;
   t.inUse = fleet - (t.bikesRaw + t.bikesDis);
   if (t.inUse < 0) t.inUse = 0;
-  t.inUseValid = span >= 72;     // ≥ 6 h d'historique
+  struct tm ltf;
+  plat::localTime(fleetAt, &ltf);
+  bool nightPeak = fleetAt > 0 && ltf.tm_hour >= 1 && ltf.tm_hour < 5;
+  t.fleetAt = fleetAt;
+  t.inUseValid = (span >= 72) && nightPeak;      // ≥ 6 h d'historique ET un creux de nuit observé
 
   // Activité sur 1 h glissante + variation
   for (int b = 0; b < 12 && b < count; b++) {
@@ -480,7 +489,10 @@ void Model::recompute(int64_t now) {
     t.dep1h += ns.dep; t.ret1h += ns.ret;
   }
   int i12 = ringIndex(12);
-  t.delta1h = (i12 >= 0 && net[i12].avail != 0xFFFF) ? t.bikes - net[i12].avail : 0;
+  bool h1 = i12 >= 0 && count >= 13 && net[i12].avail != 0xFFFF;
+  t.actValid = count >= 13;                      // une heure pleine de relevés
+  t.deltaValid = h1;
+  t.delta1h = h1 ? t.bikes - net[i12].avail : 0;
   tot = t;
 
   // Liste d'alertes

@@ -63,8 +63,11 @@ struct Totals {
   int fleet;                   // parc estimé (max 24 h des vélos en station)
   int inUse;                   // vélos en circulation (estimation)
   bool inUseValid;
+  int64_t fleetAt;             // instant du maximum retenu (creux de nuit observé)
   int dep1h, ret1h;            // activité sur 60 min glissantes
+  bool actValid;               // au moins 1 h de relevés (sinon les compteurs sont vides)
   int delta1h;                 // variation des vélos dispo sur 1 h (‑ = sorties nettes)
+  bool deltaValid;             // au moins 1 h de recul pour la comparer
   float fillPct, balancePct;
   int need, surplus;           // somme des besoins / excédents (stations en tension)
 };

@@ -313,6 +313,57 @@ static void synthHistory(Model & m, int64_t now, const StatusRec * recs, int nre
 }
 
 
+// ── Scénario « totaux » : les chiffres du tableau de bord sur un instantané ──
+// Sert à confronter, chiffre par chiffre, ce que le firmware calcule et ce que
+// le flux brut contient réellement (audit des chiffres affichés).
+// Aucun historique n'est fabriqué : c'est l'état d'une carte fraîchement flashée.
+static int totauxScenario(const std::string & in) {
+  auto info = readFile(in + "/station_information.json");
+  auto status = readFile(in + "/station_status.json");
+  auto types = readFile(in + "/vehicle_types.json");
+  static StatusRec recs[VN_MAX_ST];
+  static InfoRec irecs[VN_MAX_ST];
+  ElecTypes et;
+  gbfsParseTypes(types.data(), types.size(), et);
+  int64_t lastUpd = 0;
+  int ns = gbfsParseStatus(status.data(), status.size(), recs, VN_MAX_ST, et, &lastUpd);
+  int ni = gbfsParseInfo(info.data(), info.size(), irecs, VN_MAX_ST);
+  if (ni <= 0 || ns <= 0) { fprintf(stderr, "flux illisible (info=%d status=%d)\n", ni, ns); return 1; }
+
+  sim::g_epoch0 = lastUpd ? lastUpd : 1791894641;
+  sim::g_timeOk = true;
+  settingsDefaults(g_set);
+  if (!g_model.init()) { fprintf(stderr, "init modèle\n"); return 1; }
+
+  int64_t now = plat::now();
+  g_model.applyInfo(irecs, ni, now);
+  g_model.applyStatus(recs, ns, now);           // aucun historique synthétique
+  const vn::Totals & t = g_model.tot;
+
+  printf("FLUX        info=%d publiques · status=%d relevés · last_updated=%lld · types elec=%d\n",
+         ni, ns, (long long)lastUpd, et.n);
+  printf("STATIONS    %d (ouvertes %d · fermées %d)\n", t.stations, t.open, t.closed);
+  printf("VELOS       %d  (elec %d)\n", t.bikes, t.elec);
+  printf("BORNES      %d\n", t.docks);
+  printf("HS          velos %d · bornes %d\n", t.bikesDis, t.docksDis);
+  printf("CAPACITE    %d · velos bruts %d\n", t.cap, t.bikesRaw);
+  printf("REMPLISSAGE %.1f %%\n", t.fillPct);
+  printf("HISTORIQUE  %d echantillon(s) · en-trajet valide=%s · variation valide=%s · activite valide=%s\n",
+         g_model.count, t.inUseValid ? "oui" : "non", t.deltaValid ? "oui" : "non", t.actValid ? "oui" : "non");
+  printf("PARC        %d (estimation)\n", t.fleet);
+  printf("EN-TRAJET   %d (estimation)\n", t.inUse);
+  printf("VAR 1 H     %+d · retraits %d · retours %d\n", t.delta1h, t.dep1h, t.ret1h);
+  int nbElecMoins = 0, minB = 1 << 30, maxB = 0;
+  for (int i = 0; i < g_model.n; i++) {
+    const vn::Station & s = g_model.st[i];
+    if (s.elec < s.bikes) nbElecMoins++;
+    minB = s.bikes < minB ? s.bikes : minB;
+    maxB = s.bikes > maxB ? s.bikes : maxB;
+  }
+  printf("PAR STATION elec<velos dans %d station(s) · velos de %d a %d\n", nbElecMoins, minB, maxB);
+  return 0;
+}
+
 // ── Scénario « premier démarrage » : comme sur la carte ─────────────
 // Heure inconnue (avant NTP), aucun Wi-Fi enregistré, aucune donnée, aucun historique.
 static int bootScenario(const std::string & in, const char * variant) {
@@ -410,7 +461,10 @@ static int realMain(int argc, char ** argv) {
   mkdir(s_out.c_str(), 0755);              // dossier de sortie créé au besoin
   sim::g_fsDir = "/tmp/vn_sim_fs";
   if (system("rm -rf /tmp/vn_sim_fs")) {}
-  if (argc > 3) return bootScenario(in, argv[3]);
+  if (argc > 3) {
+    if (strcmp(argv[3], "totaux") == 0) return totauxScenario(in);
+    return bootScenario(in, argv[3]);
+  }
 
   auto info = readFile(in + "/station_information.json");
   auto status = readFile(in + "/station_status.json");
