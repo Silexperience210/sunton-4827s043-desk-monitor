@@ -6,6 +6,7 @@ sim/build/
 sim/sim
 sim/test_core
 sim_fs/
+.deps
 .deps/
 
 # Outils locaux / sorties de CI
