@@ -1,0 +1,8 @@
+.pio/
+.vscode/
+include/secrets.h
+sim/build/
+sim/sim
+sim/test_core
+sim_fs/
+.deps/

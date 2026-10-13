@@ -1,0 +1,317 @@
+Audit tactile — tap simulé au centre (ou dans un coin*) de chaque élément cliquable visible
+écran     res. taille  centre      élément
+reseau     OK    73x24  @(328, 17)  LIVE
+reseau     OK    53x24  @(397, 17)  13°
+reseau     OK    59x47  @( 30, 60)  Réseau
+reseau     OK    59x47  @( 30,107)  Carte
+reseau     OK    59x47  @( 30,154)  Stations
+reseau     OK    59x47  @( 30,201)  Alertes
+reseau     OK    59x47  @( 30,248)  Réglages
+reseau     OK   420x236 @(269,153)  VÉLOS DISPO
+reseau     OK   240x98  @(187, 92)  VÉLOS DISPONIBLES · 24 H
+reseau     OK   158x98  @(392, 92)  ÉQUILIBRE
+reseau     OK   402x30  @(269,248)  Schluechthaus
+reseau     OK   402x30  @(269,248)  Kolleisch
+reseau     OK   402x30  @(269,248)  Bei der Auer
+reseau     OK   402x30  @(269,248)  Charly's Station
+reseau     OK   402x30  @(269,248)  Belle Etoile
+reseau     OK   156x30  @(145,248)  Toutes les alertes
+carte      OK    73x24  @(328, 17)  LIVE
+carte      OK    53x24  @(397, 17)  13°
+carte      OK    59x47  @( 30, 60)  Réseau
+carte      OK    59x47  @( 30,107)  Carte
+carte      OK    59x47  @( 30,154)  Stations
+carte      OK    59x47  @( 30,201)  Alertes
+carte      OK    59x47  @( 30,248)  Réglages
+carte      OK   420x236 @(269,153)  
+carte      OK    74x26  @(104, 56)  Tout
+carte      OK    73x26  @(183, 56)  Vides
+carte      OK    81x26  @(265, 56)  Pleines
+carte      OK    87x26  @(354, 56)  Tension
+carte      OK    62x30  @( 98, 91)  Live
+carte      OK    63x30  @(155, 91)  +30 min
+carte      OK    63x30  @(212, 91)  +1 h
+carte      OK    32x32  @(455,171)  [icône]
+carte      OK    32x32  @(455,209)  [icône]
+carte      OK    32x32  @(455,247)  [icône]
+stations   OK    73x24  @(328, 17)  LIVE
+stations   OK    53x24  @(397, 17)  13°
+stations   OK    59x47  @( 30, 60)  Réseau
+stations   OK    59x47  @( 30,107)  Carte
+stations   OK    59x47  @( 30,154)  Stations
+stations   OK    59x47  @( 30,201)  Alertes
+stations   OK    59x47  @( 30,248)  Réglages
+stations   OK    79x32  @(107, 57)  Priorité
+stations   OK    79x32  @(180, 57)  Nom
+stations   OK    80x32  @(253, 57)  Remplissage
+stations   OK    80x32  @(327, 57)  Échéance
+stations   OK   404x192 @(269,175)  Schluechthaus
+stations   OK   402x40  @(269,100)  Schluechthaus
+stations   OK   402x40  @(269,140)  Kolleisch
+stations   OK   402x40  @(269,180)  Bei der Auer
+stations   OK   402x40  @(269,220)  Charly's Station
+stations   OK   402x40  @(269,250)  Belle Etoile
+stations   OK   402x40  @(269,250)  Leon XIII
+stations   OK   402x40  @(269,250)  Reimerwee
+stations   OK   402x40  @(269,250)  K. Adenauer
+stations   OK   402x40  @(269,250)  Funiculaire
+stations   OK   402x40  @(269,250)  Alzingen Gässel
+stations   OK   402x40  @(269,250)  Lycée Josy Bartel Mamer
+stations   OK   402x40  @(269,250)  Jeanne d'Arc
+stations   OK   402x40  @(269,250)  Rocade
+stations   OK   402x40  @(269,250)  Hueschtert
+stations   OK   402x40  @(269,250)  Hamilius
+stations   OK   402x40  @(269,250)  Lycee Technique de...
+stations   OK   402x40  @(269,250)  Rousegaertchen
+stations   OK   402x40  @(269,250)  Märeler Parc
+stations   OK   402x40  @(269,250)  Kiem
+stations   OK   402x40  @(269,250)  Monterey
+stations   OK   402x40  @(269,250)  Place de France
+stations   OK   402x40  @(269,250)  Gaston Diderich
+stations   OK   402x40  @(269,250)  Glacis Kapell
+stations   OK   402x40  @(269,250)  Place Laurent
+stations   OK   402x40  @(269,250)  Leopold Goebel
+stations   OK   402x40  @(269,250)  Sauerwiss
+stations   OK   402x40  @(269,250)  Cloche d'Or
+stations   OK   402x40  @(269,250)  Gemeng Stroossen
+stations   OK   402x40  @(269,250)  Beinchen
+stations   OK   402x40  @(269,250)  INS
+stations   OK   402x40  @(269,250)  Place Thorn
+stations   OK   402x40  @(269,250)  Bertrange - Gare
+stations   OK   402x40  @(269,250)  Pescher 4
+stations   OK   402x40  @(269,250)  Riedgen
+stations   OK   402x40  @(269,250)  Europaschoul Mamer
+stations   OK   402x40  @(269,250)  Centre de Tennis Paul Glück
+stations   OK   402x40  @(269,250)  Mairie de Walferdange
+stations   OK   402x40  @(269,250)  Verluerekascht
+stations   OK   402x40  @(269,250)  Amelie
+stations   OK   402x40  @(269,250)  Philharmonie
+stations   OK   402x40  @(269,250)  Gaulois
+stations   OK   402x40  @(269,250)  Kraizgrennchen
+stations   OK   402x40  @(269,250)  Fischerhaff
+stations   OK   402x40  @(269,250)  Bouillon
+stations   OK   402x40  @(269,250)  Mairie de Hesperange
+stations   OK   402x40  @(269,250)  Um Reimerwee
+stations   OK   402x40  @(269,250)  Les Thermes
+stations   OK   402x40  @(269,250)  Gare Centrale
+stations   OK   402x40  @(269,250)  Einstein
+stations   OK   402x40  @(269,250)  Mairie de Bertrange
+stations   OK   402x40  @(269,250)  Rond-Point Gaasschtbierg
+stations   OK   402x40  @(269,250)  Pôle d'Échange Howald
+stations   OK   402x40  @(269,250)  Grenier
+stations   OK   402x40  @(269,250)  Convict
+stations   OK   402x40  @(269,250)  Square Andre
+stations   OK   402x40  @(269,250)  Areler Strooss
+stations   OK   402x40  @(269,250)  Schaarfen Eck
+stations   OK   402x40  @(269,250)  Fort Niedergrünewald
+stations   OK   402x40  @(269,250)  Hall Sportif Nicolas Frantz
+stations   OK   402x40  @(269,250)  Parc Gasperich
+stations   OK   402x40  @(269,250)  Paraiser Plaz
+stations   OK   402x40  @(269,250)  St Hubert
+stations   OK   402x40  @(269,250)  Frieden
+stations   OK   402x40  @(269,250)  Campus Cents
+stations   OK   402x40  @(269,250)  Bartreng - Rue Kiem
+stations   OK   402x40  @(269,250)  Bartreng - Cite Riedgen
+stations   OK   402x40  @(269,250)  Stroossbuerger Plaz
+stations   OK   402x40  @(269,250)  Ludwig Van Beethoven
+stations   OK   402x40  @(269,250)  Nationalbibliotheik
+stations   OK   402x40  @(269,250)  Itzig Village/Place...
+stations   OK   402x40  @(269,250)  Edeleck
+stations   OK   402x40  @(269,250)  Gare Capellen
+stations   OK   402x40  @(269,250)  Halanzy
+stations   OK   402x40  @(269,250)  Nennig
+stations   OK   402x40  @(269,250)  Stade de Luxembourg
+stations   OK   402x40  @(269,250)  Winston Churchill
+stations   OK   402x40  @(269,250)  J.B. Gelle
+stations   OK   402x40  @(269,250)  Helleg Geescht
+stations   OK   402x40  @(269,250)  Lonkecher Strooss
+stations   OK   402x40  @(269,250)  Bei der Schoul
+stations   OK   402x40  @(269,250)  St Mathieu
+stations   OK   402x40  @(269,250)  Gare Cents-Hamm
+stations   OK   402x40  @(269,250)  Helfent (Parking)
+stations   OK   402x40  @(269,250)  Police Capellen
+stations   OK   402x40  @(269,250)  Merkels Plaz
+stations   OK   402x40  @(269,250)  Piscine Olympique
+stations   OK   402x40  @(269,250)  Boch
+stations   OK   402x40  @(269,250)  Leydenbach
+stations   OK   402x40  @(269,250)  PWC - Bd Kockelscheuer
+stations   OK   402x40  @(269,250)  Serra
+stations   OK   402x40  @(269,250)  Mersch (Mühlenbach)
+stations   OK   402x40  @(269,250)  Hamm-Colonie
+stations   OK   402x40  @(269,250)  Hammes
+stations   OK   402x40  @(269,250)  Laach
+stations   OK   402x40  @(269,250)  Al Bréck
+stations   OK   402x40  @(269,250)  Gelle Fra
+stations   OK   402x40  @(269,250)  Robert Schuman
+stations   OK   402x40  @(269,250)  Campus Lampertsbierg
+stations   OK   402x40  @(269,250)  Weicker
+stations   OK   402x40  @(269,250)  Aubepines
+stations   OK   402x40  @(269,250)  Fentange Hiehl
+stations   OK   402x40  @(269,250)  Place de l'Independance
+stations   OK   402x40  @(269,250)  Rond-Point Motel
+stations   OK   402x40  @(269,250)  Syrdall Schwemm
+stations   OK   402x40  @(269,250)  Bereler Schoul
+stations   OK   402x40  @(269,250)  Metzer Plaz
+stations   OK   402x40  @(269,250)  Carmel
+stations   OK   402x40  @(269,250)  Brill (Cessange)
+stations   OK   402x40  @(269,250)  City Concorde
+stations   OK   402x40  @(269,250)  München-Tesch
+stations   OK   402x40  @(269,250)  Itzig Plateau/Hubertuspad
+stations   OK   402x40  @(269,250)  A Schommesch
+stations   OK   402x40  @(269,250)  Campus Kirchbierg
+stations   OK   402x40  @(269,250)  Hollerecher Plaz
+stations   OK   402x40  @(269,250)  BGL BNP Paribas
+stations   OK   402x40  @(269,250)  Europaparlament
+stations   OK   402x40  @(269,250)  Labours
+stations   OK   402x40  @(269,250)  Sauvage
+stations   OK   402x40  @(269,250)  Pulvermühl
+stations   OK   402x40  @(269,250)  Bitbourg
+stations   OK   402x40  @(269,250)  Foyer
+stations   OK   402x40  @(269,250)  Dicks
+stations   OK   402x40  @(269,250)  Salles des Fêtes Holzem
+stations   OK   402x40  @(269,250)  Stade Henri-Dunant
+stations   OK   402x40  @(269,250)  Theater Plaz
+stations   OK   402x40  @(269,250)  Coque
+stations   OK   402x40  @(269,250)  Mercier
+stations   OK   402x40  @(269,250)  An der Bourmicht
+stations   OK   402x40  @(269,250)  Sainte Cunegonde
+stations   OK   402x40  @(269,250)  Leudelange Gare
+stations   OK   402x40  @(269,250)  Edemer
+stations   OK   402x40  @(269,250)  Centre Culturel CAP
+stations   OK   402x40  @(269,250)  A Rilspert
+stations   OK   402x40  @(269,250)  Gare Centrale 2
+stations   OK   402x40  @(269,250)  Knuedler
+stations   OK   402x40  @(269,250)  Charly's Gare
+stations   OK   402x40  @(269,250)  Beim Tennis
+stations   OK   402x40  @(269,250)  Um Schlass
+stations   OK   402x40  @(269,250)  Huberty (Mühlenbach)
+stations   OK   402x40  @(269,250)  Godchaux (Bonnevoie)
+stations   OK   402x40  @(269,250)  Mambra
+stations   OK   402x40  @(269,250)  Gare Mamer
+stations   OK   402x40  @(269,250)  Walferdange Gare
+alertes    OK    73x24  @(328, 17)  LIVE
+alertes    OK    53x24  @(397, 17)  13°
+alertes    OK    59x47  @( 30, 60)  Réseau
+alertes    OK    59x47  @( 30,107)  Carte
+alertes    OK    59x47  @( 30,154)  Stations
+alertes    OK    59x47  @( 30,201)  Alertes
+alertes    OK    59x47  @( 30,248)  Réglages
+alertes    OK   110x30  @(407, 68)  Transferts
+alertes    OK   105x32  @(120,111)  Toutes 40
+alertes    OK   105x32  @(219,111)  Ruptures 12
+alertes    OK   106x32  @(318,111)  Prévisions 2
+alertes    OK   106x32  @(418,111)  Maintenance 26
+alertes    OK   404x138 @(269,202)  [icône]
+alertes    OK   402x44  @(269,156)  [icône]
+alertes    OK   402x44  @(269,200)  [icône]
+alertes    OK   402x44  @(269,244)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+reglages   OK    73x24  @(328, 17)  LIVE
+reglages   OK    53x24  @(397, 17)  13°
+reglages   OK    59x47  @( 30, 60)  Réseau
+reglages   OK    59x47  @( 30,107)  Carte
+reglages   OK    59x47  @( 30,154)  Stations
+reglages   OK    59x47  @( 30,201)  Alertes
+reglages   OK    59x47  @( 30,248)  Réglages
+reglages   OK   420x236 @(269,153)  RÉSEAU & DONNÉES
+reglages   OK   402x57  @(269, 72)  [icône]
+reglages   OK    48x30  @(307,189)  30 s
+reglages   OK    48x30  @(349,189)  1 min
+reglages   OK    49x30  @(392,189)  2 min
+reglages   OK    49x30  @(435,189)  5 min
+reglages   OK    28x28  @(381,249)  [icône]
+reglages   OK    28x28  @(445,249)  [icône]
+reglages   OK    28x28  @(380,249)  [icône]
+reglages   OK    28x28  @(444,249)  [icône]
+reglages   OK    28x28  @(380,249)  [icône]
+reglages   OK    28x28  @(444,249)  [icône]
+reglages   OK    28x28  @(380,249)  [icône]
+reglages   OK    28x28  @(444,249)  [icône]
+reglages   OK    28x28  @(380,249)  [icône]
+reglages   OK    28x28  @(444,249)  [icône]
+reglages   OK    60x42  @(439,252)  [interrupteur]
+reglages   OK   178x34  @(385,260)  [curseur]
+reglages   OK    60x42  @(439,252)  [interrupteur]
+reglages   OK    90x30  @(414,248)  Effacer
+reglages   OK    86x30  @(417,248)  Tester
+reglages   OK    97x30  @(411,248)  Redémarrer
+fiche      OK*  480x272 @(239,135)  
+fiche      OK   412x234 @(269,154)  VIDE
+fiche      OK   411x214 @(270,159)  VIDE
+fiche      OK   141x30  @(147,237)  Voir sur la carte
+fiche      OK   110x30  @(280,237)  Transferts
+fiche      OK    32x32  @(454, 58)  [icône]
+transferts OK*  480x272 @(239,135)  
+transferts OK   412x234 @(269,154)  Transferts suggérés
+transferts OK   411x214 @(270,159)  Transferts suggérés
+transferts OK   254x25  @(242,133)  Rousegaertchen
+transferts OK   254x25  @(242,155)  Schluechthaus
+transferts OK   254x25  @(243,183)  Hamilius
+transferts OK   254x25  @(243,205)  Kolleisch
+transferts OK   254x25  @(243,233)  Fort Niedergrünewald
+transferts OK   254x25  @(243,242)  Bei der Auer
+transferts OK   254x25  @(243,242)  Kiem
+transferts OK   254x25  @(243,242)  Charly's Station
+transferts OK   254x25  @(243,242)  Nationalbibliotheik
+transferts OK   254x25  @(243,242)  Belle Etoile
+transferts OK   254x25  @(243,242)  Itzig Village/Place Manderscheid
+transferts OK   254x25  @(243,242)  Leon XIII
+transferts OK    32x32  @(454, 58)  [icône]
+wifi       OK*  480x272 @(239,135)  
+wifi       OK   412x234 @(269,154)  Réseau Wi-Fi
+wifi       OK   411x214 @(270,159)  Réseau Wi-Fi
+wifi       OK   107x30  @(411, 93)  Actualiser
+wifi       OK   386x38  @(270,136)  VELOH-OPS
+wifi       OK   386x38  @(270,174)  JCDecaux-Depot
+wifi       OK   386x38  @(270,212)  Ville-Lux-Guest
+wifi       OK   386x38  @(270,233)  Bureau-Regul-2
+wifi       OK   386x38  @(270,233)  FreeWifi_Gare
+wifi       OK    32x32  @(454, 58)  [icône]
+wifi-clav  OK*  480x272 @(239,135)  
+wifi-clav  OK   412x234 @(269,154)  Réseau Wi-Fi
+wifi-clav  OK*  411x214 @(270,159)  Réseau Wi-Fi
+wifi-clav  OK   388x40  @(270,122)  
+wifi-clav  OK    32x32  @(454, 58)  [icône]
+wifi-clav  OK   410x126 @(269,207)  [clavier]
+tactile    OK   480x272 @(239,135)  Test du tactile
+tactile    OK   104x30  @(153,242)  Étalonner
+tactile    OK    56x30  @(241,242)  Usine
+tactile    OK   100x30  @(327,242)  Terminer
+
+Bilan : 313 éléments joignables, 0 injoignables, 0 petites cibles (< 24 px)

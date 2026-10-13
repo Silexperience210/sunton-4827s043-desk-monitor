@@ -1,0 +1,38 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        env: [esp32-4827s043c, esp32-4827s043r]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('platformio.ini') }}
+      - run: pip install platformio
+      - run: pio run -e ${{ matrix.env }}
+
+  simulateur:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dépendances (LVGL 8.3.11, ArduinoJson 7)
+        run: |
+          git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
+          git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
+      - name: Tests du cœur + audit tactile
+        run: |
+          cd sim
+          make -j4 sim test_core
+          ./test_core ../docs/donnees
+          ./sim ../docs/donnees /tmp/captures

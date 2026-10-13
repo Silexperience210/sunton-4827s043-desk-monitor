@@ -1,0 +1,49 @@
+# Simulateur PC (headless) — compile l'UI et le cœur de VelohNav Ops avec LVGL 8.3
+# make LVGL_DIR=/chemin/lvgl AJSON_DIR=/chemin/ArduinoJson/src
+LVGL_DIR  ?= ../.deps/lvgl
+AJSON_DIR ?= ../.deps/ArduinoJson/src
+BUILD     ?= build
+
+CC  ?= gcc
+CXX ?= g++
+INC  = -I../include -I$(LVGL_DIR)/.. -I$(LVGL_DIR) -I$(AJSON_DIR) -I../src
+DEFS = -DLV_CONF_INCLUDE_SIMPLE -DVN_SIM=1
+CFLAGS   = -O2 -g -Wall -Wno-unused-function $(INC) $(DEFS)
+CXXFLAGS = -O2 -g -std=gnu++17 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers $(INC) $(DEFS)
+
+LVGL_SRC := $(shell find $(LVGL_DIR)/src -name '*.c')
+APP_C    := $(wildcard ../src/ui/fonts/*.c) $(wildcard ../src/ui/icons/*.c)
+APP_CXX  := $(wildcard ../src/core/*.cpp) $(wildcard ../src/ui/*.cpp) $(wildcard ../src/ui/widgets/*.cpp) \
+            ../src/hal/touch_cal.cpp platform_sim.cpp net_sim.cpp sim_main.cpp
+
+LVGL_OBJ := $(patsubst $(LVGL_DIR)/%.c,$(BUILD)/lvgl/%.o,$(LVGL_SRC))
+APP_OBJ  := $(patsubst ../%.c,$(BUILD)/app/%.o,$(APP_C)) \
+            $(patsubst ../%.cpp,$(BUILD)/app/%.o,$(filter ../%,$(APP_CXX))) \
+            $(patsubst %.cpp,$(BUILD)/sim/%.o,$(filter-out ../%,$(APP_CXX)))
+
+sim: $(LVGL_OBJ) $(APP_OBJ)
+	$(CXX) -o $@ $^ -lm
+
+$(BUILD)/lvgl/%.o: $(LVGL_DIR)/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) -w -c $< -o $@
+$(BUILD)/app/%.o: ../%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/app/%.o: ../%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+$(BUILD)/sim/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+TEST_CXX := $(wildcard ../src/core/*.cpp) ../src/hal/touch_cal.cpp platform_sim.cpp test_core.cpp
+TEST_OBJ := $(patsubst ../%.cpp,$(BUILD)/app/%.o,$(filter ../%,$(TEST_CXX))) \
+            $(patsubst %.cpp,$(BUILD)/sim/%.o,$(filter-out ../%,$(TEST_CXX)))
+test_core: $(TEST_OBJ)
+	$(CXX) -o $@ $^ -lm
+
+clean:
+	rm -rf $(BUILD) sim test_core
+
+.PHONY: clean

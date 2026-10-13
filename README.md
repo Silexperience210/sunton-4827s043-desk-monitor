@@ -1,0 +1,214 @@
+# VelohNav Ops — supervision temps réel du parc Vel'OH!
+
+Firmware pour l'écran tactile **Sunton ESP32-4827S043** (ESP32-S3, 4,3" 480×272) qui transforme la
+visualisation de [VelohNav](https://github.com/Silexperience210/velohnav) en **poste de contrôle du
+réseau Vel'OH!** : disponibilités en direct, historique 24 h, prévisions à 2 h, alertes, plan de
+régulation et transferts suggérés. L'AR, la navigation et l'assistant IA de l'app mobile sont retirés ;
+tout le reste est réorienté exploitation.
+
+![Aperçu des écrans](docs/apercu_ecrans.png)
+
+> Les captures sont rendues par le **code réel du firmware** (même UI LVGL) dans le simulateur PC,
+> avec un instantané **réel** des flux Vel'OH! (13/10/2026, 14 h 30). Seuls l'historique 24 h et les
+> profils y sont synthétiques ; sur l'appareil, ils s'apprennent en temps réel.
+
+---
+
+## Écrans
+
+| Onglet | Contenu |
+|---|---|
+| **Réseau** | Vélos disponibles (et variation sur 1 h), vélos en trajet (estimation) et parc, bornes libres et taux de remplissage, vélos/bornes hors service · courbe 24 h + prévision 2 h en pointillés · jauge d'équilibre et répartition vides / faibles / équilibrées / chargées / pleines · météo + indice vélo · prévision réseau à +1 h · activité horaire (retraits/retours) · histogramme du remplissage · priorités d'intervention |
+| **Carte** | Carte dessinée (sans tuiles) : quadrillage métrique, tracé du tram T1, quartiers, stations colorées sur l'axe *vide → pleine* · horizon **Live / +30 min / +1 h** (la carte montre où le réseau *sera* en tension) · filtres Tout / Vides / Pleines / Tension · glisser pour déplacer, double-tap ou +/− pour zoomer (au zoom : nombre de vélos dans chaque pastille) · anneau ambre = station sans mouvement suspect |
+| **Stations** | Les 143 stations, triables par priorité, nom, remplissage ou échéance de rupture · vélos / bornes, barre de composition, prévision à +1 h |
+| **Alertes** | Plan de régulation (vélos à livrer / à retirer), transferts suggérés, filtres Ruptures / Prévisions / Maintenance · badge rouge sur le rail = stations vides ou pleines · notification à chaque nouvelle rupture |
+| **Réglages** | Wi-Fi (recherche + clavier), fréquence de rafraîchissement, seuils d'alerte, luminosité et atténuation nocturne, état de l'apprentissage, test et étalonnage du tactile, mémoire / stockage / redémarrage |
+
+Un tap sur une station (carte, liste, alerte) ouvre sa **fiche** : statut, vélos / élec / bornes / HS,
+courbe 24 h réelle + profil habituel + prévision 2 h, prévisions +15 min / +30 min / +1 h / +2 h,
+lecture opérationnelle (« Rupture prévue dans ~25 min », tendance, comportement habituel), action
+conseillée (« Apporter +6 vélos »), confiance du modèle, dernier mouvement, adresse.
+
+## Ce qui est repris de VelohNav
+
+- **Design system v4** à l'identique : jetons de `src/ui/tokens.js` / `ui.css` (noir #07090B, surfaces
+  s1–s3, orange #F5820D, vert/ambre/rouge d'état, bleu élec, violet transport), typo sans **Inter** +
+  mono **JetBrains Mono**, en-tête `VELOHNAV`, pastilles, chips à compteur, contrôle segmenté animé,
+  badges, barres de composition, bottom sheet, toasts, bandeau hors ligne, cartes « dcard » et tuiles
+  de prévision, logo roue + éclair en dégradé.
+- **Icônes** : le jeu SVG de `src/ui/icons.jsx` converti en images LVGL (+ quelques icônes ops dans le
+  même style).
+- **Données** : flux GBFS v3 cyclocity et logique de `src/utils/gbfs.js` (stations fantômes et
+  « BORNE ATELIER » exclues, `is_renting` / `is_returning`, types électriques).
+- **Prédiction** : principe de `useAvailability.js` (moyenne plafonnée par jour × quart d'heure).
+- **Météo** : note « conditions vélo » de `src/ui/weather.js` (pénalités pluie / vent / froid / orage,
+  aggravation et accalmie sur +1…+3 h).
+
+Adaptations : barre d'onglets → **rail vertical** (écran paysage de 272 px de haut), filtres orientés
+exploitation, axe de couleur *vide → pleine* (les stations pleines comptent autant que les vides).
+
+## Prévisions : méthode
+
+Pour chaque station, à l'horizon *h* (0 à 120 min) :
+
+```
+prévu(h) = actuel + c · [profil(t+h) − profil(t)] + (1 − 0,6·c) · tendance(h)
+```
+
+- **profil** : vélos attendus selon le jour de la semaine et le quart d'heure, appris en continu
+  (moyenne mobile plafonnée ≈ 8 semaines par créneau, lissage ±15 min). Tant qu'un créneau est jeune,
+  il emprunte aux jours du même type (lun–ven / sam–dim) : les prévisions deviennent utiles dès le
+  2ᵉ jour au lieu de la 2ᵉ semaine.
+- **tendance** : régression sur les 30 dernières minutes, amortie (τ = 25 min).
+- **c** : confiance (0 → 1) selon le nombre d'observations ; affichée dans les fiches.
+
+On en déduit l'**échéance** de rupture / saturation, le **besoin** (vélos à apporter ou retirer pour
+viser 50 % de remplissage à +1 h), la **priorité** de chaque station et des **transferts** (chaque
+station en tension est servie par le donneur le plus proche). La prévision réseau est la somme des
+prévisions des stations.
+
+L'historique 24 h et les profils sont sauvegardés en flash toutes les 30 min (LittleFS) et restaurés au
+redémarrage. Au tout premier démarrage, seule la tendance est disponible : les prévisions s'affinent
+jour après jour (progression visible dans **Réglages → Prédiction**).
+
+## Matériel
+
+**Sunton ESP32-4827S043** en version **N16R8** (16 Mo flash, 8 Mo PSRAM octale) :
+
+| Version | Tactile | Environnement PlatformIO | Binaire |
+|---|---|---|---|
+| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.0.0.bin` |
+| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.0.0.bin` |
+| C monté tête en bas | capacitif, rotation 180° | `esp32-4827s043c-180` | — |
+
+Brochage (dans `src/hal/board.h`), recoupé avec deux références indépendantes
+([ESP3D-TFT](https://esp3d.io/esp3d-tft/version_1x/hardware/esp32-s3/sunton-43-4827/) et
+[rzeldent/esp32-smartdisplay](https://github.com/rzeldent/esp32-smartdisplay)) :
+
+| Fonction | GPIO |
+|---|---|
+| Dalle RGB565 : DE / VSYNC / HSYNC / PCLK | 40 / 41 / 39 / 42 |
+| Données B0…B4 | 8, 3, 46, 9, 1 |
+| Données G0…G5 | 5, 6, 7, 15, 16, 4 |
+| Données R0…R4 | 45, 48, 47, 21, 14 |
+| Rétroéclairage (PWM) | 2 |
+| GT911 (version C) : SDA / SCL / RST / INT | 19 / 20 / 38 / 18* |
+| XPT2046 (version R) : SCLK / MISO / MOSI / CS / IRQ | 12 / 13 / 11 / 38 / 18 |
+
+\* Sur la version C, l'interruption du GT911 n'est reliée à GPIO 18 qu'après une modification
+(pont sur R17). Le firmware n'en a pas besoin : il interroge le contrôleur en I2C toutes les 16 ms
+et accepte ses deux adresses possibles (0x5D / 0x14). Les coordonnées du GT911 correspondent
+directement aux pixels (aucune inversion d'axe sur cette carte) ; si le contrôleur est configuré
+pour une autre résolution, elle est lue au démarrage et mise à l'échelle.
+
+## Vérifier le tactile
+
+**Réglages → Système → Tactile → Tester** : une croix suit le doigt et affiche les coordonnées écran et
+brutes. Si elle n'apparaît pas exactement sous le doigt, **Étalonner** : toucher successivement
+4 cibles dans les coins puis une au centre (contrôle de précision ; refusé au-delà de 20 px).
+L'étalonnage détecte seul un axe inversé ou des axes échangés et s'enregistre en flash ;
+**Usine** revient à la correspondance d'origine.
+
+- Si le tactile est trop décalé pour atteindre les boutons : **maintenir le doigt 6 s n'importe où**
+  ouvre le test, puis **maintenir 3 s** sur l'écran de test lance l'étalonnage.
+- Version R (résistive) : l'étalonnage s'ouvre automatiquement au premier démarrage.
+
+## Installation
+
+### A. Binaire prêt à flasher (le plus simple)
+
+Brancher la carte en USB-C, puis :
+
+```bash
+pip install esptool
+esptool.py --chip esp32s3 --baud 921600 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.0.0.bin
+```
+
+Sans installation : ouvrir <https://espressif.github.io/esptool-js/> dans Chrome, « Connect », ajouter
+le `.bin` à l'adresse **0x0**, « Program ».
+
+### B. Compilation PlatformIO
+
+```bash
+pio run -e esp32-4827s043c -t upload
+pio device monitor
+```
+
+### Premier démarrage
+
+L'écran de configuration **Wi-Fi** s'ouvre : choisir le réseau, saisir le mot de passe, valider (✓).
+Pour pré-remplir les identifiants, copier `include/secrets.h.example` en `include/secrets.h`.
+L'heure est synchronisée par NTP (fuseau Luxembourg, heure d'été gérée), puis les stations
+s'affichent en quelques secondes.
+
+## Données et limites
+
+- **Sources** : GBFS v3 public de cyclocity (`station_status` toutes les 60 s par défaut — réglable de
+  30 s à 5 min — `station_information` toutes les heures, `vehicle_types` chaque jour) et Open-Meteo
+  (toutes les 15 min). Aucune clé d'API. Le firmware ne contacte que ces deux services et NTP.
+- **Vélos en trajet** : parc estimé (maximum sur 24 h des vélos en station, hors service compris) moins
+  les vélos actuellement en station. Estimation fiable après ~6 h d'historique.
+- **Retraits / retours** : déduits des écarts entre deux relevés successifs ; c'est un minimum (deux
+  mouvements qui se compensent entre deux relevés ne sont pas vus).
+- **« Aucun mouvement »** : le champ `last_reported` du flux n'est pas fiable (la plupart des bornes y
+  indiquent ~1 h du matin) ; la détection repose donc sur nos propres relevés (aucune variation pendant
+  N heures, entre 7 h et 22 h).
+- **TLS** : les certificats ne sont pas vérifiés (`setInsecure`) — données publiques en lecture seule,
+  aucun identifiant transmis.
+- Les données internes JCDecaux (tickets de maintenance, trajets, parc exact) ne sont pas publiques.
+  Pour les brancher, `src/core/gbfs.cpp` et `src/net/net_esp32.cpp` sont les deux points d'entrée.
+
+## Simulateur et tests (PC)
+
+Le dossier `sim/` compile **la même UI et le même cœur** que l'ESP32 avec LVGL 8.3, sans écran :
+
+```bash
+# dépendances : LVGL v8.3.11 et ArduinoJson v7 dans .deps/
+git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
+git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
+cd sim
+make sim test_core
+./test_core ../docs/donnees     # 357 vérifications : noms, GBFS, prédiction, alertes, persistance, étalonnage
+./sim ../docs/donnees /tmp/captures   # scénario tactile, captures, audit des zones tactiles, étalonnage
+```
+
+`docs/donnees/` contient l'instantané des flux utilisé pour les captures.
+`docs/audit_tactile.txt` liste les 313 éléments cliquables de tous les écrans et fiches : pour
+chacun, un tap simulé à son emplacement doit atteindre cet élément (0 masqué, aucune cible
+de moins de 24 px). Le simulateur éprouve aussi l'étalonnage sur un panneau résistif aux axes
+échangés et en miroir (erreur résiduelle : 1 px).
+
+## Structure
+
+```
+src/
+  main.cpp                 boucle LVGL (cœur 1) + démarrage
+  config.h                 URLs, périodes, tailles d'historique
+  core/                    modèle : GBFS, météo, historique, profils, prévisions, alertes, transferts
+  ui/                      coquille (en-tête, rail, sheet, toasts), écrans, fiche station, Wi-Fi
+  ui/widgets/              graphique sur mesure (aire en fondu, pointillés), carte du réseau
+  ui/fonts, ui/icons       polices et icônes générées (tools/gen_fonts.sh, tools/gen_icons.mjs)
+  hal/                     dalle RGB (esp_lcd), GT911, XPT2046, étalonnage tactile, brochage
+  net/                     tâche réseau (cœur 0) : Wi-Fi, NTP, flux, sauvegardes
+  platform/                abstraction ESP32 / simulateur
+sim/                       simulateur headless + tests
+tools/                     générateurs (polices, icônes, tracé du tram, planche d'aperçu)
+dist/                      binaires fusionnés prêts à flasher (adresse 0x0)
+```
+
+## Dépannage
+
+- **Image qui ondule ou se décale** pendant les accès Wi-Fi : baisser `LCD_PCLK_HZ` à 7 MHz dans
+  `src/hal/board.h`.
+- **Rouge et bleu inversés** (rare, selon le lot de dalle) : inverser les groupes R et B de
+  `LCD_DATA_PINS`.
+- **Tactile décalé** : Réglages → Système → Tactile → Étalonner (voir « Vérifier le tactile »).
+- **Écran noir au démarrage** : vérifier qu'il s'agit bien d'un module N16R8 (PSRAM octale) ; le
+  moniteur série affiche la taille de PSRAM détectée.
+
+## Crédits
+
+Données Vel'OH! © JCDecaux via GBFS · météo [Open-Meteo](https://open-meteo.com) (CC BY 4.0) ·
+tracé du tram T1 : ATP / data.public.lu (CC BY 4.0) · [LVGL](https://lvgl.io) (MIT) ·
+[ArduinoJson](https://arduinojson.org) (MIT) · polices Inter et JetBrains Mono (SIL OFL 1.1) ·
+interface, icônes et logique dérivées de VelohNav (Silexperience).
