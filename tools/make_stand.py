@@ -227,6 +227,21 @@ def save_stl(solid, path):
     mf = solid.to_mesh()
     verts = np.asarray(mf.vert_properties, dtype=np.float64)[:, :3]
     tris = np.asarray(mf.tri_verts, dtype=np.int32)
+    # Nettoyage avant écriture, en deux temps.
+    # 1) Les soustractions coplanaires (chanfrein du pied, garde du berceau)
+    #    laissent des triangles d'aire quasi nulle : ils suffisent à faire
+    #    compter une arête non-manifold au trancheur (constaté : 1).
+    v0, v1, v2 = verts[tris[:, 0]], verts[tris[:, 1]], verts[tris[:, 2]]
+    area = np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1) / 2.0
+    tris = tris[area > 1e-6]
+    # 2) Le STL binaire est en float32 : deux sommets confondus à 1e-9 près
+    #    cessent de l'être après arrondi. On recolle à 0,1 µm puis on retire les
+    #    faces rigoureusement identiques.
+    uniq, inv = np.unique(np.round(verts, 4), axis=0, return_inverse=True)
+    tris = inv.reshape(-1)[tris]
+    _, first = np.unique(np.sort(tris, axis=1), axis=0, return_index=True)
+    tris = tris[np.sort(first)]
+    verts = uniq
     data = np.zeros(len(tris), dtype=stl_mesh.Mesh.dtype)
     data["vectors"] = verts[tris]
     out = stl_mesh.Mesh(data)
@@ -234,7 +249,7 @@ def save_stl(solid, path):
     bb = solid.bounding_box()
     size = (bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2])
     print(
-        f"{path}  tris={len(tris)}  vol={solid.volume():.0f}  "
+        f"{path}  tris={len(tris)}  verts={len(verts)}  vol={solid.volume():.0f}  "
         f"size={size[0]:.1f}x{size[1]:.1f}x{size[2]:.1f}"
     )
     return out
@@ -385,12 +400,17 @@ def main():
         f"{ft_p.bounding_box()[3]-ft_p.bounding_box()[0]:.0f}x{ft_p.bounding_box()[4]-ft_p.bounding_box()[1]:.0f}",
     )
 
-    out_dir = "/workspace/public/stand"
-    os.makedirs(out_dir, exist_ok=True)
-    os.makedirs("/workspace/artifacts", exist_ok=True)
-    save_stl(both, f"{out_dir}/sunton-4827-stand.stl")
-    save_stl(both, "/workspace/artifacts/sunton-4827-stand.stl")
-    save_stl(seated(sh) + seated(cv) + ft, "/tmp/stand-assembled.stl")
+    # Sorties relatives au dépôt (le script vivait dans un bac à sable /workspace).
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo = os.path.abspath(os.path.join(here, os.pardir))
+    stl_dir = os.path.join(repo, "stl")
+    docs_dir = os.path.join(repo, "docs")
+    build_dir = os.path.join(here, "build")
+    os.makedirs(stl_dir, exist_ok=True)
+    os.makedirs(docs_dir, exist_ok=True)
+    os.makedirs(build_dir, exist_ok=True)
+    save_stl(both, os.path.join(stl_dir, "sunton-4827-stand.stl"))
+    save_stl(seated(sh) + seated(cv) + ft, os.path.join(build_dir, "stand-assembled.stl"))
 
     bone = (246, 242, 234)
     linen = (186, 178, 166)
@@ -409,10 +429,10 @@ def main():
         "stand-usb.png": (-1.0, 0.16, 0.24),
     }
     for name, eye in views.items():
-        render(asm_parts, f"/workspace/artifacts/{name}", eye)
+        render(asm_parts, os.path.join(docs_dir, name), eye)
     render(
         [(sh_p, bone), (cv_p, linen), (ft_p, ink)],
-        "/workspace/artifacts/stand-print.png",
+        os.path.join(docs_dir, "stand-print.png"),
         eye=(0.05, -0.2, 1.0),
         ground=False,
         size=(1100, 860),

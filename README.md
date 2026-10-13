@@ -8,6 +8,8 @@ réseau Vel'OH!** : disponibilités en direct, historique 24 h, prévisions à 2
 régulation et transferts suggérés. L'AR, la navigation et l'assistant IA de l'app mobile sont retirés ;
 tout le reste est réorienté exploitation.
 
+![VelohNav Panel](docs/velohnav-panel.jpg)
+
 ![Aperçu des écrans](docs/apercu_ecrans.png)
 
 > Les captures sont rendues par le **code réel du firmware** (même UI LVGL) dans le simulateur PC,
@@ -244,6 +246,28 @@ La fiche USB-C se branche sur le côté gauche. La photo ci-dessous est une vue 
 stl/sunton-4827-stand.stl
 tools/make_stand.py
 ```
+
+Régénérer (le script vit maintenant dans le dépôt, sorties relatives) :
+
+```bash
+python tools/make_stand.py      # réécrit stl/sunton-4827-stand.stl + docs/stand-*.png
+```
+
+Dépendances : `numpy`, `manifold3d`, `numpy-stl`, `Pillow`. Cotes en tête de fichier (jeu de montage,
+épaisseurs, inclinaison, fenêtre d'affichage, fente USB). Le script **s'auto-contrôle avant d'écrire** :
+interpénétration coque/capot, jeu du berceau, air d'une prise USB-C, crochement du clip — il s'arrête
+si l'un de ces points est faux.
+
+**Plateaux** : coque + capot tiennent sur **173 × 130 mm** ; le pied se place sur un second plateau
+(**166 × 64 mm**).
+
+![Plaque d'impression : coque et capot sur une rangée, pied en dessous](docs/stand-print.png)
+
+**Contrôles du maillage** (le trancheur fait autorité) : `manifold = yes`, **3 parties**,
+212 673 mm³ ; surplombs sous 45° **39,6 mm² (0,1 %)** — d'où l'absence de supports ; parois p05
+**2,32 mm**, médiane 6,20 mm (le minimum mesuré, 0,85 mm, est la languette de clip : elle doit
+fléchir). Les triangles dégénérés laissés par les soustractions coplanaires sont retirés à l'export,
+sinon le trancheur compte une arête non-manifold.
 
 Impression sans supports, couche 0,2 mm, 3 périmètres, 15 à 20 % de remplissage :
 
