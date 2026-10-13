@@ -22,6 +22,34 @@ jobs:
       - run: pip install platformio
       - run: pio run -e ${{ matrix.env }}
 
+  # Démarrage réel du firmware ESP32-S3 dans l'émulateur QEMU d'Espressif :
+  # le test échoue si le démarrage n'atteint pas « [boot] prêt » ou s'il y a un plantage.
+  demarrage-qemu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('platformio.ini') }}
+      - run: pip install platformio
+      - run: pio run -e test-qemu
+      - name: QEMU ESP32-S3 (Espressif)
+        run: |
+          sudo apt-get install -y libslirp0 >/dev/null
+          curl -sSL -o qemu.tar.xz https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20250817/qemu-xtensa-softmmu-esp_develop_9.2.2_20250817-x86_64-linux-gnu.tar.xz
+          mkdir -p "$HOME/qemu" && tar -xf qemu.tar.xz -C "$HOME/qemu"
+      - name: Test de démarrage
+        run: python3 tools/qemu_boot_test.py --qemu "$HOME/qemu/qemu/bin/qemu-system-xtensa" --build .pio/build/test-qemu --out qemu_out --seconds 40
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: demarrage-qemu
+          path: qemu_out/
+
   simulateur:
     runs-on: ubuntu-latest
     steps:
@@ -30,9 +58,11 @@ jobs:
         run: |
           git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
           git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
-      - name: Tests du cœur + audit tactile
+      - name: Tests du cœur + audit tactile + premiers démarrages
         run: |
           cd sim
           make -j4 sim test_core
           ./test_core ../docs/donnees
           ./sim ../docs/donnees /tmp/captures
+          ./sim ../docs/donnees /tmp/boot boot
+          ./sim ../docs/donnees /tmp/boot_wifi_ko boot-wifi-ko

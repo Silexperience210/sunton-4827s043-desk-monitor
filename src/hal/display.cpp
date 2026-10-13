@@ -15,7 +15,25 @@ static lv_disp_draw_buf_t s_drawBuf;
 static lv_disp_drv_t s_drv;
 static const int BUF_LINES = 40;
 
+#ifdef VN_QEMU
+// Émulateur : copie de l'image dans un tampon dont l'adresse est publiée sur le port série,
+// pour que le test de démarrage puisse en faire des captures (QEMU n'émule pas la dalle RGB).
+static uint16_t * s_qemuFb = nullptr;
+static void qemuMirror(const lv_area_t * a, const lv_color_t * px) {
+  if (!s_qemuFb) {
+    s_qemuFb = (uint16_t *)heap_caps_calloc(480 * 272, 2, MALLOC_CAP_SPIRAM);
+    Serial.printf("[qemu] fb=%p\n", s_qemuFb);
+  }
+  if (!s_qemuFb) return;
+  for (int y = a->y1; y <= a->y2; y++)
+    for (int x = a->x1; x <= a->x2; x++) s_qemuFb[y * 480 + x] = (px++)->full;
+}
+#endif
+
 static void flushCb(lv_disp_drv_t * drv, const lv_area_t * a, lv_color_t * px) {
+#ifdef VN_QEMU
+  qemuMirror(a, px);
+#endif
   // Copie synchrone dans le framebuffer PSRAM (rafraîchi en continu par le périphérique LCD)
   esp_lcd_panel_draw_bitmap(s_panel, a->x1, a->y1, a->x2 + 1, a->y2 + 1, px);
   lv_disp_flush_ready(drv);

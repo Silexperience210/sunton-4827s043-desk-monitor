@@ -170,8 +170,10 @@ static void refresh() {
   char n1[16], n2[16];
   fmtInt(n1, sizeof(n1), g_model.tot.need);
   fmtInt(n2, sizeof(n2), g_model.tot.surplus);
-  snprintf(b, sizeof(b), "+%s \xC3\xA0 livrer \xC2\xB7 \xE2\x88\x92%s \xC3\xA0 retirer \xC2\xB7 %d transfert%s",
-           n1, n2, g_model.nTr, g_model.nTr > 1 ? "s" : "");
+  if (!g_model.lastUpdate) snprintf(b, sizeof(b), "En attente des premi\xC3\xA8res donn\xC3\xA9" "es");
+  else if (!g_model.tot.need && !g_model.tot.surplus) snprintf(b, sizeof(b), "R\xC3\xA9seau \xC3\xA9quilibr\xC3\xA9 \xC2\xB7 aucune action");
+  else snprintf(b, sizeof(b), "+%s \xC3\xA0 livrer \xC2\xB7 \xE2\x88\x92%s \xC3\xA0 retirer \xC2\xB7 %d transfert%s",
+                n1, n2, g_model.nTr, g_model.nTr > 1 ? "s" : "");
   lv_label_set_text(s_planSub, b);
 }
 

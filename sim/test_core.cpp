@@ -244,12 +244,50 @@ static void testTouchCal() {
   CHECK(!hal::touchSolveCal(same, same, TX, TY, bad), "mesure incohérente refusée");
 }
 
+// Rupture déjà en cours au démarrage : durée reconstituée depuis l'historique, inconnue sans historique
+static void testRuptureStart() {
+  settingsDefaults(g_set);
+  static Model m;
+  CHECK(m.init(), "init (rupture)");
+  const int64_t T = 1791842400 + 8 * 3600;                  // 13/10/2026 08:00
+  InfoRec ir[2] = { mkInfo("A", 49.60f, 6.13f, 20), mkInfo("B", 49.61f, 6.14f, 20) };
+  m.applyInfo(ir, 2, T - 3600);
+  StatusRec sr[2];
+  // A : 6 vélos jusqu'à 07:35, puis vide ; B : pleine depuis 07:20
+  for (int64_t t = T - 3600; t <= T - 300; t += 300) {
+    sr[0] = mkStat("A", t < T - 1500 ? 6 : 0, 20);
+    sr[1] = mkStat("B", t < T - 2400 ? 12 : 20, 20);
+    m.applyStatus(sr, 2, t);
+  }
+  // Redémarrage : l'historique est restauré mais le premier relevé repart de zéro
+  m.lastUpdate = 0;
+  for (int i = 0; i < m.n; i++) { m.st[i].status = ST_CLOSED; m.st[i].emptySince = m.st[i].fullSince = 0; }
+  sr[0] = mkStat("A", 0, 20); sr[1] = mkStat("B", 20, 20);
+  m.applyStatus(sr, 2, T);
+  CHECK(m.st[0].status == ST_EMPTY && m.st[0].emptySince == T - 1500,
+        "vide depuis 07:35 reconstitué (obtenu %lld min avant)", (long long)((T - m.st[0].emptySince) / 60));
+  CHECK(m.st[1].status == ST_FULL && m.st[1].fullSince == T - 2400,
+        "pleine depuis 07:20 reconstitué (obtenu %lld min avant)", (long long)((T - m.st[1].fullSince) / 60));
+  // Sans historique récent : durée inconnue (0), pas « depuis 0 min »
+  static Model m2;
+  CHECK(m2.init(), "init (sans historique)");
+  m2.applyInfo(ir, 2, T);
+  m2.applyStatus(sr, 2, T);
+  CHECK(m2.st[0].status == ST_EMPTY && m2.st[0].emptySince == 0, "durée inconnue sans historique");
+  // Nouvelle rupture après le démarrage : horodatée au relevé
+  sr[1] = mkStat("B", 0, 20);
+  m2.applyStatus(sr, 2, T + 60);
+  CHECK(m2.st[1].status == ST_EMPTY && m2.st[1].emptySince == T + 60, "nouvelle rupture horodatée");
+  CHECK(m2.nEv == 1, "évènement « vient de se vider » (%d)", m2.nEv);
+}
+
 int main(int argc, char ** argv) {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   testNames();
   testIso();
   if (argc > 1) testParse(argv[1]);
   testModel();
+  testRuptureStart();
   testTouchCal();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;

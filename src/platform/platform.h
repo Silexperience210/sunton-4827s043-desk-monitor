@@ -9,7 +9,8 @@
 
 namespace plat {
 
-void     begin();                    // montage du système de fichiers, verrou, rétroéclairage
+void     begin();                    // verrou, rétroéclairage (éteint)
+bool     fsBegin(bool format);       // monte le système de fichiers (format = formater si illisible)
 uint32_t ms();                       // horloge monotone (ms)
 int64_t  now();                      // epoch UTC (s) — 0 tant que l'heure n'est pas synchronisée
 bool     timeValid();

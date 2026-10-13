@@ -126,6 +126,7 @@ struct Model {
   int  find(const char * sid) const;
   void applyInfo(const InfoRec * r, int n, int64_t now);
   void applyStatus(const StatusRec * r, int n, int64_t now);
+  int64_t ruptureStart(int i, bool empty, int64_t now) const;
   void recompute(int64_t now);           // prévisions, alertes, totaux (aussi après réglages)
 
   // Profil appris : moyenne attendue des vélos à l'instant t (lissée ±15 min, pool semaine/week-end)

@@ -3,7 +3,11 @@
 #include <string.h>
 #include <stdio.h>
 
-namespace sim { extern uint32_t g_ms; bool g_fetching = false; bool g_wifiUp = true; }
+namespace sim {
+extern uint32_t g_ms; bool g_fetching = false; bool g_wifiUp = true;
+// scénario « démarrage » : état réseau imposé (‑1 = comportement par défaut)
+int g_wifiState = -1; bool g_timeOk = true; const char * g_stage = nullptr;
+}
 
 namespace net {
 
@@ -14,13 +18,13 @@ void begin() {}
 
 Status status() {
   Status s{};
-  s.wifi = sim::g_wifiUp ? W_CONNECTED : W_FAILED;
+  s.wifi = sim::g_wifiState >= 0 ? (WifiState)sim::g_wifiState : (sim::g_wifiUp ? W_CONNECTED : W_FAILED);
   strcpy(s.ssid, "VELOH-OPS");
   strcpy(s.ip, "192.168.20.41");
   s.rssi = -58;
   s.fetching = sim::g_fetching;
-  s.timeOk = true;
-  s.stage = "Chargement des stations Vel'OH!\xE2\x80\xA6";
+  s.timeOk = sim::g_timeOk;
+  s.stage = sim::g_stage ? sim::g_stage : "Chargement des stations Vel'OH!\xE2\x80\xA6";
   return s;
 }
 

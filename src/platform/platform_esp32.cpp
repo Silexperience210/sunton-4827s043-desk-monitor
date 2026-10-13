@@ -35,15 +35,21 @@ namespace plat {
 
 void begin() {
   s_lock = xSemaphoreCreateRecursiveMutex();
-  s_fsOk = LittleFS.begin(true);          // formate à la première utilisation
-  if (!s_fsOk) logf("[fs] LittleFS indisponible");
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
+#if defined(VN_QEMU)
+  pinMode(VN_PIN_BACKLIGHT, OUTPUT);      // l'émulateur n'a pas de périphérique LEDC
+#elif ESP_ARDUINO_VERSION_MAJOR >= 3
   ledcAttach(VN_PIN_BACKLIGHT, 5000, 8);
 #else
   ledcSetup(VN_BL_CHANNEL, 5000, 8);
   ledcAttachPin(VN_PIN_BACKLIGHT, VN_BL_CHANNEL);
 #endif
   setBacklight(0);
+}
+
+bool fsBegin(bool format) {
+  s_fsOk = LittleFS.begin(format);        // format : premier démarrage (partition vierge)
+  if (!s_fsOk && format) logf("[fs] LittleFS indisponible");
+  return s_fsOk;
 }
 
 uint32_t ms() { return millis(); }
@@ -111,7 +117,9 @@ void logf(const char * fmt, ...) {
 void setBacklight(uint8_t pct) {
   if (pct > 100) pct = 100;
   uint32_t duty = (uint32_t)pct * 255 / 100;
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
+#if defined(VN_QEMU)
+  digitalWrite(VN_PIN_BACKLIGHT, duty ? HIGH : LOW);
+#elif ESP_ARDUINO_VERSION_MAJOR >= 3
   ledcWrite(VN_PIN_BACKLIGHT, duty);
 #else
   ledcWrite(VN_BL_CHANNEL, duty);

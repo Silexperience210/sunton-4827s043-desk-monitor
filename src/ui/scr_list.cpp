@@ -99,6 +99,8 @@ static void fillRow(Row & r, int si) {
   if (s.status == vn::ST_CLOSED) snprintf(b, sizeof(b), "#%s \xC2\xB7 ferm\xC3\xA9" "e \xC2\xB7 %d bornes", s.sid, s.cap);
   else if (s.status == vn::ST_EMPTY && s.emptySince) { fmtDur(e, sizeof(e), (int)((now() - s.emptySince) / 60)); snprintf(b, sizeof(b), "#%s \xC2\xB7 vide depuis %s", s.sid, e); }
   else if (s.status == vn::ST_FULL && s.fullSince) { fmtDur(e, sizeof(e), (int)((now() - s.fullSince) / 60)); snprintf(b, sizeof(b), "#%s \xC2\xB7 pleine depuis %s", s.sid, e); }
+  else if (s.status == vn::ST_EMPTY) snprintf(b, sizeof(b), "#%s \xC2\xB7 vide", s.sid);
+  else if (s.status == vn::ST_FULL) snprintf(b, sizeof(b), "#%s \xC2\xB7 pleine", s.sid);
   else if (eta <= 120) { fmtDur(e, sizeof(e), eta); snprintf(b, sizeof(b), "#%s \xC2\xB7 %s dans ~%s", s.sid, s.etaEmpty == eta ? "rupture" : "saturation", e); }
   else if (s.bikesDis) snprintf(b, sizeof(b), "#%s \xC2\xB7 %d bornes \xC2\xB7 %d v\xC3\xA9lo%s HS", s.sid, s.cap, s.bikesDis, s.bikesDis > 1 ? "s" : "");
   else snprintf(b, sizeof(b), "#%s \xC2\xB7 %d bornes", s.sid, s.cap);

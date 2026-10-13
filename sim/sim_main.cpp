@@ -20,10 +20,13 @@
 #include <math.h>
 #include <vector>
 #include <sys/stat.h>
+#include <pthread.h>
+#include "../src/net/net.h"
 #include <string>
 
 namespace ui { lv_obj_t * debugToast(); int debugTab(); }
-namespace sim { extern int64_t g_epoch0; extern uint32_t g_ms; extern bool g_fetching; extern const char * g_fsDir; }
+namespace sim { extern int64_t g_epoch0; extern uint32_t g_ms; extern bool g_fetching; extern const char * g_fsDir;
+                extern int g_wifiState; extern bool g_timeOk; extern const char * g_stage; }
 using namespace vn;
 
 static uint16_t s_fb[480 * 272];
@@ -309,13 +312,105 @@ static void synthHistory(Model & m, int64_t now, const StatusRec * recs, int nre
   }
 }
 
-int main(int argc, char ** argv) {
+
+// ── Scénario « premier démarrage » : comme sur la carte ─────────────
+// Heure inconnue (avant NTP), aucun Wi-Fi enregistré, aucune donnée, aucun historique.
+static int bootScenario(const std::string & in, const char * variant) {
+  bool savedSsid = variant && strcmp(variant, "boot-wifi-ko") == 0;
+  auto info = readFile(in + "/station_information.json");
+  auto status = readFile(in + "/station_status.json");
+  auto types = readFile(in + "/vehicle_types.json");
+  auto wx = readFile(in + "/weather.json");
+  static StatusRec recs[VN_MAX_ST];
+  static InfoRec irecs[VN_MAX_ST];
+  ElecTypes et;
+  gbfsParseTypes(types.data(), types.size(), et);
+  int64_t lastUpd = 0;
+  int ns = gbfsParseStatus(status.data(), status.size(), recs, VN_MAX_ST, et, &lastUpd);
+  int ni = gbfsParseInfo(info.data(), info.size(), irecs, VN_MAX_ST);
+
+  sim::g_epoch0 = 0;                    // heure inconnue
+  sim::g_timeOk = false;
+  settingsDefaults(g_set);
+  if (savedSsid) {                      // réseau enregistré mais injoignable (mauvais mot de passe…)
+    strcpy(g_set.ssid, "BUREAU");
+    sim::g_wifiState = net::W_CONNECTING; sim::g_stage = "Connexion Wi-Fi\xE2\x80\xA6";
+  } else {
+    sim::g_wifiState = net::W_NONE; sim::g_stage = "Wi-Fi \xC3\xA0 configurer";
+  }
+  if (!g_model.init()) { fprintf(stderr, "init modèle\n"); return 1; }
+  lv_init();
+  static lv_disp_draw_buf_t db;
+  lv_disp_draw_buf_init(&db, s_buf, nullptr, 480 * 40);      // comme sur la carte : 40 lignes
+  static lv_disp_drv_t dd;
+  lv_disp_drv_init(&dd);
+  dd.hor_res = 480; dd.ver_res = 272; dd.flush_cb = flush; dd.draw_buf = &db;
+  lv_disp_t * disp = lv_disp_drv_register(&dd);
+  static lv_indev_drv_t id;
+  lv_indev_drv_init(&id);
+  id.type = LV_INDEV_TYPE_POINTER; id.read_cb = readTouch;
+  lv_indev_drv_register(&id);
+  ui::init(disp);
+  run(16);
+  shot("boot_premier_rendu");
+  run(800);
+  shot("boot_accueil");
+  if (savedSsid) {
+    run(15000);
+    sim::g_wifiState = net::W_FAILED; sim::g_stage = "Wi-Fi injoignable";
+    run(1500);
+    shot("boot_wifi_echec");
+    bool stuck = lv_obj_get_child_cnt(lv_layer_top()) && !ui::sheetIsOpen();
+    printf("Wi-Fi en échec : %s\n", stuck ? "BLOQUÉ sur l'écran d'accueil" : "écran d'accueil fermé ✓");
+    // parcours des onglets sans aucune donnée ni heure
+    for (int t = 0; t < 5; t++) { ui::sheetClose(); run(300); tap(30, 36 + t * 47 + 20); run(600); char n[32]; snprintf(n, sizeof n, "boot_vide_onglet%d", t); shot(n); }
+    return stuck ? 3 : 0;
+  }
+  run(2000);
+  shot("boot_wifi");
+  bool wifiOk = ui::sheetIsOpen();
+  printf("Premier démarrage : feuille Wi-Fi %s\n", wifiOk ? "ouverte ✓" : "ABSENTE");
+  // l'utilisateur choisit un réseau
+  strcpy(g_set.ssid, "VELOH-OPS");
+  ui::sheetClose();
+  sim::g_wifiState = net::W_CONNECTING; sim::g_stage = "Connexion Wi-Fi\xE2\x80\xA6";
+  run(1500);
+  shot("boot_connexion");
+  sim::g_wifiState = net::W_CONNECTED; sim::g_stage = "Synchronisation de l'heure\xE2\x80\xA6";
+  run(2000);
+  sim::g_epoch0 = lastUpd ? lastUpd : 1791894641; sim::g_timeOk = true;
+  sim::g_stage = "Chargement des stations Vel'OH!\xE2\x80\xA6";
+  run(1500);
+  shot("boot_heure_ok");
+  // premières données, sans aucun historique
+  int64_t now = plat::now();
+  { plat::LockGuard g; g_model.applyInfo(irecs, ni, now); }
+  run(500);
+  { plat::LockGuard g; g_model.elec = et; g_model.applyStatus(recs, ns, now); g_model.feedUpdated = lastUpd; }
+  run(1500);
+  shot("boot_donnees");
+  bool dashOk = ui::debugTab() == ui::TAB_DASH && !lv_obj_get_child_cnt(lv_layer_top());
+  printf("Premières données : tableau de bord %s\n", dashOk ? "affiché ✓" : "ABSENT");
+  { Weather w; if (wxParse(wx.data(), wx.size(), w)) { w.fetchedAt = now; plat::LockGuard g; g_model.wx = w; g_model.recompute(now); } }
+  run(800);
+  for (int t = 0; t < 5; t++) { tap(30, 36 + t * 47 + 20); run(600); char n[32]; snprintf(n, sizeof n, "boot_onglet%d", t); shot(n); }
+  ui::openStation(0); run(600); shot("boot_fiche"); ui::sheetClose(); run(300);
+  // deuxième relevé une minute plus tard
+  sim::g_ms += 60000;
+  { plat::LockGuard g; g_model.applyStatus(recs, ns, plat::now()); }
+  run(1000);
+  shot("boot_releve2");
+  return (wifiOk && dashOk) ? 0 : 3;
+}
+
+static int realMain(int argc, char ** argv) {
   if (argc < 3) { fprintf(stderr, "usage : sim <json_dir> <out_dir>\n"); return 1; }
   std::string in = argv[1];
   s_out = argv[2];
   mkdir(s_out.c_str(), 0755);              // dossier de sortie créé au besoin
   sim::g_fsDir = "/tmp/vn_sim_fs";
-  system("rm -rf /tmp/vn_sim_fs");
+  if (system("rm -rf /tmp/vn_sim_fs")) {}
+  if (argc > 3) return bootScenario(in, argv[3]);
 
   auto info = readFile(in + "/station_information.json");
   auto status = readFile(in + "/station_status.json");
@@ -553,4 +648,32 @@ int main(int argc, char ** argv) {
   run(500);
   printf("Tap réel sur « Alertes » après étalonnage → onglet %s\n", ui::debugTab() == ui::TAB_ALERTS ? "Alertes ✓" : "INCORRECT");
   return (s_auditFail || worst > 4 || ui::debugTab() != ui::TAB_ALERTS) ? 2 : 0;
+}
+
+// ── Exécution sur une pile peinte : mesure de la profondeur de pile maximale de l'UI ──
+static int s_argc, s_ret;
+static char ** s_argv;
+static uint8_t * s_stk;
+static uintptr_t s_top;
+static void * uiThread(void *) {
+  volatile uint8_t mark = 0;
+  s_top = (uintptr_t)&mark;
+  s_ret = realMain(s_argc, s_argv);
+  return nullptr;
+}
+int main(int argc, char ** argv) {
+  s_argc = argc; s_argv = argv;
+  const size_t SZ = 4u << 20;
+  s_stk = (uint8_t *)aligned_alloc(4096, SZ);
+  memset(s_stk, 0xA5, SZ);
+  pthread_attr_t at;
+  pthread_attr_init(&at);
+  pthread_attr_setstack(&at, s_stk, SZ);
+  pthread_t t;
+  if (pthread_create(&t, &at, uiThread, nullptr)) { perror("pthread"); return 1; }
+  pthread_join(t, nullptr);
+  size_t i = 0;
+  while (i < SZ && s_stk[i] == 0xA5) i++;
+  printf("Pile de la boucle UI : %lu octets au maximum (x86-64)\n", (unsigned long)(s_top - (uintptr_t)(s_stk + i)));
+  return s_ret;
 }

@@ -103,6 +103,25 @@ static uint8_t classify(const Station & s) {
   return ST_OK;
 }
 
+// Début d'une rupture en cours d'après l'historique 5 min (0 = inconnu : pas d'historique récent)
+int64_t Model::ruptureStart(int i, bool empty, int64_t now) const {
+  int64_t since = 0;
+  const uint16_t cap = st[i].capEff();
+  bool first = true;
+  for (int back = 0; back < count; back++) {
+    int idx = ringIndex(back);
+    if (idx < 0) break;
+    uint8_t v = ring[(size_t)idx * VN_MAX_ST + i];
+    if (v == 255) continue;                                  // trou dans l'historique
+    if (first && now - ringT[idx] > 1800) return 0;           // historique trop ancien
+    first = false;
+    bool same = empty ? v == 0 : (cap > 0 && v >= cap);
+    if (!same) break;
+    since = ringT[idx];
+  }
+  return since;
+}
+
 // ── station_status ───────────────────────────────────────────────────
 void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
   static bool seen[VN_MAX_ST];
@@ -136,9 +155,11 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
     Station & s = st[i];
     if (!s.active) continue;
     uint8_t prev = s.status, cur = classify(s);
-    if (cur == ST_EMPTY) { if (prev != ST_EMPTY) { s.emptySince = now; if (!firstFill && nEv < 8) ev[nEv++] = { (int16_t)i, AL_EMPTY }; } }
+    // Au premier relevé, une rupture déjà en cours n'a pas commencé « maintenant » :
+    // sa durée est reconstituée depuis l'historique restauré, sinon elle reste inconnue (0).
+    if (cur == ST_EMPTY) { if (prev != ST_EMPTY) { s.emptySince = firstFill ? ruptureStart(i, true, now) : now; if (!firstFill && nEv < 8) ev[nEv++] = { (int16_t)i, AL_EMPTY }; } }
     else s.emptySince = 0;
-    if (cur == ST_FULL) { if (prev != ST_FULL) { s.fullSince = now; if (!firstFill && nEv < 8) ev[nEv++] = { (int16_t)i, AL_FULL }; } }
+    if (cur == ST_FULL) { if (prev != ST_FULL) { s.fullSince = firstFill ? ruptureStart(i, false, now) : now; if (!firstFill && nEv < 8) ev[nEv++] = { (int16_t)i, AL_FULL }; } }
     else s.fullSince = 0;
     s.status = cur;
   }

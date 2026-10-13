@@ -26,6 +26,7 @@ uint32_t vn_lv_tick(void) { return sim::g_ms; }
 namespace plat {
 
 void begin() {}
+bool fsBegin(bool) { return true; }
 uint32_t ms() { return sim::g_ms; }
 int64_t now() { return sim::g_epoch0 ? sim::g_epoch0 + sim::g_ms / 1000 : 0; }
 bool timeValid() { return sim::g_epoch0 != 0; }
@@ -86,3 +87,8 @@ void modelLock() {}
 void modelUnlock() {}
 
 } // namespace plat
+
+extern "C" void vn_lv_assert_fail(const char * file, int line) {
+  fprintf(stderr, "[lvgl] assertion %s:%d\n", file, line);
+  abort();
+}

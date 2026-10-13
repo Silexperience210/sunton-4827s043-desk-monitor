@@ -480,7 +480,15 @@ static void tick(lv_timer_t *) {
   if (s_splash) {
     lv_label_set_text(s_splashStage, ns.stage ? ns.stage : "");
     if (g_model.lastUpdate) { splashClose(); showTab(s_tab < 0 ? TAB_DASH : s_tab); afterSplash(); }
-    else if (!g_set.ssid[0] && lv_tick_get() > 1500) { splashClose(); openWifi(); afterSplash(); }
+    else if (!g_set.ssid[0] && lv_tick_get() > 1500) { splashClose(); showTab(TAB_DASH); openWifi(); afterSplash(); }
+    else if (ns.wifi == net::W_FAILED) {
+      // Réseau enregistré mais injoignable : ne pas rester bloqué sur l'accueil
+      splashClose(); showTab(TAB_DASH); openWifi(); afterSplash();
+      toast("Wi-Fi injoignable", "V\xC3\xA9rifier le r\xC3\xA9seau ou le mot de passe", T_WARN, &ic_wifi_off_16);
+    } else if (lv_tick_get() > 45000) {
+      // Toujours rien après 45 s (flux indisponible…) : interface accessible, bandeau « hors ligne »
+      splashClose(); showTab(TAB_DASH); afterSplash();
+    }
   }
   // Appui continu de 6 s n'importe où : test du tactile (secours si le tactile est décalé)
   {

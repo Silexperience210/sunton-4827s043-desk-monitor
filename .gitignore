@@ -12,3 +12,4 @@ sim_fs/
 *.blend1
 *.log
 .DS_Store
+__pycache__/

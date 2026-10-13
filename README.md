@@ -79,8 +79,8 @@ jour après jour (progression visible dans **Réglages → Prédiction**).
 
 | Version | Tactile | Environnement PlatformIO | Binaire |
 |---|---|---|---|
-| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.0.0.bin` |
-| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.0.0.bin` |
+| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.0.1.bin` |
+| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.0.1.bin` |
 | C monté tête en bas | capacitif, rotation 180° | `esp32-4827s043c-180` | — |
 
 Brochage (dans `src/hal/board.h`), recoupé avec deux références indépendantes
@@ -120,18 +120,25 @@ L'étalonnage détecte seul un axe inversé ou des axes échangés et s'enregist
 ### A. Binaire prêt à flasher (le plus simple)
 
 Télécharger le binaire de sa version de carte :
-[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.0.0.bin) ·
-[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.0.0.bin)
+[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.0.1.bin) ·
+[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.0.1.bin)
 
-Brancher la carte en USB-C, puis :
+**Sans rien installer (Chrome ou Edge)** :
+
+1. Brancher la carte en USB-C et ouvrir <https://espressif.github.io/esptool-js/>.
+2. « Connect » et choisir le port de la carte (souvent « USB-SERIAL CH340 »).
+3. « Erase Flash » (efface l'ancien programme ; ~30 s).
+4. Dans la ligne « Flash Address », mettre **0x0** (et non 0x10000), choisir le fichier `.bin`, puis « Program ».
+5. **Débrancher puis rebrancher le câble** (ou appuyer une fois sur **RST**) : sans cela, la carte reste
+   en mode flashage et l'écran reste noir.
+
+En ligne de commande :
 
 ```bash
 pip install esptool
-esptool.py --chip esp32s3 --baud 921600 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.0.0.bin
+esptool.py --chip esp32s3 --baud 460800 erase_flash
+esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.0.1.bin
 ```
-
-Sans installation : ouvrir <https://espressif.github.io/esptool-js/> dans Chrome, « Connect », ajouter
-le `.bin` à l'adresse **0x0**, « Program ».
 
 ### B. Compilation PlatformIO
 
@@ -142,10 +149,13 @@ pio device monitor
 
 ### Premier démarrage
 
-L'écran de configuration **Wi-Fi** s'ouvre : choisir le réseau, saisir le mot de passe, valider (✓).
-Pour pré-remplir les identifiants, copier `include/secrets.h.example` en `include/secrets.h`.
-L'heure est synchronisée par NTP (fuseau Luxembourg, heure d'été gérée), puis les stations
-s'affichent en quelques secondes.
+L'écran s'allume en moins d'une seconde et affiche chaque étape du démarrage. La toute première fois,
+l'étape « préparation de la mémoire » peut durer jusqu'à 30 s (formatage du stockage interne).
+Ensuite l'écran de configuration **Wi-Fi** s'ouvre : choisir le réseau, saisir le mot de passe,
+valider (✓). Pour pré-remplir les identifiants, copier `include/secrets.h.example` en
+`include/secrets.h`. L'heure est synchronisée par NTP (fuseau Luxembourg, heure d'été gérée), puis
+les stations s'affichent en quelques secondes. Si le réseau enregistré est injoignable, l'écran Wi-Fi
+se rouvre de lui-même.
 
 ## Boîtier imprimé 3D (bureau ou mural)
 
@@ -248,8 +258,10 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core
-./test_core ../docs/donnees     # 357 vérifications : noms, GBFS, prédiction, alertes, persistance, étalonnage
+./test_core ../docs/donnees     # 364 vérifications : noms, GBFS, prédiction, alertes, persistance, étalonnage
 ./sim ../docs/donnees /tmp/captures   # scénario tactile, captures, audit des zones tactiles, étalonnage
+./sim ../docs/donnees /tmp/boot boot              # premier démarrage : sans heure, sans Wi-Fi, sans données
+./sim ../docs/donnees /tmp/boot2 boot-wifi-ko     # réseau enregistré mais injoignable
 ```
 
 `docs/donnees/` contient l'instantané des flux utilisé pour les captures.
@@ -258,11 +270,26 @@ chacun, un tap simulé à son emplacement doit atteindre cet élément (0 masqu�
 de moins de 24 px). Le simulateur éprouve aussi l'étalonnage sur un panneau résistif aux axes
 échangés et en miroir (erreur résiduelle : 1 px).
 
+### Démarrage dans l'émulateur ESP32-S3
+
+Le firmware compilé pour l'ESP32-S3 est aussi démarré dans [QEMU d'Espressif](https://github.com/espressif/qemu)
+(à chaque push, en CI) : le test vérifie que le démarrage va jusqu'au bout sans plantage et capture
+l'image affichée.
+
+```bash
+pio run -e test-qemu
+python3 tools/qemu_boot_test.py --qemu /chemin/qemu-system-xtensa --build .pio/build/test-qemu --out qemu_out
+```
+
+L'environnement `test-qemu` sert uniquement à ce test (QEMU n'émule ni la PSRAM octale ni le
+rétroéclairage PWM) : **ne pas le flasher sur la carte**.
+
 ## Structure
 
 ```
 src/
   main.cpp                 boucle LVGL (cœur 1) + démarrage
+  boot.cpp                 écran de démarrage, cause du dernier redémarrage, mode sans échec
   config.h                 URLs, périodes, tailles d'historique
   core/                    modèle : GBFS, météo, historique, profils, prévisions, alertes, transferts
   ui/                      coquille (en-tête, rail, sheet, toasts), écrans, fiche station, Wi-Fi
@@ -272,7 +299,7 @@ src/
   net/                     tâche réseau (cœur 0) : Wi-Fi, NTP, flux, sauvegardes
   platform/                abstraction ESP32 / simulateur
 sim/                       simulateur headless + tests
-tools/                     générateurs (polices, icônes, tracé du tram, planche d'aperçu)
+tools/                     générateurs (polices, icônes, tracé du tram, planche d'aperçu), test QEMU
 dist/                      binaires fusionnés prêts à flasher (adresse 0x0)
 stl/, openscad/            boîtier imprimé 3D (STL prêts à imprimer + source paramétrable)
 render-preview.py          rendu de l'aperçu du boîtier (docs/preview.png)
@@ -280,13 +307,23 @@ render-preview.py          rendu de l'aperçu du boîtier (docs/preview.png)
 
 ## Dépannage
 
+- **Écran complètement éteint (pas de rétroéclairage)** : le firmware ne tourne pas — depuis la
+  v1.0.1, l'écran s'allume en moins d'une seconde dès qu'il démarre. Débrancher / rebrancher le câble
+  (ou appuyer sur **RST**) après le flashage ; vérifier l'adresse **0x0** ; refaire « Erase Flash »
+  puis « Program » ; essayer un autre câble USB (certains ne transportent que le courant).
+- **Écran allumé mais bloqué sur une étape** : l'étape affichée indique où ça coince ; le détail part
+  sur le port série (115200 bauds) — par exemple avec la console de <https://espressif.github.io/esptool-js/>
+  (bouton « Start » de la partie *Console*) ou `pio device monitor`.
+- **« Redémarrage après un incident »** : la carte a planté ou s'est bloquée au démarrage précédent ;
+  la cause et l'étape sont affichées pendant 6 s, puis le démarrage continue. Après 3 incidents de
+  suite, le **mode sans échec** coupe le réseau (débrancher / rebrancher pour en sortir). « Chute de
+  tension » = alimentation trop faible : autre câble ou chargeur 5 V / 2 A.
+- **« PSRAM introuvable »** : la carte n'est pas une version N16R8 (8 Mo de PSRAM octale).
 - **Image qui ondule ou se décale** pendant les accès Wi-Fi : baisser `LCD_PCLK_HZ` à 7 MHz dans
   `src/hal/board.h`.
 - **Rouge et bleu inversés** (rare, selon le lot de dalle) : inverser les groupes R et B de
   `LCD_DATA_PINS`.
 - **Tactile décalé** : Réglages → Système → Tactile → Étalonner (voir « Vérifier le tactile »).
-- **Écran noir au démarrage** : vérifier qu'il s'agit bien d'un module N16R8 (PSRAM octale) ; le
-  moniteur série affiche la taille de PSRAM détectée.
 
 ## Crédits
 
