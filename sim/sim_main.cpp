@@ -19,6 +19,7 @@
 #include <string.h>
 #include <math.h>
 #include <vector>
+#include <sys/stat.h>
 #include <string>
 
 namespace ui { lv_obj_t * debugToast(); int debugTab(); }
@@ -170,6 +171,7 @@ static void shot(const char * name) {
   char f[512];
   snprintf(f, sizeof(f), "%s/%02d_%s.ppm", s_out.c_str(), s_shot++, name);
   FILE * fp = fopen(f, "wb");
+  if (!fp) { fprintf(stderr, "impossible d'écrire %s\n", f); exit(1); }
   fprintf(fp, "P6\n480 272\n255\n");
   for (int i = 0; i < 480 * 272; i++) {
     uint16_t c = s_fb[i];
@@ -311,6 +313,7 @@ int main(int argc, char ** argv) {
   if (argc < 3) { fprintf(stderr, "usage : sim <json_dir> <out_dir>\n"); return 1; }
   std::string in = argv[1];
   s_out = argv[2];
+  mkdir(s_out.c_str(), 0755);              // dossier de sortie créé au besoin
   sim::g_fsDir = "/tmp/vn_sim_fs";
   system("rm -rf /tmp/vn_sim_fs");
 
@@ -485,6 +488,7 @@ int main(int argc, char ** argv) {
   // ── Audit des zones tactiles, écran par écran ───────────────────────
   std::string repPath = s_out + "/audit_tactile.txt";
   FILE * rep = fopen(repPath.c_str(), "w");
+  if (!rep) { fprintf(stderr, "impossible d'écrire %s\n", repPath.c_str()); return 1; }
   fprintf(rep, "Audit tactile — tap simulé au centre (ou dans un coin*) de chaque élément cliquable visible\n");
   fprintf(rep, "%-10s %-4s %-7s %-11s %s\n", "écran", "res.", "taille", "centre", "élément");
   static const char * TABS[5] = { "reseau", "carte", "stations", "alertes", "reglages" };
