@@ -147,6 +147,80 @@ Pour pré-remplir les identifiants, copier `include/secrets.h.example` en `inclu
 L'heure est synchronisée par NTP (fuseau Luxembourg, heure d'été gérée), puis les stations
 s'affichent en quelques secondes.
 
+## Boîtier imprimé 3D (bureau ou mural)
+
+Boîtier pour la carte, à poser sur un bureau (avec cale inclinée) ou à fixer au mur.
+
+![Aperçu du boîtier](docs/preview.png)
+
+- **Deux usages** : moniteur de bureau (avec la cale) ou afficheur mural.
+- **Découpe USB-C latérale** : centrée verticalement sur le côté gauche par défaut.
+- **Paramétrable** : source OpenSCAD fournie, facile à adapter si votre révision de carte a l'USB ou
+  les boutons ailleurs.
+
+### Cotes utilisées
+
+D'après la fiche constructeur du module 4,3" ESP32-4827S043N/R/C :
+
+| Élément | Valeur |
+|---|---|
+| Circuit imprimé | 123,0 × 74,0 × 1,6 mm |
+| Module LCD | 105,5 × 67,2 mm |
+| Zone d'affichage active | 95,04 × 53,86 mm |
+| Trous de fixation | 4 × Ø3,2 mm, entraxe 105,5 × 67,2 mm |
+
+> **Toujours comparer avec votre carte avant d'imprimer.** Les révisions varient (USB à gauche / à
+> droite, en haut / en bas, ou centré).
+
+### Fichiers
+
+```
+stl/
+  front-case.stl    # façade + logement du circuit + découpe USB
+  back-cover.stl    # capot arrière plat avec trous de fixation murale (en trou de serrure) + plots de vissage
+  desk-stand.stl    # cale vissée sur le capot arrière pour l'usage bureau
+
+openscad/
+  sunton-4827s043-desk-monitor.scad   # source paramétrable
+
+render-preview.py   # génère docs/preview.png
+```
+
+### Réglages d'impression (Bambu P1S / FDM générique)
+
+- **Matière** : PETG ou ABS/ASA (tenue à la chaleur près de l'ESP32).
+- **Hauteur de couche** : 0,2 mm
+- **Parois** : 3 périmètres
+- **Remplissage** : 20 % gyroïde
+- **Supports** :
+  - `front-case.stl` : aucun (la fente USB est un court pont ; imprimer face ouverte vers le haut).
+  - `back-cover.stl` : aucun s'il est imprimé à plat (trous de serrure et plots verticaux).
+  - `desk-stand.stl` : aucun (plus grande face plane sur le plateau).
+
+### Assemblage
+
+1. Glisser l'ESP32-4827S043 dans la façade, écran vers l'extérieur.
+2. Aligner les quatre trous de fixation du circuit sur les plots de la façade.
+3. Poser le capot arrière et visser avec **4 vis auto-taraudeuses M2,5** (≈ 10 mm).
+4. Usage bureau : visser la cale sur le capot arrière avec les mêmes trous.
+5. Usage mural : retirer la cale et accrocher par les trous de serrure (vis M4 ou n° 6).
+
+### Déplacer la découpe USB
+
+Ouvrir `openscad/sunton-4827s043-desk-monitor.scad` et modifier :
+
+```openscad
+usb_side = "left";    // "left" ou "right"
+usb_y    = 37.0;      // hauteur du centre depuis le bord haut du circuit (mm)
+usb_w    = 13.0;      // largeur de la découpe
+usb_h    = 6.0;       // hauteur de la découpe
+```
+
+Puis régénérer les STL (OpenSCAD ou `docker run openscad/openscad:latest`).
+
+> Pour un affichage tête en bas dans le boîtier (USB du mauvais côté), flasher la variante
+> `esp32-4827s043c-180` (voir « Matériel »).
+
 ## Données et limites
 
 - **Sources** : GBFS v3 public de cyclocity (`station_status` toutes les 60 s par défaut — réglable de
@@ -200,6 +274,8 @@ src/
 sim/                       simulateur headless + tests
 tools/                     générateurs (polices, icônes, tracé du tram, planche d'aperçu)
 dist/                      binaires fusionnés prêts à flasher (adresse 0x0)
+stl/, openscad/            boîtier imprimé 3D (STL prêts à imprimer + source paramétrable)
+render-preview.py          rendu de l'aperçu du boîtier (docs/preview.png)
 ```
 
 ## Dépannage
@@ -217,4 +293,4 @@ dist/                      binaires fusionnés prêts à flasher (adresse 0x0)
 Données Vel'OH! © JCDecaux via GBFS · météo [Open-Meteo](https://open-meteo.com) (CC BY 4.0) ·
 tracé du tram T1 : ATP / data.public.lu (CC BY 4.0) · [LVGL](https://lvgl.io) (MIT) ·
 [ArduinoJson](https://arduinojson.org) (MIT) · polices Inter et JetBrains Mono (SIL OFL 1.1) ·
-interface, icônes et logique dérivées de VelohNav (Silexperience).
+interface, icônes et logique dérivées de VelohNav (Silexperience) · boîtier 3D : MIT — Silexperience 2026.
