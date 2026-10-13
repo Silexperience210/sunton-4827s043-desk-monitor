@@ -30,7 +30,7 @@ void settingsDefaults(Settings & s) {
   s.maintBikes  = 4;
   s.maintDocks  = 2;
   s.frozenHours = 4;
-  s.brightness  = 85;
+  s.brightness  = 100;
   s.nightDim    = 1;
   s.alertToasts = 1;
 }

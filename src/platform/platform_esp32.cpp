@@ -116,12 +116,27 @@ void logf(const char * fmt, ...) {
 
 void setBacklight(uint8_t pct) {
   if (pct > 100) pct = 100;
+  // Sur cette Sunton, le LEDC ne reproduit pas le niveau du GPIO :
+  // digitalWrite(HIGH) est plein feu, un rapport « 100 % » laisse l'écran sombre.
+  // À partir de 80 % on reste en continu, identique au flash de démarrage.
+  if (pct >= 80) {
+#if !defined(VN_QEMU)
+    ledcDetachPin(VN_PIN_BACKLIGHT);
+#endif
+    pinMode(VN_PIN_BACKLIGHT, OUTPUT);
+    digitalWrite(VN_PIN_BACKLIGHT, HIGH);
+    return;
+  }
   uint32_t duty = (uint32_t)pct * 255 / 100;
+  if (duty < 40) duty = 40;
 #if defined(VN_QEMU)
-  digitalWrite(VN_PIN_BACKLIGHT, duty ? HIGH : LOW);
+  digitalWrite(VN_PIN_BACKLIGHT, HIGH);
 #elif ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcAttach(VN_PIN_BACKLIGHT, 1000, 8);
   ledcWrite(VN_PIN_BACKLIGHT, duty);
 #else
+  ledcSetup(VN_BL_CHANNEL, 1000, 8);
+  ledcAttachPin(VN_PIN_BACKLIGHT, VN_BL_CHANNEL);
   ledcWrite(VN_BL_CHANNEL, duty);
 #endif
 }
