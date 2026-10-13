@@ -189,10 +189,12 @@ stl/
   front-case.stl    # façade + logement du circuit + découpe USB
   back-cover.stl    # capot arrière plat avec trous de fixation murale (en trou de serrure) + plots de vissage
   desk-stand.stl    # cale vissée sur le capot arrière pour l'usage bureau
+  sunton-4827-stand.stl   # stand fermé : coque + capot clipsé + pied 18° (trois corps)
 
 openscad/
   sunton-4827s043-desk-monitor.scad   # source paramétrable
 
+tools/make_stand.py # source du stand fermé
 render-preview.py   # génère docs/preview.png
 ```
 
@@ -230,6 +232,26 @@ Puis régénérer les STL (OpenSCAD ou `docker run openscad/openscad:latest`).
 
 > Pour un affichage tête en bas dans le boîtier (USB du mauvais côté), flasher la variante
 > `esp32-4827s043c-180` (voir « Matériel »).
+
+## Stand fermé
+
+La carte est entièrement enfermée (coque + capot clipsé) et se pose dans un pied à 18°.
+La fiche USB-C se branche sur le côté gauche. La photo ci-dessous est une vue du STL, pas un objet déjà imprimé.
+
+![Stand fermé](docs/stand-photo.png)
+
+```
+stl/sunton-4827-stand.stl
+tools/make_stand.py
+```
+
+Impression sans supports, couche 0,2 mm, 3 périmètres, 15 à 20 % de remplissage :
+
+- coque : fenêtre contre le plateau
+- capot : face extérieure contre le plateau, clips vers le haut
+- pied : base contre le plateau
+
+Les trois corps tiennent sur un plateau de 220 × 220 mm. Glisser la carte par l'arrière, écran vers la fenêtre, presser le capot jusqu'au clic, puis poser l'ensemble dans le pied, USB à gauche. Jeu de 0,5 mm. Cotes de la fiche constructeur : si l'USB est à droite, faire un miroir dans le slicer.
 
 ## Données et limites
 
