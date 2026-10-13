@@ -43,7 +43,7 @@ void begin() {
   ledcSetup(VN_BL_CHANNEL, 5000, 8);
   ledcAttachPin(VN_PIN_BACKLIGHT, VN_BL_CHANNEL);
 #endif
-  setBacklight(0);
+  setBacklight(100);
 }
 
 bool fsBegin(bool format) {

@@ -3,7 +3,7 @@
 // Cible : Sunton ESP32-4827S043 (ESP32-S3 N16R8, dalle RGB 480×272, tactile)
 #pragma once
 
-#define VN_VERSION      "1.0.1"
+#define VN_VERSION      "1.0.2"
 #define VN_NAME         "VelohNav Ops"
 
 // ── Écran ────────────────────────────────────────────────────────────

@@ -79,8 +79,8 @@ jour après jour (progression visible dans **Réglages → Prédiction**).
 
 | Version | Tactile | Environnement PlatformIO | Binaire |
 |---|---|---|---|
-| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.0.1.bin` |
-| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.0.1.bin` |
+| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.0.2.bin` |
+| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.0.2.bin` |
 | C monté tête en bas | capacitif, rotation 180° | `esp32-4827s043c-180` | — |
 
 Brochage (dans `src/hal/board.h`), recoupé avec deux références indépendantes
@@ -120,8 +120,8 @@ L'étalonnage détecte seul un axe inversé ou des axes échangés et s'enregist
 ### A. Binaire prêt à flasher (le plus simple)
 
 Télécharger le binaire de sa version de carte :
-[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.0.1.bin) ·
-[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.0.1.bin)
+[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.0.2.bin) ·
+[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.0.2.bin)
 
 **Sans rien installer (Chrome ou Edge)** :
 
@@ -137,7 +137,7 @@ En ligne de commande :
 ```bash
 pip install esptool
 esptool.py --chip esp32s3 --baud 460800 erase_flash
-esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.0.1.bin
+esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.0.2.bin
 ```
 
 ### B. Compilation PlatformIO
@@ -307,10 +307,10 @@ render-preview.py          rendu de l'aperçu du boîtier (docs/preview.png)
 
 ## Dépannage
 
-- **Écran complètement éteint (pas de rétroéclairage)** : le firmware ne tourne pas — depuis la
-  v1.0.1, l'écran s'allume en moins d'une seconde dès qu'il démarre. Débrancher / rebrancher le câble
-  (ou appuyer sur **RST**) après le flashage ; vérifier l'adresse **0x0** ; refaire « Erase Flash »
-  puis « Program » ; essayer un autre câble USB (certains ne transportent que le courant).
+- **Écran complètement éteint** : depuis la 1.0.2 le GPIO 2 est allumé avant l'init de la dalle.
+  Si ça reste noir, ouvrir le série (115200). « PSRAM absente » = mauvaise variante de mémoire :
+  N16R8 (16 Mo, PSRAM octale) → `esp32-4827s043c` ; ancienne carte 8 Mo en PSRAM quad →
+  `esp32-4827s043c-qspi`. Puis RST ou débrancher le câble : sans ça la carte reste en mode flashage.
 - **Écran allumé mais bloqué sur une étape** : l'étape affichée indique où ça coince ; le détail part
   sur le port série (115200 bauds) — par exemple avec la console de <https://espressif.github.io/esptool-js/>
   (bouton « Start » de la partie *Console*) ou `pio device monitor`.

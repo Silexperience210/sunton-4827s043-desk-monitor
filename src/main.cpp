@@ -4,8 +4,10 @@
 //  cœur 1 : boucle LVGL (UI)          cœur 0 : tâche réseau (Wi-Fi, GBFS, météo, flash)
 //  Les deux partagent g_model sous un verrou récursif (plat::modelLock).
 //
-//  Le rétroéclairage s'allume dès que la dalle est prête ; chaque étape du démarrage
-//  s'affiche (et part sur le port série, 115200 bauds) : jamais d'écran noir muet.
+//  Le rétroéclairage (GPIO 2, actif à l'état haut) s'allume avant toute init.
+//  Un échec de la dalle ne doit plus laisser l'écran noir : l'ancien code le
+//  gardait éteint, puis plantait dans ESP_ERROR_CHECK si la PSRAM ou le tampon
+//  de rebond refusait l'allocation.
 #ifdef ARDUINO
 #include <Arduino.h>
 #include <esp_heap_caps.h>
@@ -25,24 +27,34 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 void setup() {
   pinMode(VN_PIN_BACKLIGHT, OUTPUT);
-  digitalWrite(VN_PIN_BACKLIGHT, LOW);              // éteint tant que l'image n'est pas prête
+  digitalWrite(VN_PIN_BACKLIGHT, HIGH);
   Serial.begin(115200);
   delay(20);
   boot::begin();
   Serial.printf("[boot] flash %u Mo \xC2\xB7 PSRAM %u Ko \xC2\xB7 RAM interne libre %u Ko\n",
                 (unsigned)(ESP.getFlashChipSize() >> 20), (unsigned)(ESP.getPsramSize() / 1024),
                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
-  plat::begin();                                    // verrou + rétroéclairage PWM (encore éteint)
+  plat::begin();
+
+#ifndef VN_QEMU
+  if (!psramFound()) {
+    Serial.println("[boot] PSRAM absente. N16R8 : env esp32-4827s043c (OPI). Carte 8 Mo : env esp32-4827s043c-qspi.");
+    plat::setBacklight(100);
+    for (;;) delay(1000);
+  }
+#endif
 
   boot::stage(boot::S_DISPLAY, "Initialisation de l'\xC3\xA9" "cran");
   lv_init();
   lv_disp_t * disp = hal::displayBegin();
+  if (!disp) {
+    Serial.println("[boot] dalle RGB non démarrée, rétroéclairage laissé allumé");
+    plat::setBacklight(100);
+    for (;;) delay(1000);
+  }
   boot::screenOpen();
-  plat::setBacklight(70);                           // l'écran s'allume ici
-  boot::showIncident();                             // cause d'un redémarrage anormal, s'il y en a eu un
-  if (!psramFound())
-    boot::fatal("PSRAM introuvable", "Carte attendue : ESP32-4827S043 N16R8 (8 Mo de PSRAM)");
-
+  plat::setBacklight(100);
+  boot::showIncident();
   boot::stage(boot::S_STORAGE, "Ouverture du stockage");
   if (!plat::fsBegin(false)) {
     boot::stage(boot::S_STORAGE, "Premier d\xC3\xA9marrage : pr\xC3\xA9paration de la m\xC3\xA9moire (jusqu'\xC3\xA0 30 s)");
