@@ -265,11 +265,13 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core
-./test_core ../docs/donnees     # 378 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage
+./test_core ../docs/donnees     # 523 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+                                 # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil
 ./sim ../docs/donnees /tmp/captures   # scénario tactile, captures, audit des zones tactiles, étalonnage
 ./sim ../docs/donnees /tmp/boot boot              # premier démarrage : sans heure, sans Wi-Fi, sans données
 ./sim ../docs/donnees /tmp/boot2 boot-wifi-ko     # réseau enregistré mais injoignable
 ./sim ../docs/donnees /tmp/totaux totaux          # totaux du tableau de bord, sans historique (audit des chiffres)
+./sim ../docs/donnees /tmp/ops ops                # écrans d'exploitation : fraîcheur, provenance, ingestion, 24 h, « inhabituel »
 ```
 
 `./sim <dossier-json> <sortie> totaux` imprime les totaux calculés par le **code du firmware**
@@ -278,10 +280,27 @@ validité : c'est l'outil d'audit des chiffres affichés — à confronter à un
 le **même** instantané de flux (`docs/donnees/`, ou un relevé frais du GBFS).
 
 `docs/donnees/` contient l'instantané des flux utilisé pour les captures.
-`docs/audit_tactile.txt` liste les 313 éléments cliquables de tous les écrans et fiches : pour
+`docs/audit_tactile.txt` liste les 374 éléments cliquables de tous les écrans et fiches : pour
 chacun, un tap simulé à son emplacement doit atteindre cet élément (0 masqué, aucune cible
 de moins de 24 px). Le simulateur éprouve aussi l'étalonnage sur un panneau résistif aux axes
 échangés et en miroir (erreur résiduelle : 1 px).
+
+### Fiabilité des chiffres
+
+- **Provenance** : toucher une tuile du tableau de bord (ou le bandeau météo) ouvre une feuille qui
+  donne, pour chaque chiffre, le champ exact du flux (`station_status.num_vehicles_available`,
+  `current.temperature_2m`…) ou la règle de calcul, l'horodatage du flux et de sa réception, et pour
+  les estimations la condition de validité. Une donnée absente s'affiche « — » avec sa raison.
+  Les phrases vivent dans `src/core/ops.cpp` ; `test_core` recalcule chaque somme station par station.
+- **Fraîcheur** : bandeau « Données vieilles de X min » quand le dernier `station_status` réussi
+  dépasse le seuil (Réglages : auto = 3 × la période, 3 min au moins ; météo : 3 × 15 min).
+- **Ingestion** (Réglages → Ingestion des flux) : par flux, dernier succès, dernier échec et son
+  code, octets reçus, durée, échecs consécutifs ; NTP et Wi-Fi. Compteurs tenus par la tâche réseau.
+- **Prévision 24 h** (fiche station → 24 h) : même règle que la prévision 2 h, prolongée sur le profil
+  appris ; pointillés là où la confiance du profil est < 50 %.
+- **« Inhabituel »** : écart entre la valeur courante et le profil appris au-delà d'une tolérance
+  (règles en commentaire dans `src/core/model.cpp`, `anomalyStation`), silencieux hors 7 h–22 h et
+  tant que le profil est trop jeune.
 
 ### Démarrage dans l'émulateur ESP32-S3
 
