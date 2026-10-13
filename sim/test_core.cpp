@@ -459,6 +459,24 @@ static void testProvenance(const std::string & dir) {
     CHECK(p.available || (p.missing && p.missing[0]), "%s : absence motivée", p.name);
     CHECK(p.kind != SRC_FEED || (p.field && p.feed), "%s : champ de flux cité", p.name);
   }
+  // Cas discriminant (absent de l'instantané réel, où aucune station fermée ne garde
+  // de vélos) : location suspendue avec 6 vélos à quai, retours suspendus avec 9 bornes.
+  {
+    static Model mc;
+    CHECK(mc.init(), "init provenance (stations suspendues)");
+    InfoRec r3[3] = { mkInfo("1", 49.60f, 6.13f, 20), mkInfo("2", 49.61f, 6.14f, 20), mkInfo("3", 49.62f, 6.15f, 20) };
+    StatusRec s3[3] = { mkStat("1", 5, 20), mkStat("2", 6, 20), mkStat("3", 11, 20) };
+    s3[1].renting = 0;                                   // 6 vélos non louables, 14 bornes
+    s3[2].returning = 0;                                 // 11 vélos louables, 9 bornes refusées
+    mc.applyInfo(r3, 3, now);
+    mc.applyStatus(s3, 3, now);
+    provenance(mc, KPI_BIKES, p);
+    CHECK((int)p.value == 16 && p.count == 2, "vélos dispo hors location suspendue : 5 + 11 = 16 (obtenu %d sur %d)", (int)p.value, p.count);
+    provenance(mc, KPI_DOCKS, p);
+    CHECK((int)p.value == 29 && p.count == 2, "bornes libres hors retours suspendus : 15 + 14 = 29 (obtenu %d sur %d)", (int)p.value, p.count);
+    provenance(mc, KPI_FILL, p);
+    CHECK(fabsf(p.value - 100.f * 16 / 45) < 0.01f, "remplissage 16 ÷ 45 (%.2f)", p.value);
+  }
   // Avec un creux de nuit : l'estimation devient valable et dit d'où vient le parc
   {
     static Model mn;
