@@ -8,8 +8,8 @@ CC  ?= gcc
 CXX ?= g++
 INC  = -I../include -I$(LVGL_DIR)/.. -I$(LVGL_DIR) -I$(AJSON_DIR) -I../src
 DEFS = -DLV_CONF_INCLUDE_SIMPLE -DVN_SIM=1
-CFLAGS   = -O2 -g -Wall -Wno-unused-function $(INC) $(DEFS)
-CXXFLAGS = -O2 -g -std=gnu++17 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers $(INC) $(DEFS)
+CFLAGS   = -O2 -g -Wall -Wno-unused-function -MMD -MP $(INC) $(DEFS)
+CXXFLAGS = -O2 -g -std=gnu++17 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -MMD -MP $(INC) $(DEFS)
 
 LVGL_SRC := $(shell find $(LVGL_DIR)/src -name '*.c')
 APP_C    := $(wildcard ../src/ui/fonts/*.c) $(wildcard ../src/ui/icons/*.c)
@@ -42,6 +42,9 @@ TEST_OBJ := $(patsubst ../%.cpp,$(BUILD)/app/%.o,$(filter ../%,$(TEST_CXX))) \
             $(patsubst %.cpp,$(BUILD)/sim/%.o,$(filter-out ../%,$(TEST_CXX)))
 test_core: $(TEST_OBJ)
 	$(CXX) -o $@ $^ -lm
+
+# dépendances d'en-têtes (-MMD) : un .h modifié recompile ce qui l'inclut
+-include $(APP_OBJ:.o=.d) $(TEST_OBJ:.o=.d)
 
 clean:
 	rm -rf $(BUILD) sim test_core

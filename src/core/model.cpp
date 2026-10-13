@@ -466,7 +466,7 @@ void Model::recompute(int64_t now) {
   // journée ne mesure que le trafic du moment, d'où une validité qui dépend de
   // l'HEURE du pic retenu, pas seulement de la profondeur d'historique.
   int fleet = t.bikesRaw + t.bikesDis, span = 0;
-  int64_t fleetAt = 0;
+  int64_t fleetAt = now;                         // le relevé courant peut être lui-même le maximum (en pleine nuit)
   for (int b = 0; b < count; b++) {
     const NetSample & ns = net[ringIndex(b)];
     if (ns.avail == 0xFFFF) continue;

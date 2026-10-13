@@ -334,6 +334,25 @@ static void testParc() {
     CHECK(m.tot.inUse == 36, "en-trajet = parc − en station (36), obtenu %d", m.tot.inUse);
     CHECK(m.tot.actValid, "activité sur 1 h disponible");
   }
+
+  // (d) en pleine nuit, le relevé courant EST le maximum (les vélos rentrent encore) :
+  //     il doit compter comme creux de nuit, sinon la tuile afficherait « — » chaque nuit.
+  {
+    static Model m;
+    CHECK(m.init(), "init parc (nuit en cours)");
+    const int64_t t0 = 1791842400 + 20 * 3600;             // mardi 20:00
+    const int64_t t1 = t0 + 7 * 3600 + 1800;               // mercredi 03:30
+    m.applyInfo(ir, 3, t0);
+    int last = 0;
+    for (int64_t t = t0; t <= t1; t += 300) {
+      last = 8 + (int)((t - t0) / 1800);                    // remplissage continu jusqu'à 03:30
+      if (last > 20) last = 20;
+      for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, last, 20);
+      m.applyStatus(sr, 3, t);
+    }
+    CHECK(m.tot.inUseValid, "nuit en cours, relevé courant maximal : en-trajet VALIDE");
+    CHECK(m.tot.fleet == 3 * last, "parc = relevé courant (%d), obtenu %d", 3 * last, m.tot.fleet);
+  }
 }
 
 int main(int argc, char ** argv) {
