@@ -4,6 +4,7 @@
 #include "../hal/touch_api.h"
 #include "../platform/platform.h"
 #include "../config.h"
+#include "../core/ops.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -14,6 +15,7 @@ namespace ui {
 
 static lv_obj_t * s_wifiSub, * s_srcSub, * s_srcBadge, * s_refSub, * s_learnSub, * s_learnBar, * s_confSub;
 static lv_obj_t * s_memSub, * s_fsSub, * s_upSub, * s_resetBtn, * s_touchSub;
+static lv_obj_t * s_freshSub, * s_ingSub;
 static uint32_t s_resetArmed = 0;
 
 static lv_obj_t * section(lv_obj_t * parent, const char * title) {
@@ -109,10 +111,23 @@ static void refresh() {
   fmtClock(c2, sizeof(c2), g_model.feedUpdated);
   snprintf(b, sizeof(b), "GBFS v3 \xC2\xB7 api.cyclocity.fr \xC2\xB7 flux de %s, re\xC3\xA7u %s", c2, a);
   lv_label_set_text(s_srcSub, b);
-  bool live = g_model.lastUpdate && t - g_model.lastUpdate <= (int64_t)g_set.refreshSec * 3 + 30;
+  bool live = g_model.lastUpdate && !vn::isStale(g_model.lastUpdate, t, vn::staleThresholdS(g_set));
   badgeSet(s_srcBadge, live ? "LIVE" : (g_model.fetchErrors ? "ERREUR" : "ATTENTE"), live ? T_GOOD : (g_model.fetchErrors ? T_BAD : T_WARN));
   snprintf(b, sizeof(b), "Flux station_status toutes les %d s \xC2\xB7 dernier cycle %u ms", g_set.refreshSec, (unsigned)g_model.fetchMs);
   lv_label_set_text(s_refSub, b);
+  fmtDur(a, sizeof(a), vn::staleThresholdS(g_set) / 60);
+  snprintf(b, sizeof(b), "Bandeau si station_status a plus de %s%s", a,
+           g_set.staleMin ? "" : " (auto : 3 \xC3\x97 la p\xC3\xA9riode, 3 min au moins)");
+  lv_label_set_text(s_freshSub, b);
+  {
+    int bad = 0, worst = -1;
+    for (int f = 0; f < vn::FEED_COUNT; f++) if (ns.feed[f].fails) { bad++; if (worst < 0 || ns.feed[f].fails > ns.feed[worst].fails) worst = f; }
+    if (!bad) snprintf(b, sizeof(b), "4 flux suivis \xC2\xB7 aucun \xC3\xA9" "chec en cours \xC2\xB7 NTP %s", ns.timeOk ? "synchronis\xC3\xA9" : "non synchronis\xC3\xA9");
+    else snprintf(b, sizeof(b), "%s : %u \xC3\xA9" "chec%s cons\xC3\xA9" "cutif%s", vn::feedName(worst), (unsigned)ns.feed[worst].fails,
+                  ns.feed[worst].fails > 1 ? "s" : "", ns.feed[worst].fails > 1 ? "s" : "");
+    lv_label_set_text(s_ingSub, b);
+    lv_obj_set_style_text_color(s_ingSub, C(bad ? HX_WARN : HX_TEXT2), 0);
+  }
 
   int days = g_model.learnSince ? (int)((t - g_model.learnSince) / 86400) : 0;
   fmtInt(a, sizeof(a), (int)g_model.learnSamples);
@@ -169,6 +184,27 @@ static void build(lv_obj_t * root) {
   }, 30);
   lv_obj_set_width(seg, 176);
   segSet(seg, cur, false);
+  // Seuil du bandeau « données vieilles » (0 = auto)
+  r = srow(s1, &ic_clock_16, "Alerte de fra\xC3\xAE" "cheur", "", &s_freshSub, 150);
+  static const char * FL[4] = { "Auto", "5 min", "10 min", "30 min" };
+  static const uint8_t FV[4] = { 0, 5, 10, 30 };
+  int fcur = 0;
+  for (int k = 0; k < 4; k++) if (FV[k] == g_set.staleMin) fcur = k;
+  seg = segmented(r, FL, 4, fcur, [](int i) {
+    static const uint8_t V[4] = { 0, 5, 10, 30 };
+    g_set.staleMin = V[i];
+    vn::settingsSave();
+    refresh();
+  }, 30);
+  lv_obj_set_width(seg, 176);
+  segSet(seg, fcur, false);
+  // Tableau d'ingestion (mesures de la tâche réseau)
+  r = srow(s1, &ic_activity_16, "Ingestion des flux", "", &s_ingSub, 300);
+  lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_style_bg_color(r, C(HX_S2), LV_STATE_PRESSED);
+  lv_obj_set_style_bg_opa(r, LV_OPA_COVER, LV_STATE_PRESSED);
+  icon(r, &ic_chevron_right_16, HX_TEXT3);
+  lv_obj_add_event_cb(r, [](lv_event_t *) { openIngest(); }, LV_EVENT_CLICKED, nullptr);
 
   // Seuils
   lv_obj_t * s2 = section(sc, "SEUILS D'ALERTE");

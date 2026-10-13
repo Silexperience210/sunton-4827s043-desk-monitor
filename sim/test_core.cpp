@@ -488,26 +488,30 @@ static int patternAt(int st, int64_t t) {
   if (st == 0) return (int)lroundf(20 * f1);
   if (st == 1) return (int)lroundf(20 * (1.f - f1));
   if (st == 3) return 20;                              // station de 40 places, stable à 20
+  if (st == 4) return 5;                               // station de 10 places, stable à 5
   return 10;
 }
-static const int CAPS[4] = { 20, 20, 20, 40 };
+static const int NS = 5;
+static const int CAPS[NS] = { 20, 20, 20, 40, 10 };
 static void learn(Model & m, int days, InfoRec * ir) {
   const int64_t T0 = 1791842400 - 86400 * 7;
   ir[0] = mkInfo("1", 49.60f, 6.13f, 20); ir[1] = mkInfo("2", 49.61f, 6.14f, 20);
   ir[2] = mkInfo("3", 49.62f, 6.15f, 20); ir[3] = mkInfo("4", 49.63f, 6.16f, 40);
-  m.applyInfo(ir, 4, T0);
-  StatusRec sr[4];
+  ir[4] = mkInfo("5", 49.64f, 6.17f, 10);
+  m.applyInfo(ir, NS, T0);
+  StatusRec sr[NS];
   for (int64_t t = T0; t < T0 + (int64_t)days * 86400; t += 300) {
-    for (int s = 0; s < 4; s++) sr[s] = mkStat(ir[s].sid, patternAt(s, t), CAPS[s]);
-    m.applyStatus(sr, 4, t);
+    for (int s = 0; s < NS; s++) sr[s] = mkStat(ir[s].sid, patternAt(s, t), CAPS[s]);
+    m.applyStatus(sr, NS, t);
   }
 }
-static void setAll(Model & m, InfoRec * ir, int64_t t, int st3 = -1, int st4 = -1) {
-  StatusRec sr[4];
-  for (int s = 0; s < 4; s++) sr[s] = mkStat(ir[s].sid, patternAt(s, t), CAPS[s]);
+static void setAll(Model & m, InfoRec * ir, int64_t t, int st3 = -1, int st4 = -1, int st5 = -1) {
+  StatusRec sr[NS];
+  for (int s = 0; s < NS; s++) sr[s] = mkStat(ir[s].sid, patternAt(s, t), CAPS[s]);
   if (st3 >= 0) sr[2] = mkStat("3", st3, 20);
   if (st4 >= 0) sr[3] = mkStat("4", st4, 40);
-  m.applyStatus(sr, 4, t);
+  if (st5 >= 0) sr[4] = mkStat("5", st5, 10);
+  m.applyStatus(sr, NS, t);
 }
 static int countAlerts(const Model & m, int type, int st) {
   int c = 0;
@@ -520,7 +524,7 @@ static void testProjection24() {
   settingsDefaults(g_set);
   static Model m;
   CHECK(m.init(), "init 24 h");
-  InfoRec ir[4];
+  InfoRec ir[NS];
   learn(m, 8, ir);
   const int64_t tq = 1791842400 + 86400 + 6 * 3600 + 30 * 60;   // mercredi 14/10 06:30
   setAll(m, ir, tq);
@@ -546,7 +550,7 @@ static void testProjection24() {
   // Profil d'un seul jour : la courbe existe mais chaque créneau est signalé peu fiable
   static Model y;
   CHECK(y.init(), "init 24 h (jeune)");
-  InfoRec iy[4];
+  InfoRec iy[NS];
   learn(y, 1, iy);                                               // mardi seulement
   const int64_t tw = 1791842400 - 86400 * 6 + 10 * 3600;        // mercredi 07/10 10:00
   setAll(y, iy, tw);
@@ -574,7 +578,7 @@ static void testAnomaly() {
   settingsDefaults(g_set);
   static Model m;
   CHECK(m.init(), "init écart");
-  InfoRec ir[4];
+  InfoRec ir[NS];
   learn(m, 8, ir);
   // Mercredi 14/10 10:00 : relevé « normal » qui ouvre la tranche (le profil est alimenté
   // avec la valeur habituelle), puis relevé de test dans la même tranche (profil intact).
@@ -590,9 +594,10 @@ static void testAnomaly() {
   CHECK(s3.anom == AN_NORMAL && countAlerts(m, AL_UNUSUAL, 2) == 0, "écart = tolérance (14 vs 10 ± 4) : silence");
   setAll(m, ir, t10 + 120, 15);
   CHECK(s3.anom == AN_HIGH && countAlerts(m, AL_UNUSUAL, 2) == 1, "écart > tolérance (15 vs 10 ± 4) : alerte « au-dessus »");
-  int v = -999;
-  for (int k = 0; k < m.nAlerts; k++) if (m.alerts[k].type == AL_UNUSUAL && m.alerts[k].st == 2) v = m.alerts[k].value;
+  int v = -999, sev = -1;
+  for (int k = 0; k < m.nAlerts; k++) if (m.alerts[k].type == AL_UNUSUAL && m.alerts[k].st == 2) { v = m.alerts[k].value; sev = m.alerts[k].sev; }
   CHECK(v == 5 && m.alertCount[AL_UNUSUAL] == 1, "alerte : écart signé +5 (%d)", v);
+  CHECK(sev == 0, "alerte « inhabituel » de sévérité info (hors priorités d'intervention) : %d", sev);
   setAll(m, ir, t10 + 180, 6);
   CHECK(s3.anom == AN_NORMAL, "6 vs 10 ± 4 : silence");
   setAll(m, ir, t10 + 240, 5);
@@ -601,6 +606,12 @@ static void testAnomaly() {
   CHECK(s4.anom == AN_NORMAL, "40 places : 28 vs 20 ± 8 → silence (pas d'alerte pour 8 vélos)");
   setAll(m, ir, t10 + 290, -1, 29);
   CHECK(s4.anom == AN_HIGH, "40 places : 29 vs 20 ± 8 → alerte");
+  // Petite station : 20 % de 10 places = 2 vélos, c'est le plancher de 4 vélos qui s'applique
+  const Station & s5 = m.st[4];
+  setAll(m, ir, t10 + 295, -1, -1, 8);
+  CHECK(s5.anomTol == 4 && s5.anom == AN_NORMAL, "10 places : 8 vs 5 → silence, plancher ± 4 (± %d)", s5.anomTol);
+  setAll(m, ir, t10 + 298, -1, -1, 10);
+  CHECK(s5.anom == AN_HIGH, "10 places : 10 vs 5 ± 4 → alerte");
   // Hors heures d'activité : silence, même pour un écart énorme
   const int64_t t23 = 1791842400 + 86400 + 23 * 3600;
   setAll(m, ir, t23);
@@ -609,7 +620,7 @@ static void testAnomaly() {
   // Profil trop jeune : silence, même pour un écart énorme
   static Model y;
   CHECK(y.init(), "init écart (jeune)");
-  InfoRec iy[4];
+  InfoRec iy[NS];
   learn(y, 1, iy);
   const int64_t tw = 1791842400 - 86400 * 6 + 10 * 3600;        // mercredi 07/10 10:00, 1 jour appris
   setAll(y, iy, tw);

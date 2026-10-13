@@ -7,9 +7,14 @@ reseau     OK    59x47  @( 30,107)  Carte
 reseau     OK    59x47  @( 30,154)  Stations
 reseau     OK    59x47  @( 30,201)  Alertes
 reseau     OK    59x47  @( 30,248)  Réglages
-reseau     OK   420x236 @(269,153)  VÉLOS DISPO
-reseau     OK   240x98  @(187, 92)  VÉLOS DISPONIBLES · 24 H
-reseau     OK   158x98  @(392, 92)  ÉQUILIBRE
+reseau     OK   420x236 @(269,153)  [icône]
+reseau     OK    96x74  @(115, 80)  VÉLOS DISPO
+reseau     OK    96x74  @(217, 80)  EN TRAJET
+reseau     OK    97x74  @(320, 80)  BORNES LIB.
+reseau     OK    97x74  @(423, 80)  VÉLOS HS
+reseau     OK   240x98  @(187,172)  VÉLOS DISPONIBLES · 24 H
+reseau     OK   158x98  @(392,172)  ÉQUILIBRE
+reseau     OK   404x36  @(269,245)  13°
 reseau     OK   402x30  @(269,248)  Schluechthaus
 reseau     OK   402x30  @(269,248)  Kolleisch
 reseau     OK   402x30  @(269,248)  Bei der Auer
@@ -197,14 +202,51 @@ alertes    OK    59x47  @( 30,154)  Stations
 alertes    OK    59x47  @( 30,201)  Alertes
 alertes    OK    59x47  @( 30,248)  Réglages
 alertes    OK   110x30  @(407, 68)  Transferts
-alertes    OK   105x32  @(120,111)  Toutes 40
-alertes    OK   105x32  @(219,111)  Ruptures 12
-alertes    OK   106x32  @(318,111)  Prévisions 2
-alertes    OK   106x32  @(418,111)  Maintenance 26
+alertes    OK    85x32  @(110,111)  Toutes 76
+alertes    OK    85x32  @(189,111)  Ruptures 12
+alertes    OK    86x32  @(268,111)  Prévisions 2
+alertes    OK    86x32  @(348,111)  Maint. 26
+alertes    OK    86x32  @(428,111)  Inhabituel 36
 alertes    OK   404x138 @(269,202)  [icône]
 alertes    OK   402x44  @(269,156)  [icône]
 alertes    OK   402x44  @(269,200)  [icône]
 alertes    OK   402x44  @(269,244)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
+alertes    OK   402x44  @(269,248)  [icône]
 alertes    OK   402x44  @(269,248)  [icône]
 alertes    OK   402x44  @(269,248)  [icône]
 alertes    OK   402x44  @(269,248)  [icône]
@@ -251,10 +293,15 @@ reglages   OK    59x47  @( 30,201)  Alertes
 reglages   OK    59x47  @( 30,248)  Réglages
 reglages   OK   420x236 @(269,153)  RÉSEAU & DONNÉES
 reglages   OK   402x57  @(269, 72)  [icône]
-reglages   OK    48x30  @(307,189)  30 s
-reglages   OK    48x30  @(349,189)  1 min
-reglages   OK    49x30  @(392,189)  2 min
-reglages   OK    49x30  @(435,189)  5 min
+reglages   OK    48x30  @(307,196)  30 s
+reglages   OK    48x30  @(349,196)  1 min
+reglages   OK    49x30  @(392,196)  2 min
+reglages   OK    49x30  @(435,196)  5 min
+reglages   OK    48x30  @(307,251)  Auto
+reglages   OK    48x30  @(349,251)  5 min
+reglages   OK    49x30  @(392,251)  10 min
+reglages   OK    49x30  @(435,251)  30 min
+reglages   OK   402x46  @(269,240)  [icône]
 reglages   OK    28x28  @(381,249)  [icône]
 reglages   OK    28x28  @(445,249)  [icône]
 reglages   OK    28x28  @(380,249)  [icône]
@@ -276,6 +323,7 @@ fiche      OK   412x234 @(269,154)  VIDE
 fiche      OK   411x214 @(270,159)  VIDE
 fiche      OK   141x30  @(147,237)  Voir sur la carte
 fiche      OK   110x30  @(280,237)  Transferts
+fiche      OK    72x30  @(379,237)  24 h
 fiche      OK    32x32  @(454, 58)  [icône]
 transferts OK*  480x272 @(239,135)  
 transferts OK   412x234 @(269,154)  Transferts suggérés
@@ -293,6 +341,19 @@ transferts OK   254x25  @(243,242)  Belle Etoile
 transferts OK   254x25  @(243,242)  Itzig Village/Place Manderscheid
 transferts OK   254x25  @(243,242)  Leon XIII
 transferts OK    32x32  @(454, 58)  [icône]
+provenance OK*  480x272 @(239,135)  
+provenance OK   412x234 @(269,154)  Provenance · vélos disponibles
+provenance OK   411x214 @(270,159)  Provenance · vélos disponibles
+provenance OK    32x32  @(454, 58)  [icône]
+ingestion  OK*  480x272 @(239,135)  
+ingestion  OK   412x234 @(269,154)  Ingestion des flux
+ingestion  OK   411x214 @(270,159)  Ingestion des flux
+ingestion  OK    32x32  @(454, 58)  [icône]
+prev24     OK*  480x272 @(239,135)  
+prev24     OK   412x234 @(269,154)  Prévision 24 h
+prev24     OK   411x214 @(270,159)  Prévision 24 h
+prev24     OK   123x30  @(138,237)  Retour à la fiche
+prev24     OK    32x32  @(454, 58)  [icône]
 wifi       OK*  480x272 @(239,135)  
 wifi       OK   412x234 @(269,154)  Réseau Wi-Fi
 wifi       OK   411x214 @(270,159)  Réseau Wi-Fi
@@ -314,4 +375,4 @@ tactile    OK   104x30  @(153,242)  Étalonner
 tactile    OK    56x30  @(241,242)  Usine
 tactile    OK   100x30  @(327,242)  Terminer
 
-Bilan : 313 éléments joignables, 0 injoignables, 0 petites cibles (< 24 px)
+Bilan : 374 éléments joignables, 0 injoignables, 0 petites cibles (< 24 px)

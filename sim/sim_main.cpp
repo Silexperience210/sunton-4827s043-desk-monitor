@@ -22,11 +22,14 @@
 #include <sys/stat.h>
 #include <pthread.h>
 #include "../src/net/net.h"
+#include "../src/core/ops.h"
 #include <string>
+#include <time.h>
 
 namespace ui { lv_obj_t * debugToast(); int debugTab(); }
 namespace sim { extern int64_t g_epoch0; extern uint32_t g_ms; extern bool g_fetching; extern const char * g_fsDir;
-                extern int g_wifiState; extern bool g_timeOk; extern const char * g_stage; }
+                extern int g_wifiState; extern bool g_timeOk; extern const char * g_stage;
+                extern vn::FeedStat g_feed[vn::FEED_COUNT]; extern int64_t g_timeSyncAt; }
 using namespace vn;
 
 static uint16_t s_fb[480 * 272];
@@ -169,10 +172,12 @@ static void run(int ms) {
     plat::modelUnlock();
   }
 }
+static bool s_namedShots = false;            // scénario « ops » : le nom est le nom de fichier
 static void shot(const char * name) {
   run(40);
   char f[512];
-  snprintf(f, sizeof(f), "%s/%02d_%s.ppm", s_out.c_str(), s_shot++, name);
+  if (s_namedShots) snprintf(f, sizeof(f), "%s/%s.ppm", s_out.c_str(), name);
+  else snprintf(f, sizeof(f), "%s/%02d_%s.ppm", s_out.c_str(), s_shot++, name);
   FILE * fp = fopen(f, "wb");
   if (!fp) { fprintf(stderr, "impossible d'écrire %s\n", f); exit(1); }
   fprintf(fp, "P6\n480 272\n255\n");
@@ -312,6 +317,34 @@ static void synthHistory(Model & m, int64_t now, const StatusRec * recs, int nre
   }
 }
 
+
+// ── Compteurs d'ingestion du simulateur : ce qu'il a RÉELLEMENT lu ────
+// Pas de réseau ici : « octets » = taille du fichier JSON, « ms » = durée mesurée
+// de la lecture + analyse par le même parseur que la carte (horloge monotone).
+static uint32_t msSince(const timespec & a) {
+  timespec b; clock_gettime(CLOCK_MONOTONIC, &b);
+  return (uint32_t)((b.tv_sec - a.tv_sec) * 1000 + (b.tv_nsec - a.tv_nsec) / 1000000);
+}
+static void simFeeds(const std::string & in, int64_t now) {
+  static const char * FILES[vn::FEED_COUNT] = { "station_status.json", "station_information.json", "vehicle_types.json", "weather.json" };
+  static StatusRec sr[VN_MAX_ST];
+  static InfoRec ir[VN_MAX_ST];
+  for (int f = 0; f < vn::FEED_COUNT; f++) {
+    timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
+    auto v = readFile(in + "/" + FILES[f]);
+    bool ok = false;
+    ElecTypes et; Weather w; int64_t lu;
+    switch (f) {
+      case vn::FEED_STATUS: ok = gbfsParseStatus(v.data(), v.size(), sr, VN_MAX_ST, et, &lu) > 0; break;
+      case vn::FEED_INFO: ok = gbfsParseInfo(v.data(), v.size(), ir, VN_MAX_ST) > 0; break;
+      case vn::FEED_TYPES: ok = gbfsParseTypes(v.data(), v.size(), et); break;
+      default: ok = wxParse(v.data(), v.size(), w); break;
+    }
+    uint32_t ms = msSince(t0);
+    if (ok) vn::ingestOk(sim::g_feed[f], now, (uint32_t)v.size(), ms);
+    else vn::ingestErr(sim::g_feed[f], now, vn::ING_E_PARSE, (uint32_t)v.size(), ms);
+  }
+}
 
 // ── Scénario « totaux » : les chiffres du tableau de bord sur un instantané ──
 // Sert à confronter, chiffre par chiffre, ce que le firmware calcule et ce que
@@ -454,6 +487,118 @@ static int bootScenario(const std::string & in, const char * variant) {
   return (wifiOk && dashOk) ? 0 : 3;
 }
 
+// ── Scénario « ops » : captures des écrans d'exploitation (lot 1) ────
+// Noms de fichiers explicites ; chaque étape vérifie aussi ce qu'elle montre.
+static lv_obj_t * clickableText(const char * txt) {
+  lv_obj_t * o = findClickableWithText(lv_layer_top(), txt);
+  return o ? o : findClickableWithText(lv_scr_act(), txt);
+}
+static void tapObj(lv_obj_t * o) {
+  if (!o) { printf("  (cible introuvable)\n"); return; }
+  lv_obj_scroll_to_view_recursive(o, LV_ANIM_OFF);
+  run(50);
+  lv_area_t a; lv_obj_get_coords(o, &a);
+  tap((a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2);
+}
+static bool textVisible(lv_obj_t * o, const char * prefix) {
+  if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return false;
+  if (lv_obj_check_type(o, &lv_label_class) && strncmp(lv_label_get_text(o), prefix, strlen(prefix)) == 0) return true;
+  for (uint32_t i = 0; i < lv_obj_get_child_cnt(o); i++) if (textVisible(lv_obj_get_child(o, i), prefix)) return true;
+  return false;
+}
+static int opsScenario(const std::string & in, StatusRec * recs, int ns) {
+  s_namedShots = true;
+  int fails = 0;
+  auto expect = [&](bool c, const char * what) { printf("  %s %s\n", c ? "✓" : "ÉCHEC", what); if (!c) fails++; };
+  run(900);
+  // 1. Fraîcheur : 12 minutes sans relevé réussi (seuil auto : 3 min)
+  sim::g_ms += 12 * 60 * 1000;
+  run(600);
+  shot("01_fraicheur");
+  expect(textVisible(lv_scr_act(), "Données vieilles de 12 min"), "bandeau « Données vieilles de 12 min » affiché");
+  // un relevé frais arrive : le bandeau disparaît
+  { plat::LockGuard g; g_model.applyStatus(recs, ns, plat::now()); g_model.feedUpdated = plat::now() - 20; }
+  simFeeds(in, plat::now());
+  run(600);
+  expect(!textVisible(lv_scr_act(), "Données vieilles"), "bandeau retiré après un relevé frais");
+  shot("01b_fraicheur_retablie");
+  // 2. Provenance : tap réel sur les tuiles « Vélos dispo » et « En trajet »
+  tap(60 + 8 + 48, 36 + 8 + 37);
+  run(500);
+  expect(ui::sheetIsOpen() && textVisible(lv_layer_top(), "Provenance · vélos disponibles"), "tap sur VÉLOS DISPO → provenance");
+  shot("02_provenance_velos");
+  drag(300, 240, 300, 90, 10);
+  shot("02b_provenance_velos_suite");
+  ui::sheetClose(); run(300);
+  tap(60 + 8 + 48 + 102, 36 + 8 + 37);
+  run(500);
+  expect(textVisible(lv_layer_top(), "Provenance · vélos en trajet"), "tap sur EN TRAJET → provenance");
+  shot("02c_provenance_en_trajet");
+  ui::sheetClose(); run(300);
+  // 3. Tableau d'ingestion depuis Réglages
+  tap(30, 36 + 4 * 47 + 20);
+  run(500);
+  {
+    lv_obj_t * ing = clickableText("Ingestion des flux");
+    if (ing) { lv_obj_scroll_to_view_recursive(ing, LV_ANIM_OFF); run(100); }
+    shot("03_reglages_fraicheur_ingestion");
+    tapObj(ing);
+  }
+  run(500);
+  expect(textVisible(lv_layer_top(), "Ingestion des flux"), "Réglages → Ingestion des flux");
+  shot("03b_ingestion");
+  drag(300, 240, 300, 60, 10);
+  shot("03c_ingestion_suite");
+  ui::sheetClose(); run(300);
+  // 4. Prévision 24 h depuis la fiche station (bouton « 24 h »)
+  int st = g_model.nAlerts ? g_model.alerts[0].st : 0;
+  ui::openStation(st); run(500);
+  tapObj(clickableText("24 h"));
+  run(600);
+  expect(textVisible(lv_layer_top(), "Prévision 24 h"), "fiche → 24 h");
+  shot("04_prevision_24h");
+  drag(300, 240, 300, 80, 10);
+  shot("04b_prevision_24h_suite");
+  ui::sheetClose(); run(300);
+  // Profil jeune (illustration) : profil de cette station réduit à 1 relevé par créneau
+  // au-delà des 10 prochaines heures — cette partie de la courbe doit passer en pointillés.
+  {
+    plat::LockGuard g;
+    struct tm lt; plat::localTime(plat::now(), &lt);
+    int dow0 = lt.tm_wday, q0 = (lt.tm_hour * 60 + lt.tm_min) / 15;
+    for (int k = 40; k < 7 * 96 - 8; k++) {
+      int q = q0 + k, d = (dow0 + q / 96) % 7;
+      g_model.prof[(size_t)st * 7 * 96 + d * 96 + q % 96].n = 1;
+    }
+  }
+  ui::openForecast24(st); run(600);
+  shot("04c_prevision_24h_profil_jeune");
+  ui::sheetClose(); run(300);
+  // 5. Alertes, filtre « Inhabituel » (le libellé porte le compteur)
+  tap(30, 36 + 3 * 47 + 20);
+  run(500);
+  {
+    char b[24];
+    snprintf(b, sizeof(b), "Inhabituel %d", g_model.alertCount[AL_UNUSUAL]);
+    tapObj(clickableText(b));
+  }
+  run(500);
+  expect(g_model.alertCount[AL_UNUSUAL] > 0, "au moins une alerte « inhabituel » sur ces données");
+  shot("05_alertes_inhabituel");
+  // 6. Fiche d'une station inhabituelle : la ligne d'écart
+  int an = -1;
+  for (int k = 0; k < g_model.nAlerts && an < 0; k++) if (g_model.alerts[k].type == AL_UNUSUAL) an = g_model.alerts[k].st;
+  if (an >= 0) {
+    ui::openStation(an); run(500);
+    drag(300, 240, 300, 40, 10);
+    expect(textVisible(lv_layer_top(), "Inhabituel : "), "fiche : ligne « Inhabituel : N vélos contre P attendus (± T) »");
+    shot("06_fiche_ecart");
+    ui::sheetClose(); run(300);
+  }
+  printf("Scénario ops : %d échec(s)\n", fails);
+  return fails ? 4 : 0;
+}
+
 static int realMain(int argc, char ** argv) {
   if (argc < 3) { fprintf(stderr, "usage : sim <json_dir> <out_dir>\n"); return 1; }
   std::string in = argv[1];
@@ -461,7 +606,8 @@ static int realMain(int argc, char ** argv) {
   mkdir(s_out.c_str(), 0755);              // dossier de sortie créé au besoin
   sim::g_fsDir = "/tmp/vn_sim_fs";
   if (system("rm -rf /tmp/vn_sim_fs")) {}
-  if (argc > 3) {
+  bool ops = argc > 3 && strcmp(argv[3], "ops") == 0;
+  if (argc > 3 && !ops) {
     if (strcmp(argv[3], "totaux") == 0) return totauxScenario(in);
     return bootScenario(in, argv[3]);
   }
@@ -528,6 +674,9 @@ static int realMain(int argc, char ** argv) {
   g_model.fetchMs = 1240;
   g_model.recompute(now);
   g_model.nEv = 0;
+  sim::g_timeSyncAt = now - 2 * 3600;          // heure « synchronisée » au démarrage simulé
+  simFeeds(in, now);
+  if (ops) return opsScenario(in, recs, ns);
   printf("Totaux : %d vélos dispo, %d bornes, %d HS, %d stations ouvertes, équilibre %.0f %%, alertes %d, transferts %d\n",
          g_model.tot.bikes, g_model.tot.docks, g_model.tot.bikesDis, g_model.tot.open, g_model.tot.balancePct,
          g_model.nAlerts, g_model.nTr);
@@ -651,6 +800,9 @@ static int realMain(int argc, char ** argv) {
   run(300);
   ui::openStation(g_model.alerts[0].st); run(500); audit("fiche", rep); ui::sheetClose(); run(300);
   ui::openTransfers(); run(500); audit("transferts", rep); ui::sheetClose(); run(300);
+  ui::openProvenance(ui::PG_BIKES); run(500); audit("provenance", rep); ui::sheetClose(); run(300);
+  ui::openIngest(); run(500); audit("ingestion", rep); ui::sheetClose(); run(300);
+  ui::openForecast24(g_model.alerts[0].st); run(500); audit("prev24", rep); ui::sheetClose(); run(300);
   ui::openWifi(); run(900); audit("wifi", rep);
   tap(240, 36 + 14 + 70); run(500); audit("wifi-clav", rep); ui::sheetClose(); run(300);
   ui::openTouchTest(false); run(300); audit("tactile", rep);

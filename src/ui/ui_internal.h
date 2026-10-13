@@ -50,4 +50,18 @@ const lv_img_dsc_t * wxIcon12(int code);
 // Rafraîchissement de la fiche station ouverte (appelé par la coquille)
 void stationSheetRefresh();
 
+// Bandeau d'avertissement (style « hors ligne ») : icône, titre, message (*msg)
+lv_obj_t * warnStrip(lv_obj_t * parent, const lv_img_dsc_t * ic, const char * title, lv_obj_t ** titleOut, lv_obj_t ** msgOut);
+// Fraîcheur des données : true si station_status ou la météo dépasse son seuil
+// (title / msg remplis pour le bandeau ; minutes d'âge dans *key pour éviter les redessins)
+bool freshness(int64_t now, char * title, size_t tn, char * msg, size_t mn, int * key);
+void dashFreshTick();                          // bandeau du tableau de bord (appelé par la coquille)
+
+// Feuilles d'exploitation (sheet_ops.cpp)
+enum ProvGroup { PG_BIKES, PG_INUSE, PG_DOCKS, PG_DISABLED, PG_WEATHER, PG_COUNT };
+void openProvenance(int group);                // d'où vient ce chiffre (tuiles du tableau de bord)
+void openIngest();                             // tableau d'ingestion (Réglages)
+void openForecast24(int st);                   // prévision 24 h d'une station (fiche station)
+void opsSheetRefresh();                        // mise à jour de la feuille d'exploitation ouverte
+
 } // namespace ui

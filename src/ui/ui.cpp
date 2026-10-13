@@ -5,6 +5,7 @@
 #include "../hal/touch_api.h"
 #include "../platform/platform.h"
 #include "../config.h"
+#include "../core/ops.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -252,7 +253,7 @@ static void updateHeader() {
   int tone;   // 0 live, 1 cache, 2 hors ligne, 3 sync
   if (ns.wifi != net::W_CONNECTED) tone = 2;
   else if (!g_model.lastUpdate) tone = 3;
-  else if (t - g_model.lastUpdate <= (int64_t)g_set.refreshSec * 3 + 30) tone = 0;
+  else if (!vn::isStale(g_model.lastUpdate, t, vn::staleThresholdS(g_set))) tone = 0;   // même seuil que le bandeau
   else tone = 1;
   if (tone != s_dataTone) {
     s_dataTone = tone;
@@ -300,6 +301,53 @@ static void updateHeader() {
     lv_obj_clear_flag(s_offline, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(s_offline);
   } else lv_obj_add_flag(s_offline, LV_OBJ_FLAG_HIDDEN);
+}
+
+// ── Bandeaux d'avertissement ─────────────────────────────────────────
+lv_obj_t * warnStrip(lv_obj_t * parent, const lv_img_dsc_t * ic, const char * title, lv_obj_t ** titleOut, lv_obj_t ** msgOut) {
+  lv_obj_t * s = row(parent, 8);
+  lv_obj_set_height(s, 26);
+  lv_obj_set_style_pad_hor(s, 10, 0);
+  lv_obj_set_style_radius(s, 8, 0);
+  lv_obj_set_style_bg_color(s, C(HX_WARN_BG), 0);
+  lv_obj_set_style_bg_opa(s, 245, 0);
+  lv_obj_set_style_border_color(s, C(HX_WARN), 0);
+  lv_obj_set_style_border_opa(s, 90, 0);
+  lv_obj_set_style_border_width(s, 1, 0);
+  icon(s, ic, HX_WARN);
+  lv_obj_t * t = label(s, &vn_inter_13s, HX_WARN, title);
+  lv_obj_t * m = label(s, &vn_inter_12, HX_TEXT2, "");
+  lv_obj_set_flex_grow(m, 1);
+  lv_label_set_long_mode(m, LV_LABEL_LONG_DOT);
+  lv_obj_set_height(m, lv_font_get_line_height(&vn_inter_12));
+  if (titleOut) *titleOut = t;
+  if (msgOut) *msgOut = m;
+  return s;
+}
+
+// Âge du dernier relevé réussi, comparé au seuil (core/ops : la règle et ses tests)
+bool freshness(int64_t t, char * title, size_t tn, char * msg, size_t mn, int * key) {
+  int thr = vn::staleThresholdS(g_set), wthr = vn::wxStaleThresholdS();
+  bool st = vn::isStale(g_model.lastUpdate, t, thr);
+  bool wx = g_model.wx.valid && vn::isStale(g_model.wx.fetchedAt, t, wthr);
+  int am = st ? (int)(vn::dataAgeS(g_model.lastUpdate, t) / 60) : -1;
+  int wm = wx ? (int)(vn::dataAgeS(g_model.wx.fetchedAt, t) / 60) : -1;
+  if (key) *key = (am + 1) * 100000 + (wm + 1) + thr;
+  if (!st && !wx) return false;
+  char a[24], b[24];
+  if (st) {
+    fmtDur(a, sizeof(a), am);
+    snprintf(title, tn, "Donn\xC3\xA9" "es vieilles de %s", a);
+    fmtDur(a, sizeof(a), thr / 60);
+    if (wx) { fmtDur(b, sizeof(b), wm); snprintf(msg, mn, "seuil %s \xC2\xB7 m\xC3\xA9t\xC3\xA9o : %s", a, b); }
+    else snprintf(msg, mn, "station_status \xC2\xB7 seuil %s", a);
+  } else {
+    fmtDur(a, sizeof(a), wm);
+    snprintf(title, tn, "M\xC3\xA9t\xC3\xA9o vieille de %s", a);
+    fmtDur(a, sizeof(a), wthr / 60);
+    snprintf(msg, mn, "Open-Meteo \xC2\xB7 seuil %s", a);
+  }
+  return true;
 }
 
 // ── Rail ─────────────────────────────────────────────────────────────
@@ -500,6 +548,7 @@ static void tick(lv_timer_t *) {
     } else pressSince = 0;
   }
   updateHeader();
+  if (s_built[TAB_DASH]) dashFreshTick();
   // Nouvelles ruptures → toast (regroupées)
   if (g_model.nEv) {
     if (g_set.alertToasts && !s_splash && g_model.ev[0].st >= 0 && g_model.ev[0].st < g_model.n) {
@@ -519,6 +568,7 @@ static void tick(lv_timer_t *) {
     updateRailBadge();
     if (s_tab >= 0 && DEFS[s_tab]->refresh) DEFS[s_tab]->refresh();
     stationSheetRefresh();
+    opsSheetRefresh();
   }
 }
 
@@ -538,19 +588,9 @@ void init(lv_disp_t * disp) {
   lv_obj_set_pos(s_content, RAIL_W, HEADER_H);
   lv_obj_set_size(s_content, CONTENT_W, CONTENT_H);
   // Bandeau « hors ligne » (vn-strip warn)
-  s_offline = row(scr, 8);
+  s_offline = warnStrip(scr, &ic_wifi_off_16, "Hors ligne", nullptr, &s_offlineLbl);
   lv_obj_set_pos(s_offline, RAIL_W + 8, HEADER_H + 6);
-  lv_obj_set_size(s_offline, CONTENT_W - 16, 26);
-  lv_obj_set_style_pad_hor(s_offline, 10, 0);
-  lv_obj_set_style_radius(s_offline, 8, 0);
-  lv_obj_set_style_bg_color(s_offline, C(0x2A2214), 0);
-  lv_obj_set_style_bg_opa(s_offline, 245, 0);
-  lv_obj_set_style_border_color(s_offline, C(HX_WARN), 0);
-  lv_obj_set_style_border_opa(s_offline, 90, 0);
-  lv_obj_set_style_border_width(s_offline, 1, 0);
-  icon(s_offline, &ic_wifi_off_16, HX_WARN);
-  label(s_offline, &vn_inter_13s, HX_WARN, "Hors ligne");
-  s_offlineLbl = label(s_offline, &vn_inter_12, HX_TEXT2, "");
+  lv_obj_set_width(s_offline, CONTENT_W - 16);
   lv_obj_add_flag(s_offline, LV_OBJ_FLAG_HIDDEN);
 
   buildSplash();

@@ -28,6 +28,7 @@ enum : uint32_t {
   HX_GOOD = 0x2ECC8F, HX_WARN = 0xF2B33D, HX_BAD = 0xF0524A, HX_CLOSED = 0x5C6573,
   HX_ELEC = 0x5AA9FF, HX_TRANSIT = 0xA78BFA, HX_SATS = 0xFFC53D, HX_MECA = 0xC9D1DC,
   HX_MAPBG = 0x0B0D10,
+  HX_WARN_BG = 0x2A2214,     // fond des bandeaux d'avertissement (hors ligne, fraîcheur)
 };
 inline lv_color_t C(uint32_t hex) { return lv_color_hex(hex); }
 

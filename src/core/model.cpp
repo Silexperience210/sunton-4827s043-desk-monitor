@@ -588,7 +588,9 @@ void Model::recompute(int64_t now) {
     if (s.bikesDis >= g_set.maintBikes) add(AL_MAINT_BIKES, 1, i, -1, s.bikesDis);
     if (s.docksDis >= g_set.maintDocks) add(AL_MAINT_DOCKS, 1, i, -1, s.docksDis);
     if (s.frozen) add(AL_FROZEN, 1, i, (int)((now - s.lastChange) / 60), 0);
-    if (s.anom == AN_HIGH || s.anom == AN_LOW) add(AL_UNUSUAL, 1, i, -1, s.bikes - s.anomExp);
+    // Sévérité « info » : un écart au profil est à examiner, pas une intervention — il ne
+    // doit pas évincer les ruptures et la maintenance des priorités du tableau de bord.
+    if (s.anom == AN_HIGH || s.anom == AN_LOW) add(AL_UNUSUAL, 0, i, -1, s.bikes - s.anomExp);
   }
   s_sortModel = this;
   qsort(alerts, nAlerts, sizeof(Alert), alertCmp);

@@ -24,7 +24,7 @@ struct SheetW {
   lv_obj_t * meter, * capL;
   lv_obj_t * chart, * chartMeta;
   lv_obj_t * fcV[4];
-  lv_obj_t * insFlash, * insIc, * insTitle, * insWhy, * insNeed, * insConf;
+  lv_obj_t * insFlash, * insIc, * insTitle, * insWhy, * insNeed, * insConf, * insAnom;
   lv_obj_t * lastMove, * lastRep, * addr;
 };
 static SheetW W;
@@ -169,6 +169,34 @@ static void fill() {
   } else lv_obj_add_flag(W.insNeed, LV_OBJ_FLAG_HIDDEN);
   lv_label_set_text_fmt(W.insConf, "CONFIANCE %d %%", s.conf);
 
+  // Écart au profil appris (règles : Model::recompute / anomalyStation)
+  uint32_t ac = HX_TEXT3;
+  switch (s.anom) {
+    case vn::AN_HIGH: case vn::AN_LOW:
+      snprintf(b, sizeof(b), "Inhabituel : %d v\xC3\xA9lo%s contre %d attendu%s (\xC2\xB1 %d) \xC2\xB7 confiance du profil %d %%",
+               s.bikes, s.bikes > 1 ? "s" : "", s.anomExp, s.anomExp > 1 ? "s" : "", s.anomTol, s.anomConf);
+      ac = HX_WARN;
+      break;
+    case vn::AN_NORMAL:
+      snprintf(b, sizeof(b), "Habituel : %d v\xC3\xA9lo%s contre %d attendu%s (\xC2\xB1 %d) \xC2\xB7 confiance du profil %d %%",
+               s.bikes, s.bikes > 1 ? "s" : "", s.anomExp, s.anomExp > 1 ? "s" : "", s.anomTol, s.anomConf);
+      ac = HX_TEXT2;
+      break;
+    case vn::AN_YOUNG:
+      snprintf(b, sizeof(b), "\xC3\x89" "cart au profil non \xC3\xA9valu\xC3\xA9 : profil trop jeune (confiance %d %%, 50 %% requis)", s.anomConf);
+      break;
+    case vn::AN_NO_PROFILE:
+      snprintf(b, sizeof(b), "\xC3\x89" "cart au profil non \xC3\xA9valu\xC3\xA9 : aucun profil appris pour ce cr\xC3\xA9neau");
+      break;
+    case vn::AN_OFF_HOURS:
+      snprintf(b, sizeof(b), "\xC3\x89" "cart au profil non \xC3\xA9valu\xC3\xA9 hors 7 h\xE2\x80\x93" "22 h");
+      break;
+    default:
+      snprintf(b, sizeof(b), "\xC3\x89" "cart au profil non \xC3\xA9valu\xC3\xA9 : station ferm\xC3\xA9" "e");
+  }
+  lv_label_set_text(W.insAnom, b);
+  lv_obj_set_style_text_color(W.insAnom, C(ac), 0);
+
   char a1[32];
   fmtAgo(a1, sizeof(a1), s.lastChange, t);
   snprintf(b, sizeof(b), "Dernier mouvement d\xC3\xA9tect\xC3\xA9 %s", a1);
@@ -265,6 +293,9 @@ void openStation(int st) {
   W.insWhy = label(ins, &vn_inter_12, HX_TEXT2, "");
   lv_label_set_long_mode(W.insWhy, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(W.insWhy, BW - 18);
+  W.insAnom = label(ins, &vn_inter_12, HX_TEXT3, "");
+  lv_label_set_long_mode(W.insAnom, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(W.insAnom, BW - 18);
   W.insNeed = badge(ins, "", T_GOOD);
 
   // Détails
@@ -279,6 +310,8 @@ void openStation(int st) {
   lv_obj_add_event_cb(bm, [](lv_event_t *) { int s = W.st; sheetClose(); mapFocus(s); }, LV_EVENT_CLICKED, nullptr);
   lv_obj_t * bt = button(btns, "Transferts", &ic_truck_16, B_TONAL, true);
   lv_obj_add_event_cb(bt, [](lv_event_t *) { openTransfers(); }, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t * b24 = button(btns, "24 h", &ic_trend_up_16, B_SECONDARY, true);
+  lv_obj_add_event_cb(b24, [](lv_event_t *) { openForecast24(W.st); }, LV_EVENT_CLICKED, nullptr);
   fill();
 }
 

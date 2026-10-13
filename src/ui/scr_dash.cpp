@@ -28,11 +28,19 @@ static lv_obj_t * s_arc, * s_arcPct, * s_cnt[5];
 static lv_obj_t * s_wxIc, * s_wxTemp, * s_wxLbl, * s_wxScore, * s_fcVal, * s_fcDelta, * s_fcIc;
 static lv_obj_t * s_actChart, * s_actMeta, * s_histChart, * s_histMeta;
 static lv_obj_t * s_prio, * s_prioRows[5], * s_modelLbl;
+static lv_obj_t * s_fresh, * s_freshTitle, * s_freshMsg;
+static int s_freshKey = -1;
 
-static lv_obj_t * kpiTile(lv_obj_t * parent, const lv_img_dsc_t * ic, const char * title, uint32_t col, Kpi & k) {
+// Tap sur une tuile → provenance du chiffre (sheet_ops.cpp)
+static void openProv(lv_event_t * e) { openProvenance((int)(intptr_t)lv_event_get_user_data(e)); }
+
+static lv_obj_t * kpiTile(lv_obj_t * parent, const lv_img_dsc_t * ic, const char * title, uint32_t col, Kpi & k, int group) {
   lv_obj_t * c = card(parent, 7);
   lv_obj_set_flex_grow(c, 1);
   lv_obj_set_height(c, LV_PCT(100));
+  lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_style_bg_color(c, C(HX_S2), LV_STATE_PRESSED);
+  lv_obj_add_event_cb(c, openProv, LV_EVENT_CLICKED, (void *)(intptr_t)group);
   lv_obj_t * head = row(c, 4);
   icon(head, ic, HX_TEXT3);
   lv_obj_t * eb = eyebrow(head, title);
@@ -60,13 +68,19 @@ static void build(lv_obj_t * root) {
   lv_obj_set_scrollbar_mode(sc, LV_SCROLLBAR_MODE_OFF);
   const lv_coord_t W = CONTENT_W - 16;
 
-  // ── Indicateurs clés
+  // ── Fraîcheur : bandeau dans le flux (il décale les tuiles au lieu de les masquer)
+  s_fresh = warnStrip(sc, &ic_clock_16, "", &s_freshTitle, &s_freshMsg);
+  lv_obj_set_width(s_fresh, W);
+  lv_obj_add_flag(s_fresh, LV_OBJ_FLAG_HIDDEN);
+  s_freshKey = -1;
+
+  // ── Indicateurs clés (tap → provenance)
   lv_obj_t * ra = row(sc, 6);
   lv_obj_set_size(ra, W, 74);
-  kpiTile(ra, &ic_bike_12, "V\xC3\x89LOS DISPO", HX_GOOD, s_kpi[0]);
-  kpiTile(ra, &ic_activity_12, "EN TRAJET", HX_ACCENT, s_kpi[1]);
-  kpiTile(ra, &ic_dock_12, "BORNES LIB.", HX_TEXT, s_kpi[2]);
-  kpiTile(ra, &ic_wrench_12, "V\xC3\x89LOS HS", HX_WARN, s_kpi[3]);
+  kpiTile(ra, &ic_bike_12, "V\xC3\x89LOS DISPO", HX_GOOD, s_kpi[0], PG_BIKES);
+  kpiTile(ra, &ic_activity_12, "EN TRAJET", HX_ACCENT, s_kpi[1], PG_INUSE);
+  kpiTile(ra, &ic_dock_12, "BORNES LIB.", HX_TEXT, s_kpi[2], PG_DOCKS);
+  kpiTile(ra, &ic_wrench_12, "V\xC3\x89LOS HS", HX_WARN, s_kpi[3], PG_DISABLED);
 
   // ── Disponibilité 24 h + prévision / équilibre
   lv_obj_t * rb = row(sc, 6);
@@ -140,6 +154,9 @@ static void build(lv_obj_t * root) {
   lv_obj_set_flex_align(rc, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
   lv_obj_set_style_pad_hor(rc, 10, 0);
   lv_obj_set_style_pad_column(rc, 6, 0);
+  lv_obj_add_flag(rc, LV_OBJ_FLAG_CLICKABLE);              // → provenance météo + prévision
+  lv_obj_set_style_bg_color(rc, C(HX_S2), LV_STATE_PRESSED);
+  lv_obj_add_event_cb(rc, openProv, LV_EVENT_CLICKED, (void *)(intptr_t)PG_WEATHER);
   s_wxIc = icon(rc, &ic_cloud_16, HX_TEXT2);
   s_wxTemp = label(rc, &vn_inter_13s, HX_TEXT, "--\xC2\xB0");
   s_wxLbl = label(rc, &vn_inter_12, HX_TEXT2, "M\xC3\xA9t\xC3\xA9o");
@@ -408,6 +425,23 @@ static void refresh() {
   snprintf(b, sizeof(b), "Mise \xC3\xA0 jour %s \xC2\xB7 confiance pr\xC3\xA9vision %d %% \xC2\xB7 profil hebdo appris \xC3\xA0 %.0f %% (%d j)",
            ag, g_model.netConf, g_model.learnPct(), days);
   lv_label_set_text(s_modelLbl, b);
+}
+
+// Bandeau de fraîcheur : réévalué à chaque tick de la coquille (l'âge augmente sans
+// qu'aucune donnée ne change) ; on ne touche aux objets que si le texte change.
+void dashFreshTick() {
+  if (!s_fresh) return;
+  char t[48], m[64];
+  int key = 0;
+  bool on = freshness(now(), t, sizeof(t), m, sizeof(m), &key);
+  if (!on) key = -2;
+  if (key == s_freshKey) return;
+  s_freshKey = key;
+  if (on) {
+    lv_label_set_text(s_freshTitle, t);
+    lv_label_set_text(s_freshMsg, m);
+    lv_obj_clear_flag(s_fresh, LV_OBJ_FLAG_HIDDEN);
+  } else lv_obj_add_flag(s_fresh, LV_OBJ_FLAG_HIDDEN);
 }
 
 const ScreenDef SCR_DASH = { "R\xC3\xA9seau", "TABLEAU DE BORD", &ic_dashboard_20, build, refresh, nullptr };

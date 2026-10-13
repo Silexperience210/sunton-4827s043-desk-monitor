@@ -213,6 +213,10 @@ bool provenance(const Model & m, int kpi, Provenance & p) {
       if (!m.wx.valid) p.missing = "Open-Meteo n'a pas encore r\xC3\xA9pondu";
       p.value = m.wx.temp;
       p.feedAt = p.recvAt = m.wx.fetchedAt;
+      if (m.wx.valid) {
+        snprintf(p.detail, sizeof(p.detail), "Valeur brute : %.1f \xC2\xB0" "C.", m.wx.temp);
+        for (char * c = p.detail; *c; c++) if (*c == '.' && c[1] >= '0' && c[1] <= '9') *c = ',';
+      }
       break;
 
     case KPI_WXSCORE:

@@ -33,6 +33,10 @@ void alertWhy(const vn::Alert & a, char * out, size_t n) {
       fmtDur(d, sizeof(d), a.minutes);
       snprintf(out, n, "Aucun mouvement depuis %s \xE2\x80\x94 v\xC3\xA9rifier la station", d);
       break;
+    case vn::AL_UNUSUAL:      // a.value = écart signé au moment du calcul ; attendu et tolérance : la station
+      snprintf(out, n, "Inhabituel : %d v\xC3\xA9lo%s contre %d attendu%s (\xC2\xB1 %d)",
+               s.bikes, s.bikes > 1 ? "s" : "", s.anomExp, s.anomExp > 1 ? "s" : "", s.anomTol);
+      break;
     case vn::AL_CLOSED:
       snprintf(out, n, "%s", a.value == 1 ? "Location suspendue" : a.value == 2 ? "Retours suspendus"
                                           : (s.installed ? "Station hors service" : "Station non install\xC3\xA9" "e"));
@@ -49,6 +53,7 @@ const lv_img_dsc_t * alertIcon16(uint8_t t) {
     case vn::AL_SOON_FULL: return &ic_trend_up_16;
     case vn::AL_MAINT_BIKES: case vn::AL_MAINT_DOCKS: return &ic_wrench_16;
     case vn::AL_FROZEN: return &ic_clock_16;
+    case vn::AL_UNUSUAL: return &ic_activity_16;
     default: return &ic_ban_16;
   }
 }
@@ -60,6 +65,7 @@ Tone alertTone(const vn::Alert & a) {
     case vn::AL_SOON_EMPTY: return T_WARN;
     case vn::AL_SOON_FULL: return T_ELEC;
     case vn::AL_MAINT_BIKES: case vn::AL_MAINT_DOCKS: case vn::AL_FROZEN: return T_WARN;
+    case vn::AL_UNUSUAL: return T_ELEC;
     default: return T_CLOSED;
   }
 }
@@ -75,12 +81,15 @@ static ARow s_rows[VN_MAX_ALERTS];
 static int s_nRows = 0;
 static lv_obj_t * s_list, * s_seg, * s_planSub, * s_empty;
 static int s_filter = 0;
+static const int NF = 5;
+static const char * FILTERS[NF] = { "Toutes", "Ruptures", "Pr\xC3\xA9visions", "Maint.", "Inhabituel" };
 
 static bool match(const vn::Alert & a) {
   switch (s_filter) {
     case 1: return a.type == vn::AL_EMPTY || a.type == vn::AL_FULL;
     case 2: return a.type == vn::AL_SOON_EMPTY || a.type == vn::AL_SOON_FULL;
-    case 3: return a.type >= vn::AL_MAINT_BIKES;
+    case 3: return a.type >= vn::AL_MAINT_BIKES && a.type <= vn::AL_CLOSED;
+    case 4: return a.type == vn::AL_UNUSUAL;
     default: return true;
   }
 }
@@ -122,17 +131,17 @@ static ARow & makeRow(int i) {
 }
 
 static void refresh() {
-  int cnt[4] = { 0, 0, 0, 0 };
+  int cnt[NF] = { 0, 0, 0, 0, 0 };
   for (int k = 0; k < g_model.nAlerts; k++) {
     const vn::Alert & a = g_model.alerts[k];
     cnt[0]++;
     if (a.type == vn::AL_EMPTY || a.type == vn::AL_FULL) cnt[1]++;
     else if (a.type == vn::AL_SOON_EMPTY || a.type == vn::AL_SOON_FULL) cnt[2]++;
+    else if (a.type == vn::AL_UNUSUAL) cnt[4]++;
     else cnt[3]++;
   }
   char b[96];
-  static const char * L[4] = { "Toutes", "Ruptures", "Pr\xC3\xA9visions", "Maintenance" };
-  for (int k = 0; k < 4; k++) { snprintf(b, sizeof(b), "%s %d", L[k], cnt[k]); segLabel(s_seg, k, b); }
+  for (int k = 0; k < NF; k++) { snprintf(b, sizeof(b), "%s %d", FILTERS[k], cnt[k]); segLabel(s_seg, k, b); }
 
   int shown = 0;
   for (int k = 0; k < g_model.nAlerts; k++) {
@@ -206,8 +215,7 @@ static void build(lv_obj_t * root) {
   lv_obj_t * btn = button(plan, "Transferts", &ic_route_16, B_TONAL, true);
   lv_obj_add_event_cb(btn, [](lv_event_t *) { openTransfers(); }, LV_EVENT_CLICKED, nullptr);
 
-  static const char * L[4] = { "Toutes", "Ruptures", "Pr\xC3\xA9visions", "Maintenance" };
-  s_seg = segmented(root, L, 4, 0, [](int i) {
+  s_seg = segmented(root, FILTERS, NF, 0, [](int i) {
     s_filter = i;
     refresh();
     lv_obj_scroll_to_y(s_list, 0, LV_ANIM_OFF);
