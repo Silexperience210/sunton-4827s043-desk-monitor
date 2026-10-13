@@ -55,7 +55,7 @@ uint8_t effectiveBrightness(int64_t now) {
   if (g_set.nightDim && now > 0) {
     struct tm lt;
     plat::localTime(now, &lt);
-    if ((lt.tm_hour >= 22 || lt.tm_hour < 6) && b > 20) b = 20;
+    if ((lt.tm_hour >= 23 || lt.tm_hour < 4) && b > 20) b = 20;
   }
   return b;
 }

@@ -24,7 +24,7 @@ struct Settings {
   uint8_t  maintDocks;    // alerte maintenance : bornes HS ≥ seuil
   uint8_t  frozenHours;   // alerte « aucun mouvement » (7 h–22 h)
   uint8_t  brightness;    // 5…100 %
-  uint8_t  nightDim;      // atténuation 22 h–6 h
+  uint8_t  nightDim;      // atténuation 23 h–4 h
   uint8_t  alertToasts;   // notifications à l'écran des nouvelles ruptures
   TouchCal tcal;          // étalonnage tactile (Réglages → Tester le tactile)
   // Seuil du bandeau « données vieilles » en minutes ; 0 = automatique
@@ -41,6 +41,6 @@ extern Settings g_set;
 void settingsDefaults(Settings & s);
 bool settingsLoad();
 bool settingsSave();
-uint8_t effectiveBrightness(int64_t now);   // tient compte de l'atténuation 22 h – 6 h
+uint8_t effectiveBrightness(int64_t now);   // tient compte de l'atténuation 23 h – 4 h
 
 } // namespace vn

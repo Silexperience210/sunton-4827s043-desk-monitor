@@ -657,6 +657,43 @@ static void testAnomaly() {
         "premier relevé : pas d'alerte (état %d)", z.st[0].anom);
 }
 
+// Atténuation nocturne : 23 h – 4 h seulement, bornes exactes (heure de Luxembourg)
+static int64_t lux(int y, int mo, int d, int h, int mi) {
+  struct tm t = {};
+  t.tm_year = y - 1900; t.tm_mon = mo - 1; t.tm_mday = d; t.tm_hour = h; t.tm_min = mi; t.tm_isdst = -1;
+  tzset();
+  return (int64_t)mktime(&t);
+}
+static void testNightDim() {
+  settingsDefaults(g_set);
+  struct { int h, mi; bool dim; } T[] = {
+    { 12, 0, false }, { 22, 0, false }, { 22, 59, false }, { 23, 0, true }, { 23, 30, true },
+    { 0, 0, true }, { 3, 59, true }, { 4, 0, false }, { 5, 30, false }, { 6, 0, false },
+  };
+  for (int day = 0; day < 2; day++) {          // hiver (CET) et été (CEST)
+    int mo = day ? 7 : 1;
+    for (auto & c : T) {
+      int64_t t = lux(2026, mo, 15, c.h, c.mi);
+      struct tm lt; plat::localTime(t, &lt);
+      CHECK(lt.tm_hour == c.h && lt.tm_min == c.mi, "heure locale %02d:%02d", c.h, c.mi);
+      g_set.brightness = 100; g_set.nightDim = 1;
+      uint8_t b = effectiveBrightness(t);
+      CHECK(b == (c.dim ? 20 : 100), "%02d/%02d %02d:%02d → %u %% (attendu %d)", 15, mo, c.h, c.mi, b, c.dim ? 20 : 100);
+      g_set.brightness = 60;
+      b = effectiveBrightness(t);
+      CHECK(b == (c.dim ? 20 : 60), "réglage 60 %% à %02d:%02d → %u %%", c.h, c.mi, b);
+      g_set.brightness = 100; g_set.nightDim = 0;
+      b = effectiveBrightness(t);
+      CHECK(b == 100, "interrupteur éteint à %02d:%02d → %u %%", c.h, c.mi, b);
+    }
+  }
+  g_set.brightness = 15; g_set.nightDim = 1;
+  CHECK(effectiveBrightness(lux(2026, 1, 15, 23, 30)) == 15, "réglage sous le plancher : jamais relevé à 20 %%");
+  g_set.brightness = 100;
+  CHECK(effectiveBrightness(0) == 100, "heure inconnue : pas d'atténuation");
+  settingsDefaults(g_set);
+}
+
 int main(int argc, char ** argv) {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   testNames();
@@ -671,6 +708,7 @@ int main(int argc, char ** argv) {
   testProjection24();
   testAnomaly();
   testTouchCal();
+  testNightDim();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;
 }

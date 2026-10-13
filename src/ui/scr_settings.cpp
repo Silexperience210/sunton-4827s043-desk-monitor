@@ -244,7 +244,7 @@ static void build(lv_obj_t * root) {
     plat::setBacklight(vn::effectiveBrightness(now()));
   }, LV_EVENT_VALUE_CHANGED, nullptr);
   lv_obj_add_event_cb(sl, [](lv_event_t *) { vn::settingsSave(); }, LV_EVENT_RELEASED, nullptr);
-  r = srow(s3, &ic_moon_16, "Att\xC3\xA9nuation nocturne", "22 h \xE2\x80\x93 6 h : luminosit\xC3\xA9 r\xC3\xA9" "duite \xC3\xA0 20 %", nullptr, 230);
+  r = srow(s3, &ic_moon_16, "Att\xC3\xA9nuation nocturne", "23 h \xE2\x80\x93 4 h : luminosit\xC3\xA9 r\xC3\xA9" "duite \xC3\xA0 20 %", nullptr, 230);
   toggle(r, g_set.nightDim, [](lv_event_t * e) {
     g_set.nightDim = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
     vn::settingsSave();
