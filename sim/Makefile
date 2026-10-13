@@ -8,7 +8,7 @@ CC  ?= gcc
 CXX ?= g++
 INC  = -I../include -I$(LVGL_DIR)/.. -I$(LVGL_DIR) -I$(AJSON_DIR) -I../src
 DEFS = -DLV_CONF_INCLUDE_SIMPLE -DVN_SIM=1
-CFLAGS   = -O2 -g -Wall -Wno-unused-function $(INC) $(DEFS)
+CFLAGS   = -O2 -g -Wall -Wno-unused-function -MMD -MP $(INC) $(DEFS)
 # -MMD -MP : chaque objet dépend aussi des en-têtes qu'il inclut (sinon un objet
 # compilé avec un ancien model.h survit à un changement de structure et plante)
 CXXFLAGS = -MMD -MP -O2 -g -std=gnu++17 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers $(INC) $(DEFS)
@@ -45,6 +45,7 @@ TEST_OBJ := $(patsubst ../%.cpp,$(BUILD)/app/%.o,$(filter ../%,$(TEST_CXX))) \
 test_core: $(TEST_OBJ)
 	$(CXX) -o $@ $^ -lm
 
+# dépendances d'en-têtes (-MMD) : un .h modifié recompile ce qui l'inclut
 -include $(APP_OBJ:.o=.d) $(TEST_OBJ:.o=.d)
 
 clean:

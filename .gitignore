@@ -19,3 +19,5 @@ qemu_out/
 *.log
 .DS_Store
 __pycache__/
+tools/build/
+result.json
