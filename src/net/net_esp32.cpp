@@ -240,12 +240,27 @@ static void task(void *) {
 
     bool up = WiFi.status() == WL_CONNECTED;
     bool timeOk = plat::timeValid();
+    // Les accesseurs Wi-Fi (SSID, IP, RSSI) descendent dans un ioctl qui prend
+    // des sémaphores et alloue des String. Les appeler sous portENTER_CRITICAL
+    // laissait ce cœur en attente, verrou pris et interruptions coupées, pendant
+    // que le cœur 1 tournait en rond sur le même verrou : chien de garde
+    // d'interruption, puis redémarrage en boucle (dès que le Wi-Fi se connecte).
+    // On lit donc hors section critique ; le verrou ne couvre que la recopie.
+    char ssid[33] = {0}, ip[16] = {0};
+    int rssi = 0;
+    if (up) {
+      strncpy(ssid, WiFi.SSID().c_str(), sizeof(ssid) - 1);
+      strncpy(ip, WiFi.localIP().toString().c_str(), sizeof(ip) - 1);
+      rssi = WiFi.RSSI();
+    }
     portENTER_CRITICAL(&s_mux);
     if (up) {
       s_status.wifi = W_CONNECTED;
-      strncpy(s_status.ssid, WiFi.SSID().c_str(), sizeof(s_status.ssid) - 1);
-      strncpy(s_status.ip, WiFi.localIP().toString().c_str(), sizeof(s_status.ip) - 1);
-      s_status.rssi = WiFi.RSSI();
+      strncpy(s_status.ssid, ssid, sizeof(s_status.ssid) - 1);
+      s_status.ssid[sizeof(s_status.ssid) - 1] = 0;
+      strncpy(s_status.ip, ip, sizeof(s_status.ip) - 1);
+      s_status.ip[sizeof(s_status.ip) - 1] = 0;
+      s_status.rssi = rssi;
     } else if (s_status.wifi == W_CONNECTING && millis() - wifiSince > 20000) {
       s_status.wifi = W_FAILED;
     } else if (s_status.wifi == W_CONNECTED) {

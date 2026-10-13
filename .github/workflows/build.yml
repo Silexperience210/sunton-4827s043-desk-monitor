@@ -21,6 +21,25 @@ jobs:
           key: pio-${{ hashFiles('platformio.ini') }}
       - run: pip install platformio
       - run: pio run -e ${{ matrix.env }}
+      # Fusion + contrôle de l'image flashable à 0x0 : c'est ce fichier qui est
+      # publié dans dist/, et un en-tête bootloader en QIO le rend inutilisable
+      # (le ROM ne sait pas le lire, la carte boucle sur un chien de garde).
+      - name: Image fusionnée (${{ matrix.env }})
+        run: |
+          python3 tools/merge_dist.py --build .pio/build/${{ matrix.env }} --out dist-build/${{ matrix.env }}.bin
+          python3 tools/check_dist_bin.py dist-build/${{ matrix.env }}.bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.env }}-bin
+          path: dist-build/
+
+  # Contrôle des images réellement publiées dans dist/ (toutes versions confondues).
+  binaires-publies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Contrôle structurel des dist/*.bin
+        run: python3 tools/check_dist_bin.py dist/*.bin
 
   # Démarrage réel du firmware ESP32-S3 dans l'émulateur QEMU d'Espressif :
   # le test échoue si le démarrage n'atteint pas « [boot] prêt » ou s'il y a un plantage.
@@ -39,7 +58,9 @@ jobs:
       - run: pio run -e test-qemu
       - name: QEMU ESP32-S3 (Espressif)
         run: |
-          sudo apt-get install -y libslirp0 >/dev/null
+          # libsdl2 est une dépendance à l'édition de liens du binaire QEMU :
+          # sans elle il ne démarre pas du tout, même en -nographic.
+          sudo apt-get install -y libslirp0 libsdl2-2.0-0 >/dev/null
           curl -sSL -o qemu.tar.xz https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20250817/qemu-xtensa-softmmu-esp_develop_9.2.2_20250817-x86_64-linux-gnu.tar.xz
           mkdir -p "$HOME/qemu" && tar -xf qemu.tar.xz -C "$HOME/qemu"
       - name: Test de démarrage

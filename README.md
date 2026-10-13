@@ -79,8 +79,8 @@ jour après jour (progression visible dans **Réglages → Prédiction**).
 
 | Version | Tactile | Environnement PlatformIO | Binaire |
 |---|---|---|---|
-| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.0.3.bin` |
-| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.0.3.bin` |
+| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.0.4.bin` |
+| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.0.4.bin` |
 | C monté tête en bas | capacitif, rotation 180° | `esp32-4827s043c-180` | — |
 
 Brochage (dans `src/hal/board.h`), recoupé avec deux références indépendantes
@@ -120,8 +120,8 @@ L'étalonnage détecte seul un axe inversé ou des axes échangés et s'enregist
 ### A. Binaire prêt à flasher (le plus simple)
 
 Télécharger le binaire de sa version de carte :
-[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.0.3.bin) ·
-[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.0.3.bin)
+[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.0.4.bin) ·
+[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.0.4.bin)
 
 **Sans rien installer (Chrome ou Edge)** :
 
@@ -137,7 +137,7 @@ En ligne de commande :
 ```bash
 pip install esptool
 esptool.py --chip esp32s3 --baud 460800 erase_flash
-esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.0.3.bin
+esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.0.4.bin
 ```
 
 ### B. Compilation PlatformIO
@@ -299,7 +299,8 @@ src/
   net/                     tâche réseau (cœur 0) : Wi-Fi, NTP, flux, sauvegardes
   platform/                abstraction ESP32 / simulateur
 sim/                       simulateur headless + tests
-tools/                     générateurs (polices, icônes, tracé du tram, planche d'aperçu), test QEMU
+tools/                     générateurs (polices, icônes, tracé du tram, planche d'aperçu), test QEMU,
+                           fusion des images dist/ (merge_dist.py) et contrôle de leur en-tête (check_dist_bin.py)
 dist/                      binaires fusionnés prêts à flasher (adresse 0x0)
 stl/, openscad/            boîtier imprimé 3D (STL prêts à imprimer + source paramétrable)
 render-preview.py          rendu de l'aperçu du boîtier (docs/preview.png)
@@ -314,6 +315,16 @@ render-preview.py          rendu de l'aperçu du boîtier (docs/preview.png)
 - **Écran allumé mais bloqué sur une étape** : l'étape affichée indique où ça coince ; le détail part
   sur le port série (115200 bauds) — par exemple avec la console de <https://espressif.github.io/esptool-js/>
   (bouton « Start » de la partie *Console*) ou `pio device monitor`.
+- **Redémarrages en boucle dès que le Wi-Fi se connecte** : corrigé en 1.0.4. Les accesseurs Wi-Fi
+  (SSID, IP, RSSI) étaient appelés dans une section critique, interruptions coupées : les deux cœurs
+  se bloquaient sur le même verrou et le chien de garde d'interruption redémarrait la carte toutes
+  les quelques secondes. Un journal série qui répète « chien de garde d'interruption » désigne cette
+  famille de plantage — mettre le binaire à jour.
+- **L'image `dist/` ne démarre pas (rien sur le série, ou `ets_loader.c 78`)** : son en-tête de
+  bootloader doit être en **dio**, pas en qio — le ROM lit l'image de 0x0 avant de configurer la
+  flash, une en-tête qio le fait échouer puis la carte boucle. `python3 tools/check_dist_bin.py
+  dist/*.bin` le vérifie (et le job `binaires-publies` de la CI le contrôle à chaque push) ;
+  régénérer avec `python3 tools/merge_dist.py --build .pio/build/<env> --out dist/<nom>.bin`.
 - **« Redémarrage après un incident »** : la carte a planté ou s'est bloquée au démarrage précédent ;
   la cause et l'étape sont affichées pendant 6 s, puis le démarrage continue. Après 3 incidents de
   suite, le **mode sans échec** coupe le réseau (débrancher / rebrancher pour en sortir). « Chute de

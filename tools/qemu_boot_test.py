@@ -81,7 +81,8 @@ def main():
                           "-serial", "file:" + serial, "-monitor", "unix:%s,server,nowait" % sock],
                          stdout=subprocess.DEVNULL, stderr=open(os.path.join(a.out, "qemu.err"), "w"))
     fb, ready_at, shots, t0 = None, None, 0, time.time()
-    log = ""
+    err_path = os.path.join(a.out, "qemu.err")
+    log, early_exit = "", None
     try:
         while time.time() - t0 < a.seconds:
             time.sleep(1)
@@ -91,7 +92,14 @@ def main():
                 fb = m.group(1) if m else None
             if ready_at is None and "[boot] prêt en" in log:
                 ready_at = time.time() - t0
-            if any(p in log for p in FAIL_PATTERNS) or q.poll() is not None:
+            if any(p in log for p in FAIL_PATTERNS):
+                break
+            # QEMU mort avant d'avoir démarré : sans cette distinction, le test
+            # annonçait « [boot] prêt jamais atteint » et masquait la vraie cause
+            # (bibliothèque manquante, mauvais binaire…).
+            if q.poll() is not None:
+                if ready_at is None:
+                    early_exit = q.returncode
                 break
             # captures : 5 s après « prêt », puis en fin de test
             if fb and ready_at is not None and shots == 0 and time.time() - t0 > ready_at + 5:
@@ -115,8 +123,20 @@ def main():
     if fails:
         print("ÉCHEC : %s" % ", ".join(fails))
         return 1
+    if early_exit is not None:
+        print("ÉCHEC : QEMU s'est arrêté (code %s) avant tout démarrage du firmware." % early_exit)
+        try:
+            err = open(err_path, errors="replace").read().strip()
+        except OSError:
+            err = ""
+        if err:
+            print("--- %s ---\n%s" % (err_path, err))
+        if "error while loading shared libraries" in err:
+            print("→ bibliothèque manquante sur la machine : sur un runner Ubuntu, "
+                  "`sudo apt-get install -y libsdl2-2.0-0 libslirp0`.")
+        return 1
     if ready_at is None:
-        print("ÉCHEC : « [boot] prêt » jamais atteint en %d s" % a.seconds)
+        print("ÉCHEC : « [boot] prêt » jamais atteint en %d s (QEMU a tourné tout du long)" % a.seconds)
         return 1
     stack = re.findall(r"pile UI libre \(min\) (\d+) o", log)
     print("OK : démarrage complet en %.1f s (émulé)%s" % (ready_at, (", pile UI libre min %s o" % stack[-1]) if stack else ""))

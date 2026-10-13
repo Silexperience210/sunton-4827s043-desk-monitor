@@ -8,6 +8,11 @@ sim/test_core
 sim_fs/
 .deps/
 
+# Outils locaux / sorties de CI
+.venv/
+dist-build/
+qemu_out/
+
 # Boîtier / divers
 *.blend1
 *.log
