@@ -15,7 +15,19 @@ enum StStatus : uint8_t { ST_EMPTY, ST_LOW, ST_OK, ST_HIGH, ST_FULL, ST_CLOSED, 
 
 enum AlertType : uint8_t {
   AL_EMPTY, AL_FULL, AL_SOON_EMPTY, AL_SOON_FULL,
-  AL_MAINT_BIKES, AL_MAINT_DOCKS, AL_FROZEN, AL_CLOSED, AL_TYPE_COUNT
+  AL_MAINT_BIKES, AL_MAINT_DOCKS, AL_FROZEN, AL_CLOSED,
+  AL_UNUSUAL,                  // écart au profil appris (voir Model::recompute)
+  AL_TYPE_COUNT
+};
+
+// État de la comparaison « valeur courante ↔ profil appris » d'une station
+enum AnomState : uint8_t {
+  AN_CLOSED,                   // station fermée ou sans relevé : non évaluée
+  AN_OFF_HOURS,                // hors heures d'activité (avant 7 h, à partir de 22 h)
+  AN_NO_PROFILE,               // aucun profil pour ce créneau
+  AN_YOUNG,                    // profil trop jeune (confiance insuffisante)
+  AN_NORMAL,                   // dans la tolérance
+  AN_HIGH, AN_LOW              // inhabituel : au-dessus / en dessous de l'attendu
 };
 
 struct Station {
@@ -43,6 +55,11 @@ struct Station {
   uint8_t  conf;             // 0…100 (confiance du profil appris)
   int16_t  delta30;          // variation des vélos sur 30 min
   float    fc[VN_FC_STEPS];  // vélos prévus 0…120 min (pas 5 min)
+  // Écart au profil (calculé par recompute) : attendu, tolérance ±, confiance du profil
+  uint8_t  anom;             // AnomState
+  uint8_t  anomConf;         // 0…100
+  int16_t  anomExp;          // vélos attendus (profil arrondi), ‑1 = inconnu
+  int16_t  anomTol;          // tolérance en vélos, 0 = non évaluée
 
   uint16_t capEff() const { return (uint16_t)(bikes + docks); }
   float    fill() const { int c = bikes + docks; return c ? (float)bikes / c : 0.f; }
@@ -70,6 +87,8 @@ struct Totals {
   bool deltaValid;             // au moins 1 h de recul pour la comparer
   float fillPct, balancePct;
   int need, surplus;           // somme des besoins / excédents (stations en tension)
+  int nRenting, nReturning;    // stations ouvertes sommées dans bikes / docks
+  int histSlots;               // profondeur d'historique 5 min parcourue pour le parc
 };
 
 struct Alert {
@@ -134,6 +153,10 @@ struct Model {
 
   // Profil appris : moyenne attendue des vélos à l'instant t (lissée ±15 min, pool semaine/week-end)
   bool  profileAt(int s, int64_t t, float & avg, float & nEff) const;
+  // Projection d'une station sur nSteps pas de stepMin minutes à partir de now (point 0 = actuel),
+  // avec la MÊME règle que la prévision 2 h (profil + tendance amortie). conf[k] = 0…1 par pas
+  // (confiance du profil sur ce créneau). Renvoie false si la station est inconnue.
+  bool  project(int s, int64_t now, int stepMin, int nSteps, float * out, float * conf) const;
   float learnPct() const;                // 0…100
   int   ringIndex(int back) const;       // index du point « back » tranches en arrière (‑1)
 

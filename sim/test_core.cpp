@@ -4,6 +4,7 @@
 #include "../src/core/settings.h"
 #include "../src/core/gbfs.h"
 #include "../src/core/weather.h"
+#include "../src/core/ops.h"
 #include "../src/platform/platform.h"
 #include "../src/hal/touch_api.h"
 #include <stdio.h>
@@ -336,6 +337,297 @@ static void testParc() {
   }
 }
 
+
+// ── Compteurs d'ingestion (alimentés par la tâche réseau) ────────────
+static void testIngest() {
+  FeedStat f;
+  memset(&f, 0, sizeof(f));
+  ingestErr(f, 1000, 503, 0, 1200);
+  CHECK(f.fails == 1 && f.errCode == 503 && f.errAt == 1000 && f.okAt == 0 && f.errCount == 1,
+        "1er échec compté (fails=%u code=%d)", f.fails, f.errCode);
+  ingestErr(f, 1060, -11, 512, 15000);
+  CHECK(f.fails == 2 && f.errCode == -11 && f.bytes == 512 && f.ms == 15000, "2e échec consécutif (fails=%u)", f.fails);
+  ingestOk(f, 1120, 42890, 812);
+  CHECK(f.fails == 0 && f.okAt == 1120 && f.bytes == 42890 && f.ms == 812 && f.okCount == 1,
+        "succès : échecs consécutifs remis à 0, taille et durée relevées (fails=%u)", f.fails);
+  CHECK(f.errCode == -11 && f.errAt == 1060 && f.errCount == 2, "le dernier échec reste consultable après un succès");
+  ingestErr(f, 1180, ING_E_PARSE, 100, 40);
+  CHECK(f.fails == 1 && f.okAt == 1120, "un échec après un succès repart de 1 (fails=%u)", f.fails);
+  CHECK(strcmp(ingestErrText(ING_E_PARSE), "JSON illisible") == 0 && strcmp(ingestErrText(-11), "d\xC3\xA9lai de lecture d\xC3\xA9pass\xC3\xA9") == 0
+        && strcmp(ingestErrText(503), "service indisponible") == 0, "libellés d'erreur");
+  for (int a = 0; a < FEED_COUNT; a++)
+    for (int b = a + 1; b < FEED_COUNT; b++) CHECK(strcmp(feedName(a), feedName(b)) != 0, "noms de flux distincts");
+}
+
+// ── Fraîcheur : seuil du bandeau, des DEUX côtés ─────────────────────
+static void testFreshness() {
+  Settings s;
+  settingsDefaults(s);
+  CHECK(s.staleMin == 0, "seuil automatique par défaut");
+  CHECK(staleThresholdS(s) == 180, "auto, 60 s → 3 min (%d s)", staleThresholdS(s));
+  s.refreshSec = 30;  CHECK(staleThresholdS(s) == 180, "auto, 30 s → plancher 3 min (%d s)", staleThresholdS(s));
+  s.refreshSec = 120; CHECK(staleThresholdS(s) == 360, "auto, 2 min → 6 min (%d s)", staleThresholdS(s));
+  s.refreshSec = 300; CHECK(staleThresholdS(s) == 900, "auto, 5 min → 15 min (%d s)", staleThresholdS(s));
+  s.staleMin = 10;    CHECK(staleThresholdS(s) == 600, "réglage manuel 10 min (%d s)", staleThresholdS(s));
+  const int64_t ok = 1791894641;
+  CHECK(!isStale(ok, ok + 180, 180), "âge = seuil : pas de bandeau");
+  CHECK(isStale(ok, ok + 181, 180), "âge = seuil + 1 s : bandeau");
+  CHECK(!isStale(ok, ok + 30, 180), "relevé frais : pas de bandeau");
+  CHECK(!isStale(0, ok, 180) && dataAgeS(0, ok) == -1, "jamais reçu : âge inconnu, pas « vieux »");
+  CHECK(!isStale(ok, 0, 180), "heure inconnue : pas de bandeau");
+  CHECK(dataAgeS(ok, ok + 754) == 754, "âge en secondes");
+  CHECK(wxStaleThresholdS() == 3 * VN_WX_REFRESH_S, "météo : 3 × sa période (%d s)", wxStaleThresholdS());
+  CHECK(!isStale(ok, ok + wxStaleThresholdS(), wxStaleThresholdS()) && isStale(ok, ok + wxStaleThresholdS() + 1, wxStaleThresholdS()),
+        "météo : seuil des deux côtés");
+}
+
+// ── Provenance : la règle écrite est celle appliquée ─────────────────
+static void testProvenance(const std::string & dir) {
+  settingsDefaults(g_set);
+  // Modèle vide : rien n'est inventé
+  {
+    static Model m;
+    CHECK(m.init(), "init provenance (vide)");
+    m.recompute(1791894641);
+    for (int k = 0; k < KPI_COUNT; k++) {
+      Provenance p;
+      CHECK(provenance(m, k, p), "provenance %d", k);
+      CHECK(!p.available && p.missing && p.missing[0], "vide : « %s » sans donnée → raison affichée", p.name);
+      CHECK(p.name && p.rule && p.source, "vide : libellé, règle et source");
+    }
+  }
+  auto info = readFile(dir + "/station_information.json");
+  auto st = readFile(dir + "/station_status.json");
+  auto ty = readFile(dir + "/vehicle_types.json");
+  auto wx = readFile(dir + "/weather.json");
+  if (info.empty() || st.empty()) return;
+  static InfoRec ir[VN_MAX_ST];
+  static StatusRec sr[VN_MAX_ST];
+  ElecTypes et;
+  gbfsParseTypes(ty.data(), ty.size(), et);
+  int ni = gbfsParseInfo(info.data(), info.size(), ir, VN_MAX_ST);
+  int64_t lu = 0;
+  int ns = gbfsParseStatus(st.data(), st.size(), sr, VN_MAX_ST, et, &lu);
+  static Model m;
+  CHECK(m.init(), "init provenance (flux réel)");
+  const int64_t now = lu + 40;
+  m.applyInfo(ir, ni, now);
+  m.applyStatus(sr, ns, now);
+  m.feedUpdated = lu;
+  Weather w;
+  if (!wx.empty() && wxParse(wx.data(), wx.size(), w)) { w.fetchedAt = now; m.wx = w; }
+  // Sommes recalculées indépendamment, enregistrement par enregistrement du flux
+  int bikes = 0, docks = 0, dis = 0, ddis = 0, nRent = 0, nRet = 0;
+  for (int k = 0; k < ns; k++) {
+    bool pub = false;
+    for (int j = 0; j < ni; j++) if (strcmp(ir[j].sid, sr[k].sid) == 0) { pub = true; break; }
+    if (!pub) continue;
+    if (sr[k].renting) { bikes += sr[k].bikes; nRent++; }
+    if (sr[k].returning) { docks += sr[k].docks; nRet++; }
+    dis += sr[k].bikesDis; ddis += sr[k].docksDis;
+  }
+  Provenance p;
+  provenance(m, KPI_BIKES, p);
+  CHECK(p.available && p.kind == SRC_FEED && strcmp(p.feed, "station_status") == 0 && strcmp(p.field, "num_vehicles_available") == 0,
+        "vélos dispo : champ num_vehicles_available de station_status");
+  CHECK((int)p.value == bikes && p.count == nRent, "vélos dispo = Σ is_renting (%d, attendu %d sur %d stations)", (int)p.value, bikes, nRent);
+  CHECK(p.feedAt == lu && p.recvAt == now, "vélos dispo : horodatage last_updated et réception");
+  CHECK(!p.estimate && !p.validity, "vélos dispo : mesure, pas une estimation");
+  provenance(m, KPI_DOCKS, p);
+  CHECK(strcmp(p.field, "num_docks_available") == 0 && (int)p.value == docks && p.count == nRet,
+        "bornes libres = Σ is_returning (%d, attendu %d)", (int)p.value, docks);
+  provenance(m, KPI_BIKES_DIS, p);
+  CHECK(strcmp(p.field, "num_vehicles_disabled") == 0 && (int)p.value == dis, "vélos HS = Σ toutes stations (%d, attendu %d)", (int)p.value, dis);
+  provenance(m, KPI_DOCKS_DIS, p);
+  CHECK(strcmp(p.field, "num_docks_disabled") == 0 && (int)p.value == ddis, "bornes HS (%d, attendu %d)", (int)p.value, ddis);
+  provenance(m, KPI_FILL, p);
+  CHECK(p.kind == SRC_CALC && p.available && fabsf(p.value - 100.f * bikes / (bikes + docks)) < 0.01f,
+        "remplissage = vélos ÷ (vélos + bornes) (%.2f)", p.value);
+  provenance(m, KPI_INUSE, p);
+  CHECK(p.estimate && p.validity && !p.validityMet && !p.available && p.missing,
+        "en trajet, carte neuve : estimation NON valable, « — » et raison");
+  provenance(m, KPI_DELTA1H, p);
+  CHECK(!p.available && p.missing, "variation 1 h sans recul : « — » et raison");
+  provenance(m, KPI_TEMP, p);
+  CHECK(p.available && strcmp(p.source, "Open-Meteo") == 0 && strcmp(p.field, "current.temperature_2m") == 0
+        && p.value == w.temp && p.feedAt == now, "température : Open-Meteo current.temperature_2m (%.1f)", p.value);
+  provenance(m, KPI_FC60, p);
+  CHECK(p.estimate && p.validity && (int)p.value == (int)lroundf(m.netFc[12]), "prévision +1 h : estimation");
+  for (int k = 0; k < KPI_COUNT; k++) {
+    provenance(m, k, p);
+    CHECK(!p.estimate || p.validity, "%s : une estimation dit sa condition de validité", p.name);
+    CHECK(p.available || (p.missing && p.missing[0]), "%s : absence motivée", p.name);
+    CHECK(p.kind != SRC_FEED || (p.field && p.feed), "%s : champ de flux cité", p.name);
+  }
+  // Avec un creux de nuit : l'estimation devient valable et dit d'où vient le parc
+  {
+    static Model mn;
+    CHECK(mn.init(), "init provenance (nuit)");
+    InfoRec r3[3] = { mkInfo("1", 49.60f, 6.13f, 20), mkInfo("2", 49.61f, 6.14f, 20), mkInfo("3", 49.62f, 6.15f, 20) };
+    StatusRec s3[3];
+    const int64_t t0 = 1791842400 + 20 * 3600;
+    mn.applyInfo(r3, 3, t0);
+    for (int64_t t = t0; t <= t0 + 10 * 3600; t += 300) {
+      struct tm lt; plat::localTime(t, &lt);
+      int inSt = (lt.tm_hour >= 1 && lt.tm_hour < 5) ? 20 : 8;
+      for (int k = 0; k < 3; k++) s3[k] = mkStat(r3[k].sid, inSt, 20);
+      mn.applyStatus(s3, 3, t);
+    }
+    provenance(mn, KPI_INUSE, p);
+    struct tm lt; plat::localTime(p.refAt, &lt);
+    CHECK(p.available && p.validityMet && (int)p.value == mn.tot.inUse && lt.tm_hour >= 1 && lt.tm_hour < 5,
+          "en trajet après une nuit : valable, maximum daté de la nuit (%02d h)", lt.tm_hour);
+  }
+}
+
+// Apprend le motif de testModel sur `days` jours à partir du mardi 06/10 00:00
+static int patternAt(int st, int64_t t) {
+  struct tm lt; plat::localTime(t, &lt);
+  float h = lt.tm_hour + lt.tm_min / 60.f;
+  float f1 = h < 7 ? 1.f : h < 9 ? 1.f - (h - 7) / 2.f : h < 18 ? 0.f : h < 20 ? (h - 18) / 2.f : 1.f;
+  if (st == 0) return (int)lroundf(20 * f1);
+  if (st == 1) return (int)lroundf(20 * (1.f - f1));
+  if (st == 3) return 20;                              // station de 40 places, stable à 20
+  return 10;
+}
+static const int CAPS[4] = { 20, 20, 20, 40 };
+static void learn(Model & m, int days, InfoRec * ir) {
+  const int64_t T0 = 1791842400 - 86400 * 7;
+  ir[0] = mkInfo("1", 49.60f, 6.13f, 20); ir[1] = mkInfo("2", 49.61f, 6.14f, 20);
+  ir[2] = mkInfo("3", 49.62f, 6.15f, 20); ir[3] = mkInfo("4", 49.63f, 6.16f, 40);
+  m.applyInfo(ir, 4, T0);
+  StatusRec sr[4];
+  for (int64_t t = T0; t < T0 + (int64_t)days * 86400; t += 300) {
+    for (int s = 0; s < 4; s++) sr[s] = mkStat(ir[s].sid, patternAt(s, t), CAPS[s]);
+    m.applyStatus(sr, 4, t);
+  }
+}
+static void setAll(Model & m, InfoRec * ir, int64_t t, int st3 = -1, int st4 = -1) {
+  StatusRec sr[4];
+  for (int s = 0; s < 4; s++) sr[s] = mkStat(ir[s].sid, patternAt(s, t), CAPS[s]);
+  if (st3 >= 0) sr[2] = mkStat("3", st3, 20);
+  if (st4 >= 0) sr[3] = mkStat("4", st4, 40);
+  m.applyStatus(sr, 4, t);
+}
+static int countAlerts(const Model & m, int type, int st) {
+  int c = 0;
+  for (int k = 0; k < m.nAlerts; k++) if (m.alerts[k].type == type && (st < 0 || m.alerts[k].st == st)) c++;
+  return c;
+}
+
+// ── Prévision 24 h : même règle que la prévision 2 h ─────────────────
+static void testProjection24() {
+  settingsDefaults(g_set);
+  static Model m;
+  CHECK(m.init(), "init 24 h");
+  InfoRec ir[4];
+  learn(m, 8, ir);
+  const int64_t tq = 1791842400 + 86400 + 6 * 3600 + 30 * 60;   // mercredi 14/10 06:30
+  setAll(m, ir, tq);
+  float o5[VN_FC_STEPS], c5[VN_FC_STEPS];
+  CHECK(m.project(0, tq, 5, VN_FC_STEPS, o5, c5), "projection 2 h");
+  float worst = 0;
+  for (int k = 0; k < VN_FC_STEPS; k++) worst = fmaxf(worst, fabsf(o5[k] - m.st[0].fc[k]));
+  CHECK(worst < 1e-4f, "project() au pas de 5 min = prévision 2 h de la fiche (écart max %.5f)", worst);
+  CHECK(lroundf(c5[12] * 100) == m.st[0].conf, "confiance à +1 h identique (%ld vs %d)", lroundf(c5[12] * 100), m.st[0].conf);
+  static const int N24 = 24 * 4 + 1;
+  float o24[N24], c24[N24];
+  CHECK(m.project(0, tq, 15, N24, o24, c24), "projection 24 h");
+  CHECK(fabsf(o24[8] - m.st[0].fc[24]) < 1e-4f, "24 h à +2 h = prévision 2 h à +2 h (%.2f vs %.2f)", o24[8], m.st[0].fc[24]);
+  printf("  24 h st1 depuis mer. 06:30 : +2 h %.1f · +12 h %.1f (profil %d) · +24 h %.1f\n",
+         o24[8], o24[48], patternAt(0, tq + 12 * 3600), o24[96]);
+  CHECK(fabsf(o24[48] - patternAt(0, tq + 12 * 3600)) <= 2, "+12 h (18:30) suit le profil appris (%.1f vs %d)", o24[48], patternAt(0, tq + 12 * 3600));
+  CHECK(fabsf(o24[96] - patternAt(0, tq + 86400)) <= 2, "+24 h revient au niveau du matin (%.1f)", o24[96]);
+  float cmin = 1;
+  for (int k = 0; k < N24; k++) cmin = fminf(cmin, c24[k]);
+  CHECK(cmin >= 0.9f, "profil de 8 jours : confiance ≥ 90 %% sur 24 h (min %.2f)", cmin);
+  CHECK(!m.project(99, tq, 15, N24, o24, c24), "station inconnue refusée");
+
+  // Profil d'un seul jour : la courbe existe mais chaque créneau est signalé peu fiable
+  static Model y;
+  CHECK(y.init(), "init 24 h (jeune)");
+  InfoRec iy[4];
+  learn(y, 1, iy);                                               // mardi seulement
+  const int64_t tw = 1791842400 - 86400 * 6 + 10 * 3600;        // mercredi 07/10 10:00
+  setAll(y, iy, tw);
+  y.project(0, tw, 15, N24, o24, c24);
+  float cmax = 0;
+  for (int k = 0; k < N24; k++) cmax = fmaxf(cmax, c24[k]);
+  CHECK(cmax < 0.5f, "profil d'1 jour : confiance < 50 %% partout (max %.2f) → tracé en pointillés", cmax);
+  // Aucun profil : courbe plate à la valeur courante, confiance nulle (rien d'inventé)
+  static Model z;
+  CHECK(z.init(), "init 24 h (sans profil)");
+  InfoRec iz[1] = { mkInfo("9", 49.6f, 6.1f, 20) };
+  z.applyInfo(iz, 1, tw);
+  StatusRec sz[1] = { mkStat("9", 7, 20) };
+  z.applyStatus(sz, 1, tw);
+  z.project(0, tw, 15, N24, o24, c24);
+  // (le premier relevé vient d'alimenter sa propre cellule : n = 1, confiance 1/8 au plus)
+  bool flat = true;
+  float cz = 0;
+  for (int k = 0; k < N24; k++) { if (o24[k] != 7.f) flat = false; cz = fmaxf(cz, c24[k]); }
+  CHECK(flat && cz <= 0.125f, "premier relevé : 7 vélos constants, confiance ≤ 1/8 (max %.3f)", cz);
+}
+
+// ── Écart au profil (« inhabituel ») ─────────────────────────────────
+static void testAnomaly() {
+  settingsDefaults(g_set);
+  static Model m;
+  CHECK(m.init(), "init écart");
+  InfoRec ir[4];
+  learn(m, 8, ir);
+  // Mercredi 14/10 10:00 : relevé « normal » qui ouvre la tranche (le profil est alimenté
+  // avec la valeur habituelle), puis relevé de test dans la même tranche (profil intact).
+  const int64_t t10 = 1791842400 + 86400 + 10 * 3600;
+  setAll(m, ir, t10);
+  const Station & s3 = m.st[2];
+  const Station & s4 = m.st[3];
+  CHECK(s3.anom == AN_NORMAL && s3.anomExp == 10 && s3.anomTol == 4 && s3.anomConf >= 90,
+        "st3 10 vélos, attendu 10 ± 4 (état %d, attendu %d ± %d, conf %d)", s3.anom, s3.anomExp, s3.anomTol, s3.anomConf);
+  CHECK(s4.anomTol == 8, "tolérance = 20 %% de la capacité si > 4 vélos (40 places → ± %d)", s4.anomTol);
+  CHECK(countAlerts(m, AL_UNUSUAL, -1) == 0, "aucune alerte quand tout est habituel");
+  setAll(m, ir, t10 + 60, 14);
+  CHECK(s3.anom == AN_NORMAL && countAlerts(m, AL_UNUSUAL, 2) == 0, "écart = tolérance (14 vs 10 ± 4) : silence");
+  setAll(m, ir, t10 + 120, 15);
+  CHECK(s3.anom == AN_HIGH && countAlerts(m, AL_UNUSUAL, 2) == 1, "écart > tolérance (15 vs 10 ± 4) : alerte « au-dessus »");
+  int v = -999;
+  for (int k = 0; k < m.nAlerts; k++) if (m.alerts[k].type == AL_UNUSUAL && m.alerts[k].st == 2) v = m.alerts[k].value;
+  CHECK(v == 5 && m.alertCount[AL_UNUSUAL] == 1, "alerte : écart signé +5 (%d)", v);
+  setAll(m, ir, t10 + 180, 6);
+  CHECK(s3.anom == AN_NORMAL, "6 vs 10 ± 4 : silence");
+  setAll(m, ir, t10 + 240, 5);
+  CHECK(s3.anom == AN_LOW && countAlerts(m, AL_UNUSUAL, 2) == 1, "5 vs 10 ± 4 : alerte « en dessous »");
+  setAll(m, ir, t10 + 270, -1, 28);
+  CHECK(s4.anom == AN_NORMAL, "40 places : 28 vs 20 ± 8 → silence (pas d'alerte pour 8 vélos)");
+  setAll(m, ir, t10 + 290, -1, 29);
+  CHECK(s4.anom == AN_HIGH, "40 places : 29 vs 20 ± 8 → alerte");
+  // Hors heures d'activité : silence, même pour un écart énorme
+  const int64_t t23 = 1791842400 + 86400 + 23 * 3600;
+  setAll(m, ir, t23);
+  setAll(m, ir, t23 + 60, 0);
+  CHECK(s3.anom == AN_OFF_HOURS && countAlerts(m, AL_UNUSUAL, -1) == 0, "23 h : pas d'alerte (état %d)", s3.anom);
+  // Profil trop jeune : silence, même pour un écart énorme
+  static Model y;
+  CHECK(y.init(), "init écart (jeune)");
+  InfoRec iy[4];
+  learn(y, 1, iy);
+  const int64_t tw = 1791842400 - 86400 * 6 + 10 * 3600;        // mercredi 07/10 10:00, 1 jour appris
+  setAll(y, iy, tw);
+  setAll(y, iy, tw + 60, 0);
+  CHECK(y.st[2].anom == AN_YOUNG && y.st[2].anomConf < 50 && countAlerts(y, AL_UNUSUAL, -1) == 0,
+        "profil d'1 jour : pas d'alerte (état %d, conf %d %%)", y.st[2].anom, y.st[2].anomConf);
+  // Aucun profil
+  static Model z;
+  CHECK(z.init(), "init écart (sans profil)");
+  InfoRec iz[1] = { mkInfo("9", 49.6f, 6.1f, 20) };
+  z.applyInfo(iz, 1, tw);
+  StatusRec sz[1] = { mkStat("9", 0, 20) };
+  // profil vide : on lit avant que le relevé ne l'alimente (l'état reflète « aucun profil »)
+  z.applyStatus(sz, 1, tw);
+  CHECK(countAlerts(z, AL_UNUSUAL, -1) == 0 && (z.st[0].anom == AN_NO_PROFILE || z.st[0].anom == AN_YOUNG),
+        "premier relevé : pas d'alerte (état %d)", z.st[0].anom);
+}
+
 int main(int argc, char ** argv) {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   testNames();
@@ -344,6 +636,11 @@ int main(int argc, char ** argv) {
   testModel();
   testParc();
   testRuptureStart();
+  testIngest();
+  testFreshness();
+  testProvenance(argc > 1 ? argv[1] : "");
+  testProjection24();
+  testAnomaly();
   testTouchCal();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;

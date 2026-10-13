@@ -3,6 +3,7 @@
 // L'UI ne fait que lire l'état et poser des demandes (aucun appel bloquant).
 #pragma once
 #include <stdint.h>
+#include "../core/ops.h"
 
 namespace net {
 
@@ -15,7 +16,9 @@ struct Status {
   int       rssi;
   bool      fetching;      // cycle de récupération en cours
   bool      timeOk;        // heure NTP synchronisée
+  int64_t   timeSyncAt;    // première synchronisation NTP constatée (epoch), 0 = jamais
   const char * stage;      // étape de démarrage (écran d'accueil)
+  vn::FeedStat feed[vn::FEED_COUNT];   // compteurs d'ingestion, tenus par la tâche réseau
 };
 
 struct ScanItem { char ssid[33]; int rssi; bool secure; };

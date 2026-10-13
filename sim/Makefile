@@ -9,7 +9,9 @@ CXX ?= g++
 INC  = -I../include -I$(LVGL_DIR)/.. -I$(LVGL_DIR) -I$(AJSON_DIR) -I../src
 DEFS = -DLV_CONF_INCLUDE_SIMPLE -DVN_SIM=1
 CFLAGS   = -O2 -g -Wall -Wno-unused-function $(INC) $(DEFS)
-CXXFLAGS = -O2 -g -std=gnu++17 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers $(INC) $(DEFS)
+# -MMD -MP : chaque objet dépend aussi des en-têtes qu'il inclut (sinon un objet
+# compilé avec un ancien model.h survit à un changement de structure et plante)
+CXXFLAGS = -MMD -MP -O2 -g -std=gnu++17 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers $(INC) $(DEFS)
 
 LVGL_SRC := $(shell find $(LVGL_DIR)/src -name '*.c')
 APP_C    := $(wildcard ../src/ui/fonts/*.c) $(wildcard ../src/ui/icons/*.c)
@@ -42,6 +44,8 @@ TEST_OBJ := $(patsubst ../%.cpp,$(BUILD)/app/%.o,$(filter ../%,$(TEST_CXX))) \
             $(patsubst %.cpp,$(BUILD)/sim/%.o,$(filter-out ../%,$(TEST_CXX)))
 test_core: $(TEST_OBJ)
 	$(CXX) -o $@ $^ -lm
+
+-include $(APP_OBJ:.o=.d) $(TEST_OBJ:.o=.d)
 
 clean:
 	rm -rf $(BUILD) sim test_core

@@ -31,6 +31,20 @@ static vn::InfoRec * s_info = nullptr;
 static vn::StatusRec * s_stat = nullptr;
 
 static void setStage(const char * st) { portENTER_CRITICAL(&s_mux); s_status.stage = st; portEXIT_CRITICAL(&s_mux); }
+
+// Compteurs d'ingestion : tenus ici (tâche réseau seule), publiés par simple recopie
+// d'octets sous le verrou — aucun appel bloquant dans la section critique.
+static vn::FeedStat s_feed[vn::FEED_COUNT];
+static void feedDone(int f, bool ok, int code, size_t bytes, uint32_t t0) {
+  uint32_t ms = millis() - t0;
+  if (ok) vn::ingestOk(s_feed[f], plat::now(), (uint32_t)bytes, ms);
+  else vn::ingestErr(s_feed[f], plat::now(), code, (uint32_t)bytes, ms);
+  portENTER_CRITICAL(&s_mux);
+  memcpy(&s_status.feed[f], &s_feed[f], sizeof(s_feed[f]));
+  portEXIT_CRITICAL(&s_mux);
+  if (!ok) plat::logf("[net] %s : \xC3\xA9" "chec %d (%s), %u octets, %u ms", vn::feedName(f), code,
+                      vn::ingestErrText(code), (unsigned)bytes, (unsigned)ms);
+}
 static void setFetching(bool f) { portENTER_CRITICAL(&s_mux); s_status.fetching = f; portEXIT_CRITICAL(&s_mux); }
 
 Status status() {
@@ -70,7 +84,7 @@ static int httpGetOnce(const char * url, size_t & len) {
   http.setConnectTimeout(8000);
   http.setTimeout(15000);
   http.setUserAgent("VelohNavOps/" VN_VERSION " (ESP32-S3)");
-  if (!http.begin(cli, url)) return -1;
+  if (!http.begin(cli, url)) return vn::ING_E_BEGIN;
   http.addHeader("Accept", "application/json");
   int code = http.GET();
   if (code != HTTP_CODE_OK) { http.end(); return code; }
@@ -92,15 +106,17 @@ static int httpGetOnce(const char * url, size_t & len) {
   }
   s_buf[len] = 0;
   http.end();
-  return (total > 0 && len < (size_t)total) ? -2 : 200;
+  return (total > 0 && len < (size_t)total) ? vn::ING_E_TRUNC : 200;
 }
 
-// cyclocity peut couper la connexion TCP : 3 tentatives espacées
-static bool httpGet(const char * url, size_t & len) {
+// cyclocity peut couper la connexion TCP : 3 tentatives espacées.
+// code = statut de la dernière tentative (200, code HTTP, HTTPC_ERROR_* ou ING_E_*).
+static bool httpGet(const char * url, size_t & len, int & code) {
   for (int a = 0; a < 3; a++) {
-    int c = httpGetOnce(url, len);
-    if (c == 200 && len > 0) return true;
-    plat::logf("[net] %s → %d (tentative %d)", url, c, a + 1);
+    code = httpGetOnce(url, len);
+    if (code == 200 && len > 0) return true;
+    if (code == 200) code = vn::ING_E_EMPTY;          // 200 sans corps
+    plat::logf("[net] %s \xE2\x86\x92 %d (tentative %d)", url, code, a + 1);
     delay(800 * (a + 1));
   }
   return false;
@@ -118,27 +134,38 @@ static void fetchCycle() {
   char url[160];
   bool ok = true;
 
+  int code;
   if (!s_typesAt || now - s_typesAt > VN_TYPES_REFRESH_S) {
+    uint32_t f0 = millis();
     snprintf(url, sizeof(url), "%s/vehicle_types.json", VN_GBFS_BASE);
-    if (httpGet(url, len) && vn::gbfsParseTypes(s_buf, len, s_elec)) s_typesAt = now;
+    bool got = httpGet(url, len, code);
+    bool parsed = got && vn::gbfsParseTypes(s_buf, len, s_elec);
+    if (parsed) s_typesAt = now;
+    feedDone(vn::FEED_TYPES, parsed, got ? vn::ING_E_PARSE : code, len, f0);
   }
   if (!s_infoAt || now - s_infoAt > VN_INFO_REFRESH_S) {
     setStage("Chargement des stations Vel'OH!\xE2\x80\xA6");
     snprintf(url, sizeof(url), "%s/station_information.json", VN_GBFS_BASE);
     int n = -1;
-    if (httpGet(url, len)) n = vn::gbfsParseInfo(s_buf, len, s_info, VN_MAX_ST);
+    uint32_t f0 = millis();
+    bool got = httpGet(url, len, code);
+    if (got) n = vn::gbfsParseInfo(s_buf, len, s_info, VN_MAX_ST);
     if (n > 0) {
       plat::LockGuard g;
       g_model.applyInfo(s_info, n, now);
       s_infoAt = now;
     } else ok = false;
+    feedDone(vn::FEED_INFO, n > 0, !got ? code : n == 0 ? vn::ING_E_EMPTY : vn::ING_E_PARSE, len, f0);
   }
   if (s_infoAt) {
     setStage("Disponibilit\xC3\xA9s en temps r\xC3\xA9" "el\xE2\x80\xA6");
     snprintf(url, sizeof(url), "%s/station_status.json", VN_GBFS_BASE);
     int64_t lastUpd = 0;
     int n = -1;
-    if (httpGet(url, len)) n = vn::gbfsParseStatus(s_buf, len, s_stat, VN_MAX_ST, s_elec, &lastUpd);
+    uint32_t f0 = millis();
+    bool got = httpGet(url, len, code);
+    if (got) n = vn::gbfsParseStatus(s_buf, len, s_stat, VN_MAX_ST, s_elec, &lastUpd);
+    feedDone(vn::FEED_STATUS, n > 0, !got ? code : n == 0 ? vn::ING_E_EMPTY : vn::ING_E_PARSE, len, f0);
     if (n > 0) {
       plat::LockGuard g;
       g_model.elec = s_elec;
@@ -154,9 +181,13 @@ static void fetchCycle() {
 
 static bool fetchWeather() {
   size_t len;
-  if (!httpGet(VN_WX_URL, len)) return false;
+  int code;
+  uint32_t f0 = millis();
+  if (!httpGet(VN_WX_URL, len, code)) { feedDone(vn::FEED_WEATHER, false, code, len, f0); return false; }
   vn::Weather w;
-  if (!vn::wxParse(s_buf, len, w)) return false;
+  bool parsed = vn::wxParse(s_buf, len, w);
+  feedDone(vn::FEED_WEATHER, parsed, vn::ING_E_PARSE, len, f0);
+  if (!parsed) return false;
   w.fetchedAt = plat::now();
   plat::LockGuard g;
   g_model.wx = w;
@@ -240,6 +271,7 @@ static void task(void *) {
 
     bool up = WiFi.status() == WL_CONNECTED;
     bool timeOk = plat::timeValid();
+    int64_t now = timeOk ? plat::now() : 0;      // lu hors section critique
     // Les accesseurs Wi-Fi (SSID, IP, RSSI) descendent dans un ioctl qui prend
     // des sémaphores et alloue des String. Les appeler sous portENTER_CRITICAL
     // laissait ce cœur en attente, verrou pris et interruptions coupées, pendant
@@ -268,6 +300,7 @@ static void task(void *) {
       wifiSince = millis();
     }
     s_status.timeOk = timeOk;
+    if (timeOk && !s_status.timeSyncAt) s_status.timeSyncAt = now;
     portEXIT_CRITICAL(&s_mux);
 
     // Historique / profils : chargés une fois l'heure connue

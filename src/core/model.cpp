@@ -314,19 +314,11 @@ float Model::learnPct() const {
 // fc(h) = actuel + c·[profil(t+h) − profil(t)] + (1 − 0,6c)·tendance amortie(h)
 //  - profil : comportement appris à cette heure / ce jour (c = confiance 0…1)
 //  - tendance : régression linéaire des 30 dernières minutes, amortie (τ = 25 min)
-static void forecastStation(Model & m, int i, int dow0, int mod0, int64_t now) {
-  Station & s = m.st[i];
-  float cur = s.bikes, capE = s.capEff();
-  s.etaEmpty = s.etaFull = -1;
-  s.conf = 0;
-  s.delta30 = 0;
-  if (s.status == ST_CLOSED || !s.live) {
-    for (int k = 0; k < VN_FC_STEPS; k++) s.fc[k] = cur;
-    return;
-  }
-  // Tendance court terme
+// Tendance court terme : pente (vélos/min) des 30 dernières minutes ; oldest = valeur la plus ancienne (‑1 si aucune)
+static float trendSlope(const Model & m, int i, int64_t now, float & oldest) {
   float sx = 0, sy = 0, sxx = 0, sxy = 0; int cnt = 0;
-  float oldest = -1, tmin = 0;
+  float tmin = 0;
+  oldest = -1;
   for (int b = 0; b < m.rCount; b++) {
     int idx = (m.rHead - b + VN_RECENT_SLOTS) % VN_RECENT_SLOTS;
     float dtm = (m.recT[idx] - now) / 60.f;
@@ -341,15 +333,18 @@ static void forecastStation(Model & m, int i, int dow0, int mod0, int64_t now) {
     float den = cnt * sxx - sx * sx;
     if (fabsf(den) > 1e-3f) slope = clampf((cnt * sxy - sx * sy) / den, -0.6f, 0.6f);
   }
-  if (oldest >= 0) s.delta30 = (int16_t)lroundf(cur - oldest);
+  return slope;
+}
 
-  const ProfCell * p = m.prof + (size_t)i * PROF_STRIDE;
+// La règle de projection elle-même, partagée par la prévision 2 h (pas 5 min)
+// et la courbe 24 h (Model::project) : un seul endroit à lire et à tester.
+static void projectSteps(const ProfCell * p, int dow0, int mod0, float cur, float capE, float slope,
+                         int stepMin, int nSteps, float * out, float * conf) {
   float p0, n0;
   bool has0 = profileLocal(p, dow0, mod0, p0, n0);
   const float tau = 25.f;
-  float conf60 = 0;
-  for (int k = 0; k < VN_FC_STEPS; k++) {
-    int h = k * 5;
+  for (int k = 0; k < nSteps; k++) {
+    int h = k * stepMin;
     float dS = 0, cS = 0, ph, nh;
     if (has0 && profileLocal(p, dow0, mod0 + h, ph, nh)) {
       dS = ph - p0;
@@ -357,9 +352,28 @@ static void forecastStation(Model & m, int i, int dow0, int mod0, int64_t now) {
     }
     float dT = slope * tau * (1 - expf(-h / tau));
     float v = cur + cS * dS + (1 - 0.6f * cS) * dT;
-    s.fc[k] = clampf(v, 0, capE);
-    if (h == 60) conf60 = cS;
+    out[k] = clampf(v, 0, capE);
+    if (conf) conf[k] = cS;
   }
+}
+
+static void forecastStation(Model & m, int i, int dow0, int mod0, int64_t now) {
+  Station & s = m.st[i];
+  float cur = s.bikes, capE = s.capEff();
+  s.etaEmpty = s.etaFull = -1;
+  s.conf = 0;
+  s.delta30 = 0;
+  if (s.status == ST_CLOSED || !s.live) {
+    for (int k = 0; k < VN_FC_STEPS; k++) s.fc[k] = cur;
+    return;
+  }
+  float oldest;
+  float slope = trendSlope(m, i, now, oldest);
+  if (oldest >= 0) s.delta30 = (int16_t)lroundf(cur - oldest);
+
+  float conf[VN_FC_STEPS];
+  projectSteps(m.prof + (size_t)i * PROF_STRIDE, dow0, mod0, cur, capE, slope, 5, VN_FC_STEPS, s.fc, conf);
+  float conf60 = conf[12];
   s.conf = (uint8_t)lroundf(conf60 * 100);
 
   // Échéances (interpolées entre deux pas)
@@ -381,6 +395,62 @@ static void forecastStation(Model & m, int i, int dow0, int mod0, int64_t now) {
       break;
     }
   }
+}
+
+bool Model::project(int i, int64_t now, int stepMin, int nSteps, float * out, float * conf) const {
+  if (i < 0 || i >= n || nSteps <= 0 || stepMin <= 0) return false;
+  const Station & s = st[i];
+  if (s.status == ST_CLOSED || !s.live) {             // même convention que forecastStation
+    for (int k = 0; k < nSteps; k++) { out[k] = s.bikes; if (conf) conf[k] = 0; }
+    return true;
+  }
+  int dow0, mod0;
+  localDM(now, dow0, mod0);
+  float oldest;
+  float slope = trendSlope(*this, i, now, oldest);
+  projectSteps(prof + (size_t)i * PROF_STRIDE, dow0, mod0, s.bikes, s.capEff(), slope, stepMin, nSteps, out, conf);
+  return true;
+}
+
+// ── Écart au profil (« comportement inhabituel ») ────────────────────
+// On compare N (vélos en station maintenant) à P, le profil appris lissé pour ce
+// (jour de semaine, quart d'heure) — la même valeur que la courbe « habituel » de
+// la fiche — et à la confiance c de ce profil (n effectif ÷ CONF_N, plafonnée à 1).
+//
+//  • Exclusions : aucune alerte, le motif est gardé pour la fiche station.
+//    – station fermée ou sans relevé ;
+//    – hors heures d'activité (avant 7 h, à partir de 22 h, comme « aucun mouvement ») :
+//      la nuit, les flux sont faibles et les régulations planifiées font des écarts sans
+//      signification ;
+//    – profil absent, ou trop jeune : c < ANOM_MIN_CONF = 0,5 (moins de 4 relevés
+//      effectifs pour ce créneau) — sans recul, « inhabituel » ne veut rien dire.
+//  • Tolérance T (vélos) = max(ANOM_MIN_BIKES, ANOM_REL_CAP × capacité utile) × (2 − c) :
+//      à confiance pleine, T = max(4 vélos, 20 % de la capacité) ; à c = 0,5, T est 1,5 ×
+//      plus large (moins le profil est nourri, plus il faut d'écart pour conclure).
+//  • Écart minimal : ANOM_MIN_BIKES = 4 vélos, plancher de T — un retrait groupé de
+//      2–3 vélos est du bruit ordinaire, même sur une petite station.
+//  • Alerte si |N − P| > T (strictement).
+// Limite connue : le relevé courant vient d'alimenter la cellule du profil (moyenne
+// plafonnée à VN_PROFILE_CAP_N), ce qui rapproche P de N d'au plus 1/n : l'écart est
+// légèrement sous-estimé, jamais gonflé.
+static const float ANOM_MIN_CONF = 0.5f;
+static const float ANOM_MIN_BIKES = 4.f;
+static const float ANOM_REL_CAP = 0.2f;
+
+static void anomalyStation(const Model & m, Station & s, int i, int64_t now, bool activeHours) {
+  s.anomExp = -1; s.anomTol = 0; s.anomConf = 0;
+  if (!s.live || s.status == ST_CLOSED) { s.anom = AN_CLOSED; return; }
+  float p, nEff;
+  bool has = m.profileAt(i, now, p, nEff);
+  float c = has ? clampf(nEff / CONF_N, 0, 1) : 0;
+  if (has) { s.anomExp = (int16_t)lroundf(p); s.anomConf = (uint8_t)lroundf(c * 100); }
+  if (!activeHours) { s.anom = AN_OFF_HOURS; return; }
+  if (!has) { s.anom = AN_NO_PROFILE; return; }
+  if (c < ANOM_MIN_CONF) { s.anom = AN_YOUNG; return; }
+  float tol = fmaxf(ANOM_MIN_BIKES, ANOM_REL_CAP * s.capEff()) * (2.f - c);
+  s.anomTol = (int16_t)lroundf(tol);
+  float dev = s.bikes - p;
+  s.anom = fabsf(dev) > tol ? (dev > 0 ? AN_HIGH : AN_LOW) : AN_NORMAL;
 }
 
 // ── Alertes ──────────────────────────────────────────────────────────
@@ -411,6 +481,7 @@ void Model::recompute(int64_t now) {
     s.frozen = activeHours && s.live && s.status != ST_CLOSED && s.lastChange
                && (now - s.lastChange) >= (int64_t)g_set.frozenHours * 3600;
     forecastStation(*this, i, dow0, mod0, now);
+    anomalyStation(*this, s, i, now, activeHours);
 
     // Besoin de régulation (viser 50 % de la capacité utile à +1 h)
     float capE = s.capEff(), fc60 = s.fc[12];
@@ -448,8 +519,8 @@ void Model::recompute(int64_t now) {
     t.byStatus[s.status]++;
     if (s.status == ST_CLOSED) { t.closed++; continue; }
     t.open++;
-    if (s.renting) { t.bikes += s.bikes; t.elec += s.elec; }
-    if (s.returning) t.docks += s.docks;
+    if (s.renting) { t.bikes += s.bikes; t.elec += s.elec; t.nRenting++; }
+    if (s.returning) { t.docks += s.docks; t.nReturning++; }
     if (s.frozen) t.frozen++;
     if (s.bikesDis >= g_set.maintBikes || s.docksDis >= g_set.maintDocks) t.maint++;
     if (s.need > 0) t.need += s.need; else t.surplus -= s.need;
@@ -475,6 +546,7 @@ void Model::recompute(int64_t now) {
     span = b;
   }
   t.fleet = fleet;
+  t.histSlots = count;
   t.inUse = fleet - (t.bikesRaw + t.bikesDis);
   if (t.inUse < 0) t.inUse = 0;
   struct tm ltf;
@@ -516,6 +588,7 @@ void Model::recompute(int64_t now) {
     if (s.bikesDis >= g_set.maintBikes) add(AL_MAINT_BIKES, 1, i, -1, s.bikesDis);
     if (s.docksDis >= g_set.maintDocks) add(AL_MAINT_DOCKS, 1, i, -1, s.docksDis);
     if (s.frozen) add(AL_FROZEN, 1, i, (int)((now - s.lastChange) / 60), 0);
+    if (s.anom == AN_HIGH || s.anom == AN_LOW) add(AL_UNUSUAL, 1, i, -1, s.bikes - s.anomExp);
   }
   s_sortModel = this;
   qsort(alerts, nAlerts, sizeof(Alert), alertCmp);

@@ -7,6 +7,9 @@ namespace sim {
 extern uint32_t g_ms; bool g_fetching = false; bool g_wifiUp = true;
 // scénario « démarrage » : état réseau imposé (‑1 = comportement par défaut)
 int g_wifiState = -1; bool g_timeOk = true; const char * g_stage = nullptr;
+// compteurs d'ingestion : remplis par sim_main avec ce qu'il a réellement lu (taille
+// des fichiers, durée d'analyse) — le simulateur ne fait aucune requête réseau
+vn::FeedStat g_feed[vn::FEED_COUNT]; int64_t g_timeSyncAt = 0;
 }
 
 namespace net {
@@ -24,6 +27,8 @@ Status status() {
   s.rssi = -58;
   s.fetching = sim::g_fetching;
   s.timeOk = sim::g_timeOk;
+  s.timeSyncAt = sim::g_timeOk ? sim::g_timeSyncAt : 0;
+  memcpy(s.feed, sim::g_feed, sizeof(s.feed));
   s.stage = sim::g_stage ? sim::g_stage : "Chargement des stations Vel'OH!\xE2\x80\xA6";
   return s;
 }

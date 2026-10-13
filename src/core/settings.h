@@ -27,9 +27,14 @@ struct Settings {
   uint8_t  nightDim;      // atténuation 22 h–6 h
   uint8_t  alertToasts;   // notifications à l'écran des nouvelles ruptures
   TouchCal tcal;          // étalonnage tactile (Réglages → Tester le tactile)
-  uint8_t  reserved[24 - sizeof(TouchCal)];
+  // Seuil du bandeau « données vieilles » en minutes ; 0 = automatique
+  // (3 × refreshSec, au moins 3 min). Pris sur la réserve : taille et
+  // décalages inchangés, un ancien fichier (réserve à zéro) donne « auto ».
+  uint8_t  staleMin;
+  uint8_t  reserved[24 - sizeof(TouchCal) - 1];
 };
 static_assert(sizeof(TouchCal) == 10, "TouchCal");
+static_assert(sizeof(Settings) == 140, "Settings : la taille de /settings.bin ne doit pas changer");
 
 extern Settings g_set;
 
