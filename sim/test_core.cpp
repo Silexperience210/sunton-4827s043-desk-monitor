@@ -5,6 +5,7 @@
 #include "../src/core/gbfs.h"
 #include "../src/core/weather.h"
 #include "../src/core/ops.h"
+#include "../src/core/wifiscan.h"
 #include "../src/platform/platform.h"
 #include "../src/hal/touch_api.h"
 #include <stdio.h>
@@ -713,6 +714,88 @@ static void testNightDim() {
   settingsDefaults(g_set);
 }
 
+// ── Recherche Wi-Fi : liste construite à partir de bornes brutes synthétiques ──
+static WifiRaw mkRaw(const char * ssid, int rssi, int ch = 6, bool secure = true) {
+  WifiRaw r{};
+  snprintf(r.ssid, sizeof(r.ssid), "%s", ssid);
+  r.rssi = (int16_t)rssi; r.channel = (uint8_t)ch; r.secure = secure;
+  return r;
+}
+
+static void testWifiScan() {
+  static WifiList L;
+  char nm[33];
+  // 30 réseaux distincts (> les 16 de l'ancien tableau), dans l'ordre de balayage par
+  // canal ; le plus fort arrive en 26ᵉ position. Aucun ne doit être perdu.
+  {
+    std::vector<WifiRaw> raw;
+    for (int i = 0; i < 30; i++) {
+      snprintf(nm, sizeof(nm), "Voisin-%02d", i);
+      raw.push_back(mkRaw(nm, i == 25 ? -38 : -60 - (i % 30), 1 + i % 13));
+    }
+    buildWifiList(raw.data(), (int)raw.size(), L);
+    CHECK(L.n == 30 && L.dropped == 0, "30 réseaux → 30 lignes, aucun écarté (%d lignes, %d écartés)", L.n, L.dropped);
+    CHECK(L.n > 0 && strcmp(L.net[0].ssid, "Voisin-25") == 0 && L.net[0].rssi == -38,
+          "le plus fort, vu en 26ᵉ, est en tête (« %s »)", L.n ? L.net[0].ssid : "");
+    bool sorted = true;
+    for (int i = 1; i < L.n; i++) if (L.net[i].rssi > L.net[i - 1].rssi) sorted = false;
+    CHECK(sorted, "liste triée par RSSI décroissant");
+  }
+  // Plus de réseaux que VN_SCAN_MAX : seuls les plus faibles tombent, et on les compte.
+  {
+    std::vector<WifiRaw> raw;
+    const int N = VN_SCAN_MAX + 20;
+    for (int i = 0; i < N; i++) {              // RSSI croissant dans l'ordre de balayage : le pire cas
+      snprintf(nm, sizeof(nm), "Dense-%03d", i);
+      raw.push_back(mkRaw(nm, -95 + i));
+    }
+    buildWifiList(raw.data(), N, L);
+    CHECK(L.n == VN_SCAN_MAX && L.dropped == 20, "%d réseaux → %d lignes + 20 écartés (%d, %d)", N, VN_SCAN_MAX, L.n, L.dropped);
+    snprintf(nm, sizeof(nm), "Dense-%03d", N - 1);
+    CHECK(strcmp(L.net[0].ssid, nm) == 0, "le plus fort (dernier balayé) reste en tête");
+    CHECK(L.net[L.n - 1].rssi == -95 + 20, "la dernière ligne gardée est la plus forte des faibles (%d dBm)", L.net[L.n - 1].rssi);
+  }
+  // Maillage : un SSID, trois bornes, la plus faible vue en premier → une ligne, la plus forte.
+  {
+    WifiRaw raw[] = { mkRaw("Maison", -82, 1), mkRaw("Autre", -70, 6), mkRaw("Maison", -47, 11), mkRaw("Maison", -66, 6) };
+    buildWifiList(raw, 4, L);
+    int rows = 0, at = -1;
+    for (int i = 0; i < L.n; i++) if (strcmp(L.net[i].ssid, "Maison") == 0) { rows++; at = i; }
+    CHECK(rows == 1, "SSID vu par 3 bornes → 1 ligne (%d)", rows);
+    CHECK(at >= 0 && L.net[at].rssi == -47 && L.net[at].channel == 11 && L.net[at].aps == 3,
+          "RSSI le plus fort (-47, canal 11, 3 bornes) : %d, canal %d, %d bornes",
+          at >= 0 ? L.net[at].rssi : 0, at >= 0 ? L.net[at].channel : 0, at >= 0 ? L.net[at].aps : 0);
+    CHECK(L.n == 2 && at == 0, "« Maison » (-47) passe devant « Autre » (-70)");
+  }
+  // Réseaux masqués : comptés, jamais une ligne vide.
+  {
+    WifiRaw raw[] = { mkRaw("", -40, 3), mkRaw("Visible", -60), mkRaw("", -75, 9) };
+    buildWifiList(raw, 3, L);
+    bool blank = false;
+    for (int i = 0; i < L.n; i++) if (!L.net[i].ssid[0]) blank = true;
+    CHECK(!blank && L.n == 1 && L.hidden == 2, "2 masqués comptés, aucune ligne vide (%d lignes, %d masqués)", L.n, L.hidden);
+    buildWifiList(raw, 1, L);
+    CHECK(L.n == 0 && L.hidden == 1, "uniquement masqué → liste vide, 1 masqué");
+    buildWifiList(raw, 0, L);
+    CHECK(L.n == 0 && L.hidden == 0 && L.dropped == 0, "aucune borne → liste vide");
+  }
+  // SSID de 32 octets (maximum 802.11) : conservé entier et terminé.
+  {
+    WifiRaw r = mkRaw("0123456789abcdef0123456789ABCDEF", -50);
+    buildWifiList(&r, 1, L);
+    CHECK(L.n == 1 && strlen(L.net[0].ssid) == 32, "SSID de 32 octets intact");
+  }
+  // Codes du framework : ‑1 (WIFI_SCAN_RUNNING) se réessaie, ‑2 (WIFI_SCAN_FAILED) échoue.
+  CHECK(scanVerdict(0, 0) == SCAN_OK && scanVerdict(12, 0) == SCAN_OK, "≥ 0 → terminé");
+  CHECK(scanVerdict(-1, 0) == SCAN_RETRY, "‑1 à la 1ʳᵉ tentative → réessai");
+  CHECK(scanVerdict(-2, 0) == SCAN_FAIL, "‑2 → échec immédiat, sans réessai");
+  CHECK(scanVerdict(-1, 0) != scanVerdict(-2, 0), "‑1 et ‑2 traités différemment");
+  int tries = 1;                                   // radio toujours « en cours » : boucle de doScan()
+  for (int a = 0; scanVerdict(-1, a) == SCAN_RETRY; a++) tries++;
+  CHECK(tries == VN_SCAN_TRIES && scanVerdict(-1, VN_SCAN_TRIES - 1) == SCAN_FAIL,
+        "‑1 persistant → %d tentatives puis échec (%d)", VN_SCAN_TRIES, tries);
+}
+
 int main(int argc, char ** argv) {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   testNames();
@@ -728,6 +811,7 @@ int main(int argc, char ** argv) {
   testAnomaly();
   testTouchCal();
   testNightDim();
+  testWifiScan();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;
 }

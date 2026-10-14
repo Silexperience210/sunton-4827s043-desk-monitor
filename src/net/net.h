@@ -4,6 +4,7 @@
 #pragma once
 #include <stdint.h>
 #include "../core/ops.h"
+#include "../core/wifiscan.h"
 
 namespace net {
 
@@ -21,14 +22,12 @@ struct Status {
   vn::FeedStat feed[vn::FEED_COUNT];   // compteurs d'ingestion, tenus par la tâche réseau
 };
 
-struct ScanItem { char ssid[33]; int rssi; bool secure; };
-
 void   begin();                                  // démarre la tâche réseau
 Status status();
 void   requestRefresh();                         // rafraîchissement immédiat
 void   requestScan();
-bool   scanDone(int & count);                    // count = ‑1 si échec
-int    scanResults(ScanItem * out, int max);
+bool   scanDone(int & count);                    // count = ‑1 si échec, sinon lignes à afficher
+void   scanResults(vn::WifiList & out);          // copie de la dernière liste (vide si échec)
 void   connect(const char * ssid, const char * pass);
 void   requestSave();                            // sauvegarde historique / profils
 

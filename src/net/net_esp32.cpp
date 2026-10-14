@@ -6,6 +6,7 @@
 #include "../core/settings.h"
 #include "../core/gbfs.h"
 #include "../core/weather.h"
+#include "../core/wifiscan.h"
 #include "../platform/platform.h"
 #include <Arduino.h>
 #include <WiFi.h>
@@ -23,7 +24,7 @@ static Status s_status;
 static volatile bool s_refreshReq = false, s_scanReq = false, s_saveReq = false, s_connectReq = false;
 static char s_newSsid[33], s_newPass[65];
 static volatile int s_scanCount = -2;            // ‑2 : rien, ‑1 : échec, ≥ 0 : terminé
-static ScanItem s_scan[16];
+static vn::WifiList s_scan;                      // écrit par doScan() AVANT s_scanCount
 
 static char * s_buf = nullptr;                   // réponse HTTP (PSRAM)
 static const size_t BUF_CAP = 160 * 1024;
@@ -58,11 +59,9 @@ Status status() {
 void requestRefresh() { s_refreshReq = true; }
 void requestScan() { s_scanCount = -2; s_scanReq = true; }
 bool scanDone(int & count) { int c = s_scanCount; if (c == -2) return false; count = c; return true; }
-int scanResults(ScanItem * out, int max) {
-  int n = s_scanCount < 0 ? 0 : s_scanCount;
-  if (n > max) n = max;
-  memcpy(out, s_scan, sizeof(ScanItem) * n);
-  return n;
+void scanResults(vn::WifiList & out) {
+  if (s_scanCount < 0) { out.n = out.hidden = out.dropped = 0; return; }
+  out = s_scan;
 }
 void connect(const char * ssid, const char * pass) {
   strncpy(s_newSsid, ssid, sizeof(s_newSsid) - 1);
@@ -109,10 +108,13 @@ static int httpGetOnce(const char * url, size_t & len) {
   return (total > 0 && len < (size_t)total) ? vn::ING_E_TRUNC : 200;
 }
 
+static void serviceScan();
+
 // cyclocity peut couper la connexion TCP : 3 tentatives espacées.
 // code = statut de la dernière tentative (200, code HTTP, HTTPC_ERROR_* ou ING_E_*).
 static bool httpGet(const char * url, size_t & len, int & code) {
   for (int a = 0; a < 3; a++) {
+    serviceScan();             // feuille Wi-Fi ouverte : on n'attend pas la fin du cycle (voir serviceScan)
     code = httpGetOnce(url, len);
     if (code == 200 && len > 0) return true;
     if (code == 200) code = vn::ING_E_EMPTY;          // 200 sans corps
@@ -210,30 +212,64 @@ static void saveHistory() {
   }
 }
 
+// ── Recherche des réseaux ────────────────────────────────────────────
+// Balayage ACTIF sur la connexion en place : ESP-IDF le prévoit (« background scan »,
+// la station quitte son canal entre deux canaux balayés puis y revient) ; se
+// déconnecter d'abord serait pire, car l'auto-reconnexion remettrait la station
+// « en cours de connexion », état où esp_wifi_scan_start() échoue d'emblée.
+// show_hidden = true : les bornes masquées remontent avec un SSID vide ; elles sont
+// comptées, pas listées (voir core/wifiscan.h).
 static void doScan() {
-  int n = WiFi.scanNetworks(false, false);
-  if (n < 0) { s_scanCount = -1; return; }
-  int k = 0;
-  for (int i = 0; i < n && k < 16; i++) {
+  uint32_t t0 = millis();
+  int tries = 1;
+  int n = WiFi.scanNetworks(false, true);
+  // ‑1 = un balayage précédent n'a pas rendu la main (typiquement : l'attente bloquante
+  // de 10 s du framework a expiré avant l'événement de fin, et son drapeau « en cours »
+  // est resté levé). scanComplete() rend alors ses résultats s'ils sont arrivés, ou
+  // abaisse le drapeau périmé et rend ‑2 : on relance. ‑2 d'emblée = vrai échec.
+  for (int a = 0; vn::scanVerdict(n, a) == vn::SCAN_RETRY; a++) {
+    delay(VN_SCAN_RETRY_MS);
+    tries++;
+    n = WiFi.scanComplete();
+    if (n == WIFI_SCAN_FAILED) n = WiFi.scanNetworks(false, true);
+  }
+  if (n < 0) {
+    plat::logf("[wifi] recherche : \xC3\xA9" "chec %d apr\xC3\xA8s %d tentative(s), %u ms", n, tries, (unsigned)(millis() - t0));
+    s_scanCount = -1;
+    return;
+  }
+  if (n > 255) n = 255;                          // les accesseurs du framework prennent un index uint8_t
+  vn::WifiRaw * raw = nullptr;
+  if (n) {
+    raw = (vn::WifiRaw *)heap_caps_malloc(sizeof(vn::WifiRaw) * n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!raw) { WiFi.scanDelete(); s_scanCount = -1; return; }
+  }
+  for (int i = 0; i < n; i++) {
     String ss = WiFi.SSID(i);
-    if (!ss.length()) continue;
-    bool dup = false;
-    for (int j = 0; j < k; j++) if (strcmp(s_scan[j].ssid, ss.c_str()) == 0) { dup = true; break; }
-    if (dup) continue;
-    strncpy(s_scan[k].ssid, ss.c_str(), sizeof(s_scan[k].ssid) - 1);
-    s_scan[k].ssid[sizeof(s_scan[k].ssid) - 1] = 0;
-    s_scan[k].rssi = WiFi.RSSI(i);
-    s_scan[k].secure = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
-    k++;
+    strncpy(raw[i].ssid, ss.c_str(), sizeof(raw[i].ssid) - 1);
+    raw[i].ssid[sizeof(raw[i].ssid) - 1] = 0;
+    raw[i].rssi = WiFi.RSSI(i);
+    raw[i].channel = WiFi.channel(i);
+    raw[i].secure = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
   }
   WiFi.scanDelete();
-  // Tri par puissance décroissante
-  for (int a = 1; a < k; a++) {
-    ScanItem v = s_scan[a]; int b = a - 1;
-    while (b >= 0 && s_scan[b].rssi < v.rssi) { s_scan[b + 1] = s_scan[b]; b--; }
-    s_scan[b + 1] = v;
-  }
-  s_scanCount = k;
+  vn::buildWifiList(raw, n, s_scan);
+  if (raw) heap_caps_free(raw);
+  // Chiffres à relever sur la carte : bornes brutes, réseaux, masqués, durée, tentatives
+  plat::logf("[wifi] recherche : %d bornes, %d r\xC3\xA9seaux list\xC3\xA9s, %d masqu\xC3\xA9" "es, %d \xC3\xA9" "cart\xC3\xA9s, %u ms, %d tentative(s), %s",
+             n, s_scan.n, s_scan.hidden, s_scan.dropped, (unsigned)(millis() - t0), tries,
+             WiFi.status() == WL_CONNECTED ? "associ\xC3\xA9" : "non associ\xC3\xA9");
+  s_scanCount = s_scan.n;
+}
+
+// Appelée par la boucle de la tâche ET entre deux requêtes HTTP : un cycle GBFS +
+// météo peut durer de longues secondes (3 tentatives par flux) ; sans ce point de
+// passage, la feuille Wi-Fi restait sur « Recherche… » jusqu'à la fin du cycle.
+// Jamais pendant une requête : la connexion HTTP en cours n'est pas interrompue.
+static void serviceScan() {
+  if (!s_scanReq) return;
+  s_scanReq = false;
+  doScan();
 }
 
 static void wifiStart(const char * ssid, const char * pass) {
@@ -267,7 +303,7 @@ static void task(void *) {
       wifiStart(s_newSsid, s_newPass);
       wifiSince = millis();
     }
-    if (s_scanReq) { s_scanReq = false; doScan(); }
+    serviceScan();
 
     bool up = WiFi.status() == WL_CONNECTED;
     bool timeOk = plat::timeValid();

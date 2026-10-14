@@ -175,10 +175,18 @@ static void scanPoll(lv_timer_t *) {
   lv_timer_del(s_wTimer);
   s_wTimer = nullptr;
   lv_obj_clean(s_wList);
-  if (count <= 0) { lv_label_set_text(s_wStatus, count < 0 ? "\xC3\x89" "chec de la recherche" : "Aucun r\xC3\xA9seau trouv\xC3\xA9"); return; }
-  static net::ScanItem items[16];
-  int n = net::scanResults(items, 16);
-  lv_label_set_text_fmt(s_wStatus, "%d r\xC3\xA9seau%s \xC3\xA0 port\xC3\xA9" "e", n, n > 1 ? "x" : "");
+  if (count < 0) { lv_label_set_text(s_wStatus, "\xC3\x89" "chec de la recherche"); return; }
+  static vn::WifiList list;                // 40 lignes : hors de la pile LVGL
+  net::scanResults(list);
+  const vn::WifiNet * items = list.net;
+  int n = list.n;
+  // Les réseaux masqués n'ont pas de nom à toucher : on les compte dans l'en-tête,
+  // jamais en ligne vide. Les écartés (au-delà de VN_SCAN_MAX) sont les plus faibles.
+  char extra[48] = "";
+  if (list.hidden) snprintf(extra, sizeof(extra), " \xC2\xB7 %d masqu\xC3\xA9%s", list.hidden, list.hidden > 1 ? "s" : "");
+  if (list.dropped) snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), " \xC2\xB7 +%d plus faible%s", list.dropped, list.dropped > 1 ? "s" : "");
+  if (!n) lv_label_set_text_fmt(s_wStatus, "Aucun r\xC3\xA9seau trouv\xC3\xA9%s", extra);
+  else lv_label_set_text_fmt(s_wStatus, "%d r\xC3\xA9seau%s \xC3\xA0 port\xC3\xA9" "e%s", n, n > 1 ? "x" : "", extra);
   for (int i = 0; i < n; i++) {
     lv_obj_t * r = row(s_wList, 10);
     lv_obj_set_size(r, LV_PCT(100), 38);

@@ -35,19 +35,20 @@ Status status() {
 
 void requestRefresh() {}
 void requestScan() { s_scanReq = true; s_scanAt = sim::g_ms; }
+// Bornes brutes factices, passées par la même construction que sur l'appareil :
+// VELOH-OPS vu par deux bornes (maillage), une borne masquée.
+static const vn::WifiRaw RAW[7] = {
+  { "Ville-Lux-Guest", -70, 6, false }, { "VELOH-OPS", -66, 1, true }, { "", -60, 11, true },
+  { "JCDecaux-Depot", -61, 6, true }, { "VELOH-OPS", -52, 11, true }, { "Bureau-Regul-2", -74, 1, true },
+  { "FreeWifi_Gare", -83, 13, false } };
 bool scanDone(int & count) {
   if (!s_scanReq || sim::g_ms - s_scanAt < 400) return false;
-  count = 5;
+  vn::WifiList l;
+  vn::buildWifiList(RAW, 7, l);
+  count = l.n;
   return true;
 }
-int scanResults(ScanItem * out, int max) {
-  static const ScanItem L[5] = {
-    { "VELOH-OPS", -52, true }, { "JCDecaux-Depot", -61, true }, { "Ville-Lux-Guest", -70, false },
-    { "Bureau-Regul-2", -74, true }, { "FreeWifi_Gare", -83, false } };
-  int n = max < 5 ? max : 5;
-  memcpy(out, L, sizeof(ScanItem) * n);
-  return n;
-}
+void scanResults(vn::WifiList & out) { vn::buildWifiList(RAW, 7, out); }
 void connect(const char * ssid, const char *) { printf("[sim] connect %s\n", ssid); }
 void requestSave() {}
 

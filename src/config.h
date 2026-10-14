@@ -38,3 +38,8 @@
 #define VN_FC_STEPS        25   // prévision 0…120 min au pas de 5 min
 #define VN_MAX_ALERTS      96
 #define VN_MAX_TRANSFERS    8
+
+// ── Recherche Wi-Fi (voir core/wifiscan.h) ───────────────────────────
+#define VN_SCAN_MAX        40   // réseaux affichés (après dédoublonnage et tri ; au-delà, les plus faibles)
+#define VN_SCAN_TRIES       4   // tentatives quand la radio répond « balayage déjà en cours » (‑1)
+#define VN_SCAN_RETRY_MS 1500   // attente entre deux tentatives
