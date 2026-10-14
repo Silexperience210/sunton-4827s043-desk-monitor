@@ -5,6 +5,7 @@ include/secrets.h
 sim/build/
 sim/sim
 sim/test_core
+sim/bench_prevision
 sim_fs/
 .deps
 .deps/

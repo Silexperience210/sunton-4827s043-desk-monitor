@@ -45,10 +45,17 @@ TEST_OBJ := $(patsubst ../%.cpp,$(BUILD)/app/%.o,$(filter ../%,$(TEST_CXX))) \
 test_core: $(TEST_OBJ)
 	$(CXX) -o $@ $^ -lm
 
+# Banc de mesure de la prévision (docs/mesures-prevision.md) : même cœur, aucune UI
+BENCH_CXX := $(wildcard ../src/core/*.cpp) platform_sim.cpp bench_prevision.cpp
+BENCH_OBJ := $(patsubst ../%.cpp,$(BUILD)/app/%.o,$(filter ../%,$(BENCH_CXX))) \
+             $(patsubst %.cpp,$(BUILD)/sim/%.o,$(filter-out ../%,$(BENCH_CXX)))
+bench_prevision: $(BENCH_OBJ)
+	$(CXX) -o $@ $^ -lm
+
 # dépendances d'en-têtes (-MMD) : un .h modifié recompile ce qui l'inclut
--include $(APP_OBJ:.o=.d) $(TEST_OBJ:.o=.d)
+-include $(APP_OBJ:.o=.d) $(TEST_OBJ:.o=.d) $(BENCH_OBJ:.o=.d)
 
 clean:
-	rm -rf $(BUILD) sim test_core
+	rm -rf $(BUILD) sim test_core bench_prevision
 
 .PHONY: clean
