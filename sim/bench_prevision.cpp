@@ -5,7 +5,7 @@
 //
 //   make bench_prevision
 //   ./bench_prevision [--jours N] [--graine S] [--effet nul|moyen|fort] [--meteo ok|absente]
-//                     [--levier nom=0|1]… [--court]
+//                     [--levier nom=0|1]… [--court] [--prevision-parfaite] [--ferie-comme dimanche|mixte|ouvre]
 //
 // Ce qu'il mesure (voir docs/mesures-prevision.md) :
 //   1. MAE de la prévision à +15 / +30 / +60 / +120 min, par temps sec et par temps de pluie,
@@ -150,6 +150,8 @@ struct Cfg {
   bool wxAvailable = true;
   bool brief = false;
   bool perfectFc = false;          // prévision météo = la vérité (plafond de l'étape 4)
+  float holWe = 1.f;               // part « week-end » d'un férié : 1 dimanche (défaut), 0,5 mixte, 0 jour ouvré
+                                   // (le monde n'a qu'un profil de week-end : samedi = dimanche)
 };
 
 static const int NST = 143;
@@ -168,12 +170,15 @@ struct World {
   float F(int i, int64_t t) const {
     struct tm lt; plat::localTime(t, &lt);
     bool hol = isHoliday(lt);
-    int dow = hol ? 0 : lt.tm_wday;
+    int dow = lt.tm_wday;
     bool we = dow == 0 || dow == 6;
     float h = lt.tm_hour + lt.tm_min / 60.f - st[i].phase;
     if (h < 0) h += 24;
-    float base = shapeF(st[i].kind, we, dow, 3.f);
-    float f = base + st[i].amp * (shapeF(st[i].kind, we, dow, h) - base);
+    // un férié mélange la forme du week-end (part holWe) et celle de son jour de semaine
+    float ww = hol ? cfg.holWe : we ? 1.f : 0.f;
+    auto shp = [&](float hh) { return ww * shapeF(st[i].kind, true, 0, hh) + (1 - ww) * shapeF(st[i].kind, false, dow, hh); };
+    float base = shp(3.f);
+    float f = base + st[i].amp * (shp(h) - base);
     f = 0.05f + 0.85f * f;                       // parc moins rempli (instantané réel : ~1/3 à 14 h 30)
     return fminf(0.97f, fmaxf(0.03f, f));
   }
@@ -300,8 +305,9 @@ static void buildStations(World & w) {
 static void stepWorld(World & w, int64_t t, int dayIdx, int64_t & lastTruck) {
   struct tm lt; plat::localTime(t, &lt);
   bool hol = isHoliday(lt);
-  int dow = hol ? 0 : lt.tm_wday;
-  bool we = dow == 0 || dow == 6;
+  bool we = lt.tm_wday == 0 || lt.tm_wday == 6;
+  float ww = hol ? w.cfg.holWe : we ? 1.f : 0.f;
+  we = we || hol;
   float h = lt.tm_hour + lt.tm_min / 60.f;
   for (int i = 0; i < NST; i++) {
     SimSt & s = w.st[i];
@@ -313,7 +319,7 @@ static void stepWorld(World & w, int64_t t, int dayIdx, int64_t & lastTruck) {
     if (s.closed) continue;
     float f0 = w.F(i, t), f1 = w.F(i, t + 300);
     float m = w.mult(i, t);
-    float act = activity(s.kind, we, h) * s.cap / 12.f;     // par pas de 5 min
+    float act = (ww * activity(s.kind, true, h) + (1 - ww) * activity(s.kind, false, h)) * s.cap / 12.f;     // par pas de 5 min
     float net = (f1 - f0) * s.cap;
     float lamDep = m * (act / 2 + fmaxf(0.f, -net));
     float lamArr = m * (act / 2 + fmaxf(0.f, net));
@@ -371,6 +377,10 @@ int main(int argc, char ** argv) {
     } else if (!strcmp(argv[a], "--meteo") && a + 1 < argc) cfg.wxAvailable = strcmp(argv[++a], "absente") != 0;
     else if (!strcmp(argv[a], "--court")) cfg.brief = true;
     else if (!strcmp(argv[a], "--prevision-parfaite")) cfg.perfectFc = true;
+    else if (!strcmp(argv[a], "--ferie-comme") && a + 1 < argc) {
+      const char * v = argv[++a];
+      cfg.holWe = !strcmp(v, "mixte") ? 0.5f : !strcmp(v, "ouvre") ? 0.f : 1.f;
+    }
     else if (!strcmp(argv[a], "--levier") && a + 1 < argc) {
       const char * kv = argv[++a];
       const char * eq = strchr(kv, '=');
@@ -378,6 +388,9 @@ int main(int argc, char ** argv) {
       bool v = eq ? atoi(eq + 1) != 0 : true;
       if (k == "flux_meteo") g_pred.wxFlow = v;
       else if (k == "prevue_meteo") g_pred.wxForecast = v;
+      else if (k == "ferie_exclu") g_pred.holidaySkip = v;
+      else if (k == "ferie_dimanche") g_pred.holidaySunday = v;
+      else if (k == "plafond") g_pred.profCap = (uint8_t)(eq ? atoi(eq + 1) : VN_PROFILE_CAP_N);
       else { fprintf(stderr, "levier inconnu : %s\n", k.c_str()); return 1; }
     }
     else { fprintf(stderr, "option inconnue : %s\n", argv[a]); return 1; }
@@ -547,7 +560,7 @@ int main(int argc, char ** argv) {
 
   // ── Évaluation a posteriori des prévisions
   struct Cell { Acc fc[NH], per[NH], orc[NH], prof[NH], raw[NH]; };
-  Cell all, dry, wet, mature, matureWet, matureDry, hol, onset, ending;
+  Cell all, dry, wet, mature, matureWet, matureDry, hol, onset, ending, postHol;
   Cell byBlock[8];
   const int matureFrom = cfg.days >= 84 ? 56 : cfg.days / 2;
   for (const Pred & p : preds) {
@@ -570,6 +583,7 @@ int main(int argc, char ** argv) {
       add(all);
       add(isWet ? wet : dry);
       if (days[d].hol) add(hol);
+      if (!days[d].hol && ((d >= 7 && days[d - 7].hol) || (d >= 14 && days[d - 14].hol) || (d >= 21 && days[d - 21].hol))) add(postHol);
       if (d >= matureFrom) { add(mature); add(isWet ? matureWet : matureDry); if (isOnset) add(onset); if (isEnd) add(ending); }
       int b = d / 21; if (b < 8) add(byBlock[b]);
       if (p.st == CHANGED && h == 2) { days[d].chErr += fabs(ef); days[d].chN++; }
@@ -736,14 +750,22 @@ int main(int argc, char ** argv) {
     if (days[d].rainH >= 3) { fRain += days[d].falseUnus; nR++; }
     if (days[d].rainH == 0) { fDry += days[d].falseUnus; nD++; }
   }
+  // Absorption (levier de récence) : jours jusqu'à la moitié de l'écart initial, écart à +28 j, plancher (4 dernières semaines)
+  int absHalf = -1; double absFloor = 0; int absFloorN = 0;
+  for (int d = CHANGE_DAY; d < cfg.days; d++) {
+    if (absHalf < 0 && days[d].chBias <= days[CHANGE_DAY].chBias * 0.5f) absHalf = d - CHANGE_DAY;
+    if (d >= cfg.days - 28 && !isnan(days[d].chBias)) { absFloor += days[d].chBias; absFloorN++; }
+  }
   printf("\nSYNTHESE graine=%llu effet=%s mae15=%.4f mae30=%.4f mae60=%.4f mae120=%.4f mae60_sec=%.4f mae60_pluie=%.4f mae120_pluie=%.4f "
-         "orc60_pluie=%.4f orc60=%.4f per60=%.4f fausses_pluie=%.2f fausses_sec=%.2f rappel=%.1f rappel_pluie=%.1f rappel_sec=%.1f ferie60=%.4f annonce_vide=%.1f annonce_pleine=%.1f annonces_pluie_j=%.2f precision_pluie=%.1f precision_sec=%.1f alpha=%.3f alpha_brut=%.3f alpha_se=%.3f jours_alpha=%.1f mae60_debut=%.4f mae60_fin=%.4f n60_debut=%ld mae240=%.4f mae240_pluie=%.4f mae240_debut=%.4f\n",
+         "orc60_pluie=%.4f orc60=%.4f per60=%.4f fausses_pluie=%.2f fausses_sec=%.2f rappel=%.1f rappel_pluie=%.1f rappel_sec=%.1f ferie60=%.4f annonce_vide=%.1f annonce_pleine=%.1f annonces_pluie_j=%.2f precision_pluie=%.1f precision_sec=%.1f alpha=%.3f alpha_brut=%.3f alpha_se=%.3f jours_alpha=%.1f mae60_debut=%.4f mae60_fin=%.4f n60_debut=%ld mae240=%.4f mae240_pluie=%.4f mae240_debut=%.4f postferie60=%.4f fausses_ferie=%.2f ferie240=%.4f absorb_moitie=%d ecart_plus28=%.3f ecart_plancher=%.3f\n",
          (unsigned long long)cfg.seed, cfg.effName, mature.fc[0].mean(), mature.fc[1].mean(), mature.fc[2].mean(), mature.fc[3].mean(),
          matureDry.fc[2].mean(), matureWet.fc[2].mean(), matureWet.fc[3].mean(), matureWet.orc[2].mean(), mature.orc[2].mean(), mature.per[2].mean(),
          nR ? fRain / nR : NAN, nD ? fDry / nD : NAN, incTot ? 100.0 * incSeen / incTot : 0,
          incR ? 100.0 * incRS / incR : NAN, incD ? 100.0 * incDS / incD : NAN, hol.fc[2].mean(),
          rupt[0] ? 100.0 * ruptAnt[0] / rupt[0] : NAN, rupt[1] ? 100.0 * ruptAnt[1] / rupt[1] : NAN,
          nR ? (wn[0] + wn[1]) / nR : NAN, (wn[0] + wn[1]) ? 100 * (wo[0] + wo[1]) / (wn[0] + wn[1]) : NAN,
-         (sn[0] + sn[1]) ? 100 * (so[0] + so[1]) / (sn[0] + sn[1]) : NAN, m.wxAlpha, m.wxAlphaRaw, m.wxAlphaSE, [&] { int a = 0, t = 0; for (int d = 28; d < cfg.days; d++) { t++; a += days[d].alpha != 0; } return t ? 100.0 * a / t : 0.0; }(), onset.fc[2].mean(), ending.fc[2].mean(), onset.fc[2].n, mature.fc[4].mean(), matureWet.fc[4].mean(), onset.fc[4].mean());
+         (sn[0] + sn[1]) ? 100 * (so[0] + so[1]) / (sn[0] + sn[1]) : NAN, m.wxAlpha, m.wxAlphaRaw, m.wxAlphaSE, [&] { int a = 0, t = 0; for (int d = 28; d < cfg.days; d++) { t++; a += days[d].alpha != 0; } return t ? 100.0 * a / t : 0.0; }(), onset.fc[2].mean(), ending.fc[2].mean(), onset.fc[2].n, mature.fc[4].mean(), matureWet.fc[4].mean(), onset.fc[4].mean(), postHol.fc[2].mean(),
+         [&] { double f = 0; int nn = 0; for (int d = 0; d < cfg.days; d++) if (days[d].hol) { f += days[d].falseUnus; nn++; } return nn ? f / nn : NAN; }(),
+         hol.fc[4].mean(), absHalf, CHANGE_DAY + 28 < cfg.days ? days[CHANGE_DAY + 28].chBias : NAN, absFloorN ? absFloor / absFloorN : NAN);
   return 0;
 }

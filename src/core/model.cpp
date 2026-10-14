@@ -1,5 +1,6 @@
 #include "model.h"
 #include "settings.h"
+#include "calendar.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <math.h>
@@ -35,6 +36,19 @@ static void localDM(int64_t t, int & dow, int & mod) {
   plat::localTime(t, &lt);
   dow = lt.tm_wday;
   mod = lt.tm_hour * 60 + lt.tm_min;
+}
+static bool holidayAt(int64_t t) {
+  struct tm lt;
+  plat::localTime(t, &lt);
+  return isPublicHoliday(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
+}
+// Jour « de profil » : le jour de semaine, ou dimanche pour un jour férié (levier 5a-ii)
+static void profDM(int64_t t, int & dow, int & mod) {
+  struct tm lt;
+  plat::localTime(t, &lt);
+  dow = lt.tm_wday;
+  mod = lt.tm_hour * 60 + lt.tm_min;
+  if (g_pred.holidaySunday && isPublicHoliday(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday)) dow = 0;
 }
 
 // ── Initialisation ───────────────────────────────────────────────────
@@ -233,22 +247,24 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
 
       // Profils : moyenne mobile plafonnée (≈ fenêtre exponentielle, cf. useAvailability.js)
       int dow, mod;
-      localDM(t, dow, mod);
+      profDM(t, dow, mod);
       int cell = dow * DAYQ + mod / 15;
-      for (int i = 0; i < n; i++) {
+      const bool skipDay = g_pred.holidaySkip && holidayAt(t);
+      const int capN = g_pred.profCap >= 2 ? g_pred.profCap : 2;
+      for (int i = 0; i < n && !skipDay; i++) {
         const Station & s = st[i];
         if (!s.active || !s.live || s.status == ST_CLOSED) continue;
         ProfCell & c = prof[(size_t)i * PROF_STRIDE + cell];
         float x = s.bikes * 256.f;
         if (c.n == 0) { c.a = (uint16_t)clampf(x, 0, 65535); c.n = 1; }
         else {
-          int nn = c.n < VN_PROFILE_CAP_N ? c.n + 1 : VN_PROFILE_CAP_N;
+          int nn = c.n < capN ? c.n + 1 : capN;
           float a = c.a + (x - c.a) / nn;
           c.a = (uint16_t)clampf(a + 0.5f, 0, 65535);
           c.n = (uint8_t)nn;
         }
       }
-      if (cellN[cell] < 255) cellN[cell]++;
+      if (!skipDay && cellN[cell] < 255) cellN[cell]++;
       learnSamples++;
       if (!learnSince) learnSince = now;
       learnWeather(t);
@@ -320,10 +336,12 @@ static bool profileLocal(const ProfCell * p, int dow, int mod, float & avg, floa
   return false;
 }
 
+bool Model::holidayProfile(int64_t t) const { return g_pred.holidaySunday && holidayAt(t); }
+
 bool Model::profileAt(int s, int64_t t, float & avg, float & nEff) const {
   if (s < 0 || s >= n) return false;
   int dow, mod;
-  localDM(t, dow, mod);
+  profDM(t, dow, mod);
   return profileLocal(prof + (size_t)s * PROF_STRIDE, dow, mod, avg, nEff);
 }
 
@@ -367,16 +385,31 @@ static float trendSlope(const Model & m, int i, int64_t now, float & oldest) {
 // La part météo c·M est rendue dans wxPart (0 sans correction). Elle ne touche que la
 // trajectoire : le point 0 reste le relevé réel.
 static const float WX_MAX_SHARE = 0.4f;
-static void projectSteps(const ProfCell * p, int dow0, int mod0, float cur, float capE, float slope,
+// (jour de profil, minute) de chaque pas : sans le levier 5a-ii, le jour de départ et la minute qui
+// déborde (profileLocal passe minuit tout seul) — exactement la règle d'avant ; avec, chaque pas est
+// daté pour qu'un jour férié — et lui seul — prenne le profil du dimanche.
+struct StepDM { int16_t dow[128]; int16_t mod[128]; };
+static void stepDays(int64_t now, int stepMin, int nSteps, StepDM & d) {
+  int dow0, mod0;
+  localDM(now, dow0, mod0);
+  for (int k = 0; k < nSteps && k < 128; k++) {
+    if (!g_pred.holidaySunday) { d.dow[k] = (int16_t)dow0; d.mod[k] = (int16_t)(mod0 + k * stepMin); continue; }
+    int dw, md;
+    profDM(now + (int64_t)k * stepMin * 60, dw, md);
+    d.dow[k] = (int16_t)dw; d.mod[k] = (int16_t)md;
+  }
+}
+
+static void projectSteps(const ProfCell * p, const StepDM & dm, float cur, float capE, float slope,
                          int stepMin, int nSteps, float * out, float * conf, const float * wxF, float * wxPart) {
   float p0, n0;
-  bool has0 = profileLocal(p, dow0, mod0, p0, n0);
+  bool has0 = profileLocal(p, dm.dow[0], dm.mod[0], p0, n0);
   const float tau = 25.f;
   float prev = p0, M = 0;
   for (int k = 0; k < nSteps; k++) {
     int h = k * stepMin;
     float dS = 0, cS = 0, ph, nh;
-    if (has0 && profileLocal(p, dow0, mod0 + h, ph, nh)) {
+    if (has0 && profileLocal(p, dm.dow[k], dm.mod[k], ph, nh)) {
       dS = ph - p0;
       cS = clampf((n0 < nh ? n0 : nh) / CONF_N, 0, 1);
       if (wxF && k > 0) M += (ph - prev) * wxF[k];
@@ -411,7 +444,7 @@ static bool wxFactors(const Model & m, int i, int64_t now, int stepMin, int nSte
   return true;
 }
 
-static void forecastStation(Model & m, int i, int dow0, int mod0, int64_t now) {
+static void forecastStation(Model & m, int i, const StepDM & dm, int64_t now) {
   Station & s = m.st[i];
   float cur = s.bikes, capE = s.capEff();
   s.etaEmpty = s.etaFull = -1;
@@ -427,7 +460,7 @@ static void forecastStation(Model & m, int i, int dow0, int mod0, int64_t now) {
 
   float conf[VN_FC_STEPS], wxF[VN_FC_STEPS];
   bool wxOn = wxFactors(m, i, now, 5, VN_FC_STEPS, wxF);
-  projectSteps(m.prof + (size_t)i * PROF_STRIDE, dow0, mod0, cur, capE, slope, 5, VN_FC_STEPS, s.fc, conf,
+  projectSteps(m.prof + (size_t)i * PROF_STRIDE, dm, cur, capE, slope, 5, VN_FC_STEPS, s.fc, conf,
                wxOn ? wxF : nullptr, s.fcWx);
   float conf60 = conf[12];
   s.conf = (uint8_t)lroundf(conf60 * 100);
@@ -460,13 +493,14 @@ bool Model::project(int i, int64_t now, int stepMin, int nSteps, float * out, fl
     for (int k = 0; k < nSteps; k++) { out[k] = s.bikes; if (conf) conf[k] = 0; if (wxPart) wxPart[k] = 0; }
     return true;
   }
-  int dow0, mod0;
-  localDM(now, dow0, mod0);
+  if (nSteps > 128) nSteps = 128;                     // la courbe 24 h en a 97
+  static StepDM dm;
+  stepDays(now, stepMin, nSteps, dm);
   float oldest;
   float slope = trendSlope(*this, i, now, oldest);
-  float wxF[128];                                     // la courbe 24 h en a 97
-  bool wxOn = nSteps <= 128 && wxFactors(*this, i, now, stepMin, nSteps, wxF);
-  projectSteps(prof + (size_t)i * PROF_STRIDE, dow0, mod0, s.bikes, s.capEff(), slope, stepMin, nSteps, out, conf,
+  float wxF[128];
+  bool wxOn = wxFactors(*this, i, now, stepMin, nSteps, wxF);
+  projectSteps(prof + (size_t)i * PROF_STRIDE, dm, s.bikes, s.capEff(), slope, stepMin, nSteps, out, conf,
                wxOn ? wxF : nullptr, wxPart);
   return true;
 }
@@ -634,6 +668,8 @@ void Model::recompute(int64_t now) {
   localDM(now, dow0, mod0);
   int hour = mod0 / 60;
   bool activeHours = hour >= 7 && hour < 22;
+  static StepDM fcDays;                                 // pas de la prévision 2 h, communs au parc
+  stepDays(now, 5, VN_FC_STEPS, fcDays);
   // Météo : utilisée seulement si reçue et fraîche (3 périodes de VN_WX_REFRESH_S, comme le bandeau)
   wxUse = wxUseAt(now);
   wxNow = wxUse == WXU_OK ? wxPenalty(wx.temp, wx.rain, wx.wind, wx.code) : 0;
@@ -651,7 +687,7 @@ void Model::recompute(int64_t now) {
     s.status = classify(s);
     s.frozen = activeHours && s.live && s.status != ST_CLOSED && s.lastChange
                && (now - s.lastChange) >= (int64_t)g_set.frozenHours * 3600;
-    forecastStation(*this, i, dow0, mod0, now);
+    forecastStation(*this, i, fcDays, now);
     anomalyStation(*this, s, i, now, activeHours);
 
     // Besoin de régulation (viser 50 % de la capacité utile à +1 h)

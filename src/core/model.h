@@ -38,6 +38,9 @@ struct PredictOpts {
   bool wxFlow = true;          // étape 3a : mouvement prévu du profil × (1 − α·(x − x̄ₕ)), α global appris
   // (étape 3b — α par station — mesurée et non livrée : voir le commit a913bcb)
   bool wxForecast = true;      // étape 4 : au-delà de 2 h, x = météo PRÉVUE à t+h (≤ 2 h : la météo actuelle)
+  bool holidaySkip = false;    // étape 5a-i : un jour férié n'alimente pas le profil
+  bool holidaySunday = true;   // étape 5a-ii : un jour férié se prévoit (et s'évalue) avec le profil du dimanche
+  uint8_t profCap = VN_PROFILE_CAP_N;  // étape 5b : plafond de la moyenne mobile (récence)
 };
 extern PredictOpts g_pred;
 
@@ -220,6 +223,8 @@ struct Model {
 
   // Profil appris : moyenne attendue des vélos à l'instant t (lissée ±15 min, pool semaine/week-end)
   bool  profileAt(int s, int64_t t, float & avg, float & nEff) const;
+  // Vrai si l'instant t est un jour férié prévu avec le profil du dimanche (étape 5a-ii) : provenance affichable
+  bool  holidayProfile(int64_t t) const;
   // Projection d'une station sur nSteps pas de stepMin minutes à partir de now (point 0 = actuel),
   // avec la MÊME règle que la prévision 2 h (profil + tendance amortie). conf[k] = 0…1 par pas
   // (confiance du profil sur ce créneau). Renvoie false si la station est inconnue.

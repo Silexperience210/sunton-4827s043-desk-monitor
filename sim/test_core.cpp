@@ -6,6 +6,7 @@
 #include "../src/core/weather.h"
 #include "../src/core/ops.h"
 #include "../src/core/wifiscan.h"
+#include "../src/core/calendar.h"
 #include "../src/platform/platform.h"
 #include "../src/hal/touch_api.h"
 #include <stdio.h>
@@ -1004,6 +1005,75 @@ static int64_t lux(int y, int mo, int d, int h, int mi) {
   tzset();
   return (int64_t)mktime(&t);
 }
+// ── Jours fériés (étape 5a-ii) : calendrier, profil du dimanche ──────
+static int holTruth(int64_t t) {
+  struct tm lt; plat::localTime(t, &lt);
+  bool hol = isPublicHoliday(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
+  return (hol || lt.tm_wday == 0) ? 3 : lt.tm_wday == 6 ? 8 : 15;
+}
+static void testHolidays() {
+  int em, ed;
+  easterDate(2026, em, ed); CHECK(em == 4 && ed == 5, "Pâques 2026 : 5 avril (%d/%d)", ed, em);
+  easterDate(2027, em, ed); CHECK(em == 3 && ed == 28, "Pâques 2027 : 28 mars (%d/%d)", ed, em);
+  easterDate(2025, em, ed); CHECK(em == 4 && ed == 20, "Pâques 2025 : 20 avril (%d/%d)", ed, em);
+  easterDate(2038, em, ed); CHECK(em == 4 && ed == 25, "Pâques 2038 : 25 avril, la plus tardive (%d/%d)", ed, em);
+  static const int YES[][3] = { { 2026, 1, 1 }, { 2026, 4, 6 }, { 2026, 5, 1 }, { 2026, 5, 9 }, { 2026, 5, 14 }, { 2026, 5, 25 },
+                                { 2026, 6, 23 }, { 2026, 8, 15 }, { 2026, 11, 1 }, { 2026, 12, 25 }, { 2026, 12, 26 },
+                                { 2027, 3, 29 }, { 2027, 5, 6 }, { 2027, 5, 17 }, { 2024, 5, 9 }, { 2024, 5, 20 } };
+  static const int NO[][3] = { { 2026, 4, 3 }, { 2026, 4, 5 }, { 2026, 12, 24 }, { 2026, 12, 31 }, { 2026, 5, 15 },
+                               { 2026, 6, 22 }, { 2026, 7, 14 }, { 2026, 11, 11 }, { 2027, 1, 2 }, { 2026, 5, 24 } };
+  int ok = 0;
+  for (auto & d : YES) ok += isPublicHoliday(d[0], d[1], d[2]);
+  CHECK(ok == 16, "16 jours fériés reconnus (Pâques, Ascension, Pentecôte, 9 mai, 23 juin… 2024–2027) : %d", ok);
+  int ko = 0;
+  for (auto & d : NO) ko += isPublicHoliday(d[0], d[1], d[2]);
+  CHECK(ko == 0, "Vendredi saint, dimanche de Pâques, 24 et 31 décembre, 14 juillet… ne sont pas fériés : %d faux positif(s)", ko);
+
+  // Mini-monde : semaine 15 vélos, samedi 8, dimanche et fériés 3 ; appris du 07/12/2026 au 31/12/2026
+  // (Noël et Saint-Étienne compris, appris comme des dimanches)
+  settingsDefaults(g_set);
+  g_pred = PredictOpts();
+  CHECK(g_pred.holidaySunday, "levier 5a-ii actif par défaut");
+  static Model m;
+  CHECK(m.init(), "init fériés");
+  const int64_t T0 = lux(2026, 12, 7, 0, 0);
+  InfoRec ir[1] = { mkInfo("1", 49.6f, 6.13f, 20) };
+  m.applyInfo(ir, 1, T0);
+  StatusRec sr[1];
+  for (int64_t t = T0; t < lux(2027, 1, 1, 0, 0); t += 300) { sr[0] = mkStat("1", holTruth(t), 20); m.applyStatus(sr, 1, t); }
+  float p, n;
+  CHECK(m.profileAt(0, lux(2026, 12, 30, 10, 0), p, n) && fabsf(p - 15) < 0.6f, "mercredi ordinaire : profil de semaine (%.1f)", p);
+  CHECK(m.profileAt(0, lux(2027, 1, 1, 10, 0), p, n) && fabsf(p - 3) < 0.6f, "vendredi 1er janvier : profil du dimanche (%.1f)", p);
+  // Projection depuis le 1er janvier 20:00 : le lendemain est un SAMEDI ordinaire (pas « lundi » ni dimanche)
+  const int64_t t1 = lux(2027, 1, 1, 20, 0);
+  sr[0] = mkStat("1", 3, 20);
+  m.applyStatus(sr, 1, t1);
+  float o[97], c[97];
+  m.project(0, t1, 15, 97, o, c);
+  // samedi = 8 vélos, confiance c (2 samedis appris : le 26/12 férié compte pour un dimanche) ;
+  // l'erreur à éviter : « dimanche + 1 = lundi » donnerait 3 + c·(15 − 3)
+  printf("  1er janvier 20:00 : 3 vélos → samedi 10:00 %.1f (attendu 3 + c·5 = %.1f ; lundi par erreur : %.1f)\n",
+         o[56], 3 + c[56] * 5, 3 + c[56] * 12);
+  CHECK(fabsf(o[56] - (3 + c[56] * 5)) < 0.3f && c[56] > 0.5f, "lendemain d'un férié : profil de SON jour (samedi), pas « dimanche + 1 » (%.1f)", o[56]);
+  CHECK(m.st[0].anom == AN_OFF_HOURS || m.st[0].anom == AN_NORMAL, "férié calme hors heures : pas d'alerte");
+  // Férié en journée : 3 vélos sont l'habitude d'un dimanche → silence ; sans le levier → « en dessous »
+  static Model q;
+  q.init();
+  q.applyInfo(ir, 1, T0);
+  for (int64_t t = T0; t < lux(2027, 1, 1, 10, 0); t += 300) { sr[0] = mkStat("1", holTruth(t), 20); q.applyStatus(sr, 1, t); }
+  sr[0] = mkStat("1", 3, 20);
+  q.applyStatus(sr, 1, lux(2027, 1, 1, 10, 0) + 60);
+  CHECK(q.st[0].anom == AN_NORMAL && countAlerts(q, AL_UNUSUAL, -1) == 0, "1er janvier 10:00, 3 vélos : habituel pour un férié (état %d)", q.st[0].anom);
+  g_pred.holidaySunday = false;
+  q.recompute(lux(2027, 1, 1, 10, 0) + 60);
+  CHECK(q.st[0].anom == AN_LOW, "sans le levier : la même valeur sonnerait « en dessous » (état %d)", q.st[0].anom);
+  CHECK(!q.holidayProfile(lux(2027, 1, 1, 10, 0)), "sans le levier : l'écran ne dit pas « profil du dimanche »");
+  g_pred.holidaySunday = true;
+  q.recompute(lux(2027, 1, 1, 10, 0) + 60);
+  CHECK(q.holidayProfile(lux(2027, 1, 1, 0, 0)) && q.holidayProfile(lux(2027, 1, 1, 23, 59)) && !q.holidayProfile(lux(2026, 12, 31, 23, 59))
+        && !q.holidayProfile(lux(2027, 1, 2, 0, 0)), "provenance affichable : « profil du dimanche » du 1er janvier 00:00 à 23:59, pas la veille ni le lendemain");
+}
+
 static void testNightDim() {
   settingsDefaults(g_set);
   struct { int h, mi; bool dim; } T[] = {
@@ -1131,6 +1201,7 @@ int main(int argc, char ** argv) {
   testAnomaly();
   testHistWeather();
   testWxLearn();
+  testHolidays();
   testTouchCal();
   testNightDim();
   testWifiScan();

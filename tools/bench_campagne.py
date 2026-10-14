@@ -24,13 +24,16 @@ KEYS = [
     ("mae60_sec", "MAE +60 sec", 3), ("mae60_pluie", "MAE +60 pluie", 3), ("mae120_pluie", "MAE +120 pluie", 3),
     ("mae240", "MAE +240 (courbe 24 h)", 3), ("mae240_pluie", "MAE +240 pluie", 3), ("mae240_debut", "MAE +240 pluie qui commence", 3),
     ("mae60_debut", "MAE +60 pluie qui commence", 3), ("mae60_fin", "MAE +60 pluie qui s'arrête", 3),
-    ("orc60_pluie", "oracle +60 pluie", 3), ("orc60", "oracle +60", 3), ("per60", "persistance +60", 3), ("ferie60", "MAE +60 fériés", 3),
+    ("orc60_pluie", "oracle +60 pluie", 3), ("orc60", "oracle +60", 3), ("per60", "persistance +60", 3), ("ferie60", "MAE +60 fériés", 3), ("ferie240", "MAE +240 fériés", 3),
+    ("postferie60", "MAE +60 mêmes jours, 3 sem. après un férié", 3), ("fausses_ferie", "fausses/j fériés", 1),
     ("fausses_pluie", "fausses/j pluie", 1), ("fausses_sec", "fausses/j sec", 1), ("rappel", "rappel incidents %", 1),
     ("rappel_pluie", "rappel jours de pluie %", 1), ("rappel_sec", "rappel jours secs %", 1),
     ("annonce_vide", "ruptures annoncées %", 1), ("annonce_pleine", "saturations annoncées %", 1),
     ("annonces_pluie_j", "annonces rupture+saturation / j de pluie", 1),
     ("jours_alpha", "jours avec α ≠ 0 (j ≥ 29) %", 1),
     ("precision_pluie", "précision des annonces, pluie %", 1), ("precision_sec", "précision des annonces, sec %", 1),
+    ("absorb_moitie", "agrandissement : jours pour absorber la moitié", 1), ("ecart_plus28", "agrandissement : écart à la jumelle à +28 j", 2),
+    ("ecart_plancher", "écart à la jumelle, 4 dernières semaines (bruit du profil)", 2),
 ]
 
 
