@@ -63,6 +63,9 @@ prévu(h) = actuel + c · [profil(t+h) − profil(t) + part météo(h)] + (1 −
   (moyenne mobile plafonnée ≈ 8 semaines par créneau, lissage ±15 min). Tant qu'un créneau est jeune,
   il emprunte aux jours du même type (lun–ven / sam–dim) : les prévisions deviennent utiles dès le
   2ᵉ jour au lieu de la 2ᵉ semaine.
+  Un **jour férié** légal luxembourgeois (fêtes fixes, lundi de Pâques, Ascension, lundi de Pentecôte)
+  se prévoit et s'évalue avec le profil du **dimanche**, et l'écran le dit (« jour férié : profil du
+  dimanche ») ; le lendemain reprend le profil de son propre jour.
 - **tendance** : régression sur les 30 dernières minutes, amortie (τ = 25 min).
 - **c** : confiance (0 → 1) selon le nombre d'observations ; affichée dans les fiches.
 - **part météo** : quand le temps est pire que la normale de l'heure (pluie, vent > 20 km/h, froid,
@@ -320,16 +323,17 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision
-./test_core ../docs/donnees     # 691 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 707 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin,
+                                 # jours fériés (calendrier, profil du dimanche),
                                  # liste Wi-Fi (tri, dédoublonnage, masqués, réessais)
 ./sim ../docs/donnees /tmp/captures   # scénario tactile, captures, audit des zones tactiles, étalonnage
 ./sim ../docs/donnees /tmp/boot boot              # premier démarrage : sans heure, sans Wi-Fi, sans données
 ./sim ../docs/donnees /tmp/boot2 boot-wifi-ko     # réseau enregistré mais injoignable
 ./sim ../docs/donnees /tmp/totaux totaux          # totaux du tableau de bord, sans historique (audit des chiffres)
 ./sim ../docs/donnees /tmp/ops ops                # écrans d'exploitation : fraîcheur, provenance, ingestion, 24 h, « inhabituel »
-                                 # ces écrans sont archivés dans docs/captures/ (24_…40_)
+                                 # ces écrans sont archivés dans docs/captures/ (24_…42_)
 ./bench_prevision                # banc de la prévision : 143 stations et une météo simulées sur 168 jours,
                                  # MAE à +15…+120 min, alertes par jour de pluie / sec, maturation du profil
                                  # (méthode et chiffres : docs/mesures-prevision.md)

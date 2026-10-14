@@ -12,6 +12,7 @@ cd sim && make bench_prevision
 ./bench_prevision                                  # rapport complet : 168 jours, graine 1, effet « moyen »
 ./bench_prevision --effet fort --graine 2          # autre monde
 ./bench_prevision --meteo absente                  # la carte ne reçoit jamais la météo
+./bench_prevision --ferie-comme mixte              # contre-hypothèse : un férié à mi-chemin (ou « ouvre »)
 cd .. && python3 tools/bench_campagne.py           # 3 graines × 3 effets, en parallèle (~1 min)
 python3 tools/bench_campagne.py --levier nom=1     # un levier, comparé apparié à la référence
 ```
@@ -392,3 +393,148 @@ mieux à cet horizon.
   `39_provenance_prevision_meteo.png`, `40_fiche_meteo_indisponible.png` ; fiches existantes mises à jour
   (`09`, `33`, `36`). L'état « coefficient appris » des captures est **injecté** par le scénario du
   simulateur (le jeu de données réel n'a pas d'historique météo) ; le scénario vérifie le texte affiché.
+
+## Étape 5a — jours fériés
+
+Calendrier légal du Luxembourg (`src/core/calendar.cpp` : 8 fêtes fixes, lundi de Pâques, Ascension,
+lundi de Pentecôte ; testé de 2024 à 2038). Deux leviers distincts, mesurés séparément (commit
+d'expérience `011ef52`, rejouable : `python3 tools/bench_campagne.py --graines 1,2,3,4,5,6 --base
+ferie_dimanche=0 --levier ferie_exclu=1`). 6 graines, 168 jours (8 fériés dans la période), écart apparié.
+
+### 5a-i — exclure les fériés du profil (le levier proposé) : **perd, non livré**
+
+| mesure | effet nul | effet moyen | effet fort |
+|---|---|---|---|
+| MAE +60, jours fériés | 1,370 → 1,390 (+1,5 %) | 1,312 → 1,329 (+1,3 %) | 1,265 → 1,282 (+1,3 %) |
+| MAE +240, jours fériés | 2,879 → 2,953 (+2,6 %) | 2,767 → 2,839 (+2,6 %) | 2,681 → 2,749 (+2,5 %) |
+| fausses alertes / jour férié | 183 → 193 | 174 → 184 | 172 → 182 |
+| MAE +60, mêmes jours de semaine dans les 3 semaines suivantes | +0,5 % | +0,4 % | +0,3 % |
+
+Exclure le férié ne résout pas le problème du jour férié lui-même (on le prévoit toujours comme un mardi
+ordinaire, et même un peu plus mal, puisque l'unique trace qu'il laissait dans le profil disparaît). Quant à la
+« contamination » qu'il était censé éviter, elle n'existe presque pas : avec une moyenne plafonnée à 24, un
+férié pèse 1/24 dans sa case et l'effet sur les mardis suivants est **dans le bruit** (et de signe contraire).
+
+### 5a-ii — prévoir et évaluer un férié avec le profil du dimanche : **gagne, livré**
+
+Un jour férié lit (et nourrit) les cases du dimanche ; chaque pas de la projection est daté, si bien que le
+lendemain d'un férié reprend le profil de **son** jour (et non « dimanche + 1 = lundi »). L'écran le dit :
+« jour férié : profil du dimanche » (fiche, ligne d'écart) et « Le 25/12 est férié : profil du dimanche. »
+(prévision 24 h) — captures `41_prevision_24h_ferie.png` et `42_fiche_ferie.png`.
+
+| mesure | effet nul | effet moyen | effet fort |
+|---|---|---|---|
+| **MAE +60, jours fériés** | 1,370 → **1,007 (−26,5 %)** | 1,312 → **0,970 (−26,1 %)** | 1,265 → **0,940 (−25,7 %)** |
+| MAE +240, jours fériés | 2,879 → 2,146 (−25,5 %) | 2,767 → 2,105 (−23,9 %) | 2,681 → 2,050 (−23,5 %) |
+| **fausses alertes / jour férié** | 183 → **133 (−27 %)** | 174 → **123 (−29 %)** | 172 → **125 (−28 %)** |
+| MAE +15 / +60 / +120, tout | −0,8 / −1,5 / −2,2 % | −0,8 / −1,5 / −2,2 % | −0,8 / −1,5 / −2,1 % |
+| MAE +240 (courbe 24 h), tout | −1,5 % | −1,4 % | −1,4 % |
+| MAE +60, mêmes jours dans les 3 semaines suivantes | +0,5 % | +0,4 % | +0,2 % |
+| fausses alertes / jour sec, rappel des incidents | inchangés | inchangés | inchangés |
+
+Le jour férié cesse d'être **pire que la persistance** (étape 0 : 1,31 contre 0,97) : il passe au niveau
+des autres jours. Le coût sur les jours ordinaires suivants (+0,003 à +0,006 vélo) est réel mais
+négligeable ; je ne l'explique pas entièrement (le férié ne nourrit plus la case du jour ouvré, qui a donc une
+observation de moins).
+
+**Réserve majeure — le gain dépend d'une hypothèse que le banc ne peut pas trancher.** Le monde simulé fait
+vivre un férié *exactement* comme un dimanche : c'est l'hypothèse du levier, codée dans la vérité. J'ai donc
+mesuré deux contre-hypothèses (`--ferie-comme`, mêmes 6 graines) :
+
+| monde simulé | MAE +60 fériés | MAE +240 fériés | MAE +240, tout | fausses / jour férié |
+|---|---|---|---|---|
+| férié = dimanche (défaut) | −26 % | −24 % | −1,4 % | −28 % |
+| férié à mi-chemin (½ week-end, ½ jour ouvré) | −5 % | **+0,5 à +1,3 %** | **+0,6 %** | −4 à −8 % |
+| férié vécu comme un jour ouvré | **+11 %** | **+21 %** | **+2,3 %** | **+7 à +10 %** |
+
+(« prévoir en dimanche sans le verser au profil », 5a-i + 5a-ii, est moins bon que 5a-ii seul dans les trois
+mondes : −1,3 % / +7 % / +20 % de MAE +60 sur les fériés, respectivement.)
+
+Au Luxembourg, un jour férié légal ferme les écoles, les administrations et la plupart des bureaux et
+commerces : l'hypothèse « dimanche » est la plus plausible, et c'est pourquoi le levier est livré. Mais
+**c'est un pari tant que la carte n'a pas vu un vrai férié** : à vérifier sur les relevés GBFS du 25/12/2026
+(un vendredi), en comparant le jour réel aux profils du dimanche et du vendredi. Le levier tient en un booléen
+(`g_pred.holidaySunday`).
+
+## Étape 5b — récence (plafond de la moyenne mobile) : **compromis, non livré**
+
+**Objection au plan.** Le profil n'est pas une « fenêtre plafonnée à 24 observations » qu'il faudrait
+remplacer par une décroissance exponentielle : une fois 24 relevés atteints, la moyenne plafonnée **est** une
+moyenne exponentielle de poids 1/24 (constante de temps 24 relevés, soit 8 semaines à 3 relevés par
+semaine et par case de 15 min). La seule question est donc la valeur du plafond. Mesurée (6 graines) :
+
+| plafond | MAE +15 | MAE +60 | MAE +240 | fausses / jour sec | moitié de l'agrandissement absorbée | écart à la jumelle à +28 j |
+|---|---|---|---|---|---|---|
+| 12 | +13,7 % | +4,7 % | +1,8 % | −3,7 % | 48 → **28 j** | 3,06 → 2,34 vélos |
+| 16 | +5,5 % | +2,0 % | +0,7 % | −2,0 % | 48 → 36 j | 3,06 → 2,58 vélos |
+| **24 (actuel)** | 0,405 | 1,090 | 2,186 | 158,6 | **48 j** | **3,06 vélos** |
+| 32 | −1,4 % | −0,6 % | −0,1 % | +0,9 % | 48 → 61 j | 3,06 → 3,31 vélos |
+
+(effet « moyen » ; les mondes nul et fort donnent les mêmes écarts de MAE à ± 0,3 point près. La mesure
+d'absorption est bruitée — une seule station : écart apparié −21 ± 17 j pour 12, −12 ± 6 j pour 16,
++13 ± 7 j pour 32 — ; l'écart à +28 j, moyenné sur 7 jours, l'est moins : −0,72 ± 0,23 vélo pour 12.)
+
+Pas de gagnant : chaque jour de réactivité gagnée sur un changement rare (un agrandissement) se paie
+**tous les jours** en précision. Et le monde simulé est stationnaire hors de cet évènement, ce qui favorise
+une mémoire longue. Sur un vrai parc qui dérive (saisons, chantiers), l'optimum est peut-être plus court,
+mais rien ne permet de le mesurer ici. Le levier juste est **ciblé**, pas global : voir les
+recommandations ci-dessous.
+
+## Étape 5c — reprise après la pluie : **non construite (non mesurable)**
+
+- *« Une pluie qui commence dans l'heure compte plus qu'une pluie installée »* : mesuré à l'étape 4a.
+  Utiliser la pluie annoncée gagne quand elle commence (−1 à −2 % sur ces créneaux) et perd autant quand elle
+  s'arrête, **même avec une prévision parfaite** ; à 2 h, rien de net. Livré seulement au-delà de 2 h (4b).
+- *« La demande rebondit quand la pluie s'arrête »* : le monde simulé n'a pas de rebond (la demande reprend
+  son niveau, sans rattrapage). Un levier « rebond » serait validé par un monde construit pour le
+  valider : c'est exactement le piège de l'étape 5a, sans contre-hypothèse possible. Il faut d'abord le
+  **constater** sur des relevés réels (désormais stockés avec la météo, étape 2). Les tests de `test_core`
+  garantissent seulement que la correction **s'arrête** quand la pluie annoncée s'arrête : pas de rebond
+  inventé.
+
+## Bilan de la branche — tous les leviers livrés contre la v1.0.8
+
+Leviers livrés : 3a (coefficient météo global appris), 4b (météo prévue au-delà de 2 h), 5a-ii (férié =
+profil du dimanche). Référence : les trois désactivés (`flux_meteo=0 prevue_meteo=0 ferie_dimanche=0`, soit le
+modèle de la v1.0.8). 6 graines, 168 jours, écart apparié :
+
+| mesure | effet nul | effet moyen | effet fort |
+|---|---|---|---|
+| MAE +15 min | 0,415 → 0,412 (−0,8 %) | 0,407 → 0,401 (−1,3 %) | 0,402 → 0,395 (−1,6 %) |
+| MAE +30 min | 0,710 → 0,702 (−1,0 %) | 0,697 → 0,686 (−1,6 %) | 0,690 → 0,676 (−2,0 %) |
+| **MAE +60 min** | 1,112 → 1,095 (−1,5 %) | 1,095 → **1,073 (−2,0 %)** | 1,087 → **1,061 (−2,4 %)** |
+| MAE +120 min | 1,635 → 1,599 (−2,2 %) | 1,612 → 1,572 (−2,5 %) | 1,607 → 1,561 (−2,8 %) |
+| MAE +240 min (courbe 24 h) | 2,217 → 2,183 (−1,5 %) | 2,190 → 2,154 (−1,6 %) | 2,187 → 2,144 (−1,9 %) |
+| MAE +60, horizon pluvieux | 1,112 → 1,082 (−2,7 %)¹ | 1,016 → **0,951 (−6,3 %)** | 0,953 → **0,854 (−10,3 %)** |
+| MAE +60, jours fériés | 1,370 → 1,007 (−26,5 %) | 1,328 → 0,970 (−27,0 %) | 1,295 → 0,940 (−27,4 %) |
+| fausses alertes « inhabituel » / jour sec | 158,8 → 158,9 | 158,6 → 158,4 | 158,9 → 158,2 |
+| fausses alertes « inhabituel » / jour de pluie | 157,2 → 156,8 | 147,7 → 147,3 | 145,2 → 144,8 |
+| fausses alertes « inhabituel » / jour férié | 183 → 133 | 174 → 123 | 172 → 125 |
+| rappel des incidents | 86,0 → 86,0 % | 85,0 → 85,2 % | 84,0 → 84,5 % |
+| ruptures réelles annoncées dans l'heure | 51,9 → 51,8 % | 52,4 → 52,4 % | 52,0 → 52,0 % |
+| précision des annonces de rupture, jours secs | 60,3 → 59,3 % | 61,5 → 60,5 % | 61,2 → 60,3 % |
+
+¹ Dans le monde nul, tout le gain vient des jours fériés (la météo n'y corrige rien, α = 0).
+
+À lire avec la bonne échelle : **−2 % de MAE à +1 h, c'est 0,02 vélo par station**. Le gain est réel
+(apparié, ± 0,001) et concentré là où il compte : les jours de pluie (−6 à −10 %) et les jours fériés (−27 %).
+Seul coût mesuré : la précision des annonces de rupture par temps sec perd ~1 point (60 → 59 %), sans perte de
+rappel. Ces chiffres valent **dans le monde simulé** : la pluie y agit selon une loi que j'ai choisie, et le
+férié y est un dimanche par construction (voir la réserve de l'étape 5a).
+
+## Recommandations (non mesurées ici — à mesurer avant de construire)
+
+1. **Le vrai problème de l'alerte « inhabituel » est son bruit, pas la météo** : ~159 épisodes faux par jour
+   pour ~2 vrais. La tolérance est fixe (max(4 vélos, 20 % de la capacité)) alors que la variabilité dépend du
+   créneau et de la station. Piste : apprendre l'**écart type par case** (un second moment dans `ProfCell`,
+   +2 octets × 672 × 143 ≈ 190 Ko de PSRAM — **non vérifié sur la carte**) et sonner au-delà de k·σ. Le banc
+   sait déjà mesurer fausses alertes et rappel ; c'est le premier levier à essayer.
+2. **Absorber un changement connu au lieu de raccourcir la mémoire de tout le parc** : quand
+   `station_information` annonce une nouvelle capacité, remettre à l'échelle (ou rajeunir : n = min(n, 6)) le
+   profil de **cette** station seulement. Le banc a déjà la station agrandie et sa jumelle. Attention : le monde
+   simulé remplit à proportion, ce qui favoriserait une mise à l'échelle par construction ; mesurer les deux
+   variantes, et préférer le rajeunissement si les deux gagnent.
+3. **Vérifier 5a-ii sur un vrai férié** (25/12/2026) avant la publication.
+4. **Calibrer le banc sur le réel** : le parc simulé est moins dispersé que le vrai (3 vides contre 15 à
+   14 h 30). Les relevés que la carte stocke désormais (historique + météo) permettent de rejouer de vraies
+   journées dans le banc : c'est ce qui transformera ces mesures relatives en mesures de terrain.
