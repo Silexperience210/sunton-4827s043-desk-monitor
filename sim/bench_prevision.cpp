@@ -365,6 +365,16 @@ int main(int argc, char ** argv) {
       cfg.effect = !strcmp(cfg.effName, "nul") ? 0.f : !strcmp(cfg.effName, "fort") ? 1.6f : 1.f;
     } else if (!strcmp(argv[a], "--meteo") && a + 1 < argc) cfg.wxAvailable = strcmp(argv[++a], "absente") != 0;
     else if (!strcmp(argv[a], "--court")) cfg.brief = true;
+    else if (!strcmp(argv[a], "--levier") && a + 1 < argc) {
+      const char * kv = argv[++a];
+      const char * eq = strchr(kv, '=');
+      std::string k = eq ? std::string(kv, eq - kv) : std::string(kv);
+      bool v = eq ? atoi(eq + 1) != 0 : true;
+      if (k == "tol_meteo") g_pred.wxTol = v;
+      else if (k == "rupture_meteo") g_pred.wxRupture = v;
+      else if (k == "tol_echelle") g_pred.tolScale = eq ? (float)atof(eq + 1) : 1.f;
+      else { fprintf(stderr, "levier inconnu : %s\n", k.c_str()); return 1; }
+    }
     else { fprintf(stderr, "option inconnue : %s\n", argv[a]); return 1; }
   }
   sim::g_fsDir = "/tmp/vn_bench_fs";
@@ -557,8 +567,13 @@ int main(int argc, char ** argv) {
     }
   }
   // Rappel « inhabituel » sur les incidents, précision « rupture prévue »
-  int incTot = 0, incSeen = 0;
-  for (auto & in : incs) { incTot++; incSeen += in.seen; }
+  int incTot = 0, incSeen = 0, incR = 0, incRS = 0, incD = 0, incDS = 0;
+  for (auto & in : incs) {
+    incTot++; incSeen += in.seen;
+    const Day & D = days[(in.t0 - w.T0) / 86400];
+    if (D.rainH >= 3) { incR++; incRS += in.seen; }
+    if (D.rainH == 0) { incD++; incDS += in.seen; }
+  }
   for (auto & so : soons) {
     int k0 = (int)((so.t - w.T0) / VN_RING_STEP_S), d = k0 / 288;
     bool hit = false;
@@ -623,8 +638,10 @@ int main(int argc, char ** argv) {
   unus("jour sec", [&](int d) { return d >= matureFrom && days[d].rainH == 0 && !days[d].hol; });
   unus("jour mixte (1–2 h)", [&](int d) { return d >= matureFrom && days[d].rainH > 0 && days[d].rainH < 3 && !days[d].hol; });
   unus("jour férié", [&](int d) { return d >= matureFrom && days[d].hol; });
-  printf("\nIncidents injectés : %d, détectés (« inhabituel » pendant l'incident) : %d → rappel %.1f %%\n",
-         incTot, incSeen, incTot ? 100.0 * incSeen / incTot : 0);
+  printf("\nIncidents injectés : %d, détectés (« inhabituel » pendant l'incident) : %d → rappel %.1f %% "
+         "(jours de pluie %.1f %% sur %d, jours secs %.1f %% sur %d)\n",
+         incTot, incSeen, incTot ? 100.0 * incSeen / incTot : 0, incR ? 100.0 * incRS / incR : NAN, incR,
+         incD ? 100.0 * incDS / incD : NAN, incD);
 
   if (!cfg.brief) {
     printf("\n## 3. Maturation du profil\n\n| jour | couverture learnPct | confiance +1 h (parc) | confiance du profil (écart) | stations évaluées « inhabituel » |\n|---|---|---|---|---|\n");
@@ -682,10 +699,13 @@ int main(int argc, char ** argv) {
     if (days[d].rainH == 0) { fDry += days[d].falseUnus; nD++; }
   }
   printf("\nSYNTHESE graine=%llu effet=%s mae15=%.4f mae30=%.4f mae60=%.4f mae120=%.4f mae60_sec=%.4f mae60_pluie=%.4f mae120_pluie=%.4f "
-         "orc60_pluie=%.4f orc60=%.4f per60=%.4f fausses_pluie=%.2f fausses_sec=%.2f rappel=%.1f ferie60=%.4f annonce_vide=%.1f annonce_pleine=%.1f\n",
+         "orc60_pluie=%.4f orc60=%.4f per60=%.4f fausses_pluie=%.2f fausses_sec=%.2f rappel=%.1f rappel_pluie=%.1f rappel_sec=%.1f ferie60=%.4f annonce_vide=%.1f annonce_pleine=%.1f annonces_pluie_j=%.2f precision_pluie=%.1f precision_sec=%.1f\n",
          (unsigned long long)cfg.seed, cfg.effName, mature.fc[0].mean(), mature.fc[1].mean(), mature.fc[2].mean(), mature.fc[3].mean(),
          matureDry.fc[2].mean(), matureWet.fc[2].mean(), matureWet.fc[3].mean(), matureWet.orc[2].mean(), mature.orc[2].mean(), mature.per[2].mean(),
-         nR ? fRain / nR : NAN, nD ? fDry / nD : NAN, incTot ? 100.0 * incSeen / incTot : 0, hol.fc[2].mean(),
-         rupt[0] ? 100.0 * ruptAnt[0] / rupt[0] : NAN, rupt[1] ? 100.0 * ruptAnt[1] / rupt[1] : NAN);
+         nR ? fRain / nR : NAN, nD ? fDry / nD : NAN, incTot ? 100.0 * incSeen / incTot : 0,
+         incR ? 100.0 * incRS / incR : NAN, incD ? 100.0 * incDS / incD : NAN, hol.fc[2].mean(),
+         rupt[0] ? 100.0 * ruptAnt[0] / rupt[0] : NAN, rupt[1] ? 100.0 * ruptAnt[1] / rupt[1] : NAN,
+         nR ? (wn[0] + wn[1]) / nR : NAN, (wn[0] + wn[1]) ? 100 * (wo[0] + wo[1]) / (wn[0] + wn[1]) : NAN,
+         (sn[0] + sn[1]) ? 100 * (so[0] + so[1]) / (sn[0] + sn[1]) : NAN);
   return 0;
 }

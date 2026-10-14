@@ -181,3 +181,53 @@ aucun mouvement 64, **inhabituel 262** (≈ 159 épisodes).
    prévision stabilisée vers la 7ᵉ–9ᵉ semaine ; un changement franc est à moitié absorbé en ~4
    semaines, et pas entièrement en 16. Le « ~8 semaines » du plan est la *constante de temps* de la
    moyenne plafonnée à 24 (3 relevés par semaine et par créneau), pas le temps d'absorption.
+
+## Étape 1 — tolérance météo : **ne gagne pas, non livrée**
+
+Deux leviers, mesurés séparément (commit d'expérience `EXP1`, rejouable :
+`git checkout EXP1 && python3 tools/bench_campagne.py --levier tol_meteo=1`) :
+
+- **1a** `tol_meteo` : tolérance « inhabituel » × (1 + pénalité), pénalité = (10 − note vélo) / 10, la
+  note « conditions vélo » existante (`wxScore`), météo ignorée si absente ou plus vieille que 45 min ;
+- **1b** `rupture_meteo` : horizon des alertes « rupture / saturation prévue » 60 min ÷ (1 + pénalité).
+
+Comparaison appariée, 3 graines × 3 mondes, 168 jours :
+
+| 1a — tolérance × (1 + pénalité) | effet nul | effet moyen | effet fort |
+|---|---|---|---|
+| fausses alertes / jour de pluie | 155,2 → 122,0 (−21 %) | 143,7 → 116,4 (−19 %) | 142,1 → 116,9 (−18 %) |
+| fausses alertes / jour sec | 159,6 → 158,8 | 159,5 → 158,1 | 158,7 → 158,2 |
+| rappel des incidents, **jours de pluie** | 82,7 → 73,2 % (−9,5) | 79,9 → 72,3 % (−7,6) | 81,4 → 70,1 % (−11,3) |
+| rappel des incidents, tous jours | 84,2 → 81,2 % | 84,2 → 81,5 % | 82,3 → 79,0 % |
+
+Témoin : la même tolérance élargie **uniformément**, tous temps confondus (effet moyen) :
+
+| tolérance × | fausses / jour de pluie | fausses / jour sec | rappel tous jours | rappel jours de pluie |
+|---|---|---|---|---|
+| 1,04 | −9,0 | −9,4 | −1,2 | −1,2 |
+| 1,06 | −12,9 | −14,1 | −1,9 | −1,7 |
+| 1,08 | −16,9 | −18,7 | −3,0 | −3,9 |
+
+| 1b — horizon ÷ (1 + pénalité) | effet nul | effet moyen | effet fort |
+|---|---|---|---|
+| annonces / jour de pluie | 122,1 → 112,7 | 107,0 → 99,2 | 97,4 → 91,4 |
+| précision des annonces, pluie | 58,2 → 60,7 % | 55,5 → 58,3 % | 54,6 → 57,3 % |
+| ruptures réelles annoncées | 51,3 → 50,7 % | 52,1 → 51,7 % | 52,0 → 51,6 % |
+
+**Pourquoi c'est un échec, et pas un petit gain :**
+
+1. **Le gain est le même dans le monde où la pluie ne change rien** (effet nul : −21 % de fausses
+   alertes, contre −19 % quand la pluie agit). Le levier n'exploite aucune information météo : il rend
+   l'alerte moins sensible un jour sur six. C'est exactement le « gain inventé » à ne pas livrer.
+2. **Il se paie là où il ne faut pas** : −7,6 à −11,3 points de rappel *les jours de pluie* — un
+   incident sous la pluie (station vidée, dépôt groupé) passe sous le seuil.
+3. **À perte de rappel égale, l'élargissement uniforme fait 4 fois mieux** : × 1,08 partout retire
+   ≈ 18 fausses alertes par jour (pluie ou sec) pour −3 points de rappel ; la tolérance météo n'en
+   retire en moyenne que ≈ 5 par jour (27 × 18 jours de pluie / 106) pour la même perte.
+4. 1b : même constat (effet identique sans effet de la pluie) — des annonces plus courtes sont plus
+   précises par tous les temps, ce n'est pas un levier météo.
+
+Le présupposé de l'étape (« par jour de pluie, l'alerte sonne partout ») est faux dans le monde
+simulé (voir étape 0, point 3). Ce qui fait vraiment sonner l'alerte à tort, c'est la tolérance fixe
+(max(4 vélos, 20 % de la capacité)) face à une variabilité qui dépend du créneau et de la station :
+voir les recommandations en fin de document.

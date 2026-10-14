@@ -8,6 +8,7 @@
 namespace vn {
 
 Model g_model;
+PredictOpts g_pred;
 
 static const int DAYQ = 96;                         // quarts d'heure par jour
 static const int PROF_STRIDE = 7 * DAYQ;            // cellules par station
@@ -438,7 +439,7 @@ static const float ANOM_MIN_BIKES = 4.f;
 static const float ANOM_REL_CAP = 0.2f;
 
 static void anomalyStation(const Model & m, Station & s, int i, int64_t now, bool activeHours) {
-  s.anomExp = -1; s.anomTol = 0; s.anomConf = 0;
+  s.anomExp = -1; s.anomTol = 0; s.anomConf = 0; s.anomWxPct = 0;
   if (!s.live || s.status == ST_CLOSED) { s.anom = AN_CLOSED; return; }
   float p, nEff;
   bool has = m.profileAt(i, now, p, nEff);
@@ -447,7 +448,11 @@ static void anomalyStation(const Model & m, Station & s, int i, int64_t now, boo
   if (!activeHours) { s.anom = AN_OFF_HOURS; return; }
   if (!has) { s.anom = AN_NO_PROFILE; return; }
   if (c < ANOM_MIN_CONF) { s.anom = AN_YOUNG; return; }
-  float tol = fmaxf(ANOM_MIN_BIKES, ANOM_REL_CAP * s.capEff()) * (2.f - c);
+  float tol = fmaxf(ANOM_MIN_BIKES, ANOM_REL_CAP * s.capEff()) * (2.f - c) * g_pred.tolScale;
+  if (g_pred.wxTol && m.wxUse == WXU_OK && m.wxPen > 0) {
+    tol *= 1.f + m.wxPen;
+    s.anomWxPct = (uint8_t)lroundf(m.wxPen * 100);
+  }
   s.anomTol = (int16_t)lroundf(tol);
   float dev = s.bikes - p;
   s.anom = fabsf(dev) > tol ? (dev > 0 ? AN_HIGH : AN_LOW) : AN_NORMAL;
@@ -468,6 +473,11 @@ void Model::recompute(int64_t now) {
   localDM(now, dow0, mod0);
   int hour = mod0 / 60;
   bool activeHours = hour >= 7 && hour < 22;
+  // Météo : utilisée seulement si reçue et fraîche (3 périodes de VN_WX_REFRESH_S, comme le bandeau)
+  if (!wx.valid) wxUse = WXU_NONE;
+  else if (now > 0 && wx.fetchedAt > 0 && now - wx.fetchedAt > 3 * VN_WX_REFRESH_S) wxUse = WXU_STALE;
+  else wxUse = WXU_OK;
+  wxPen = wxUse == WXU_OK ? clampf((10.f - wx.score) / 10.f, 0, 1) : 0;
 
   Totals t;
   memset(&t, 0, sizeof(t));
@@ -568,6 +578,8 @@ void Model::recompute(int64_t now) {
   tot = t;
 
   // Liste d'alertes
+  // Horizon des alertes « rupture / saturation prévue » : 60 min, raccourci par mauvais temps (levier 1b)
+  const int soonH = g_pred.wxRupture ? (int)lroundf(60.f / (1.f + wxPen)) : 60;
   nAlerts = 0;
   memset(alertCount, 0, sizeof(alertCount));
   auto add = [&](uint8_t type, uint8_t sev, int i, int minutes, int value) {
@@ -581,8 +593,8 @@ void Model::recompute(int64_t now) {
     if (s.status == ST_CLOSED) { add(AL_CLOSED, 0, i, -1, 0); continue; }
     if (s.status == ST_EMPTY) add(AL_EMPTY, 3, i, s.emptySince ? (int)((now - s.emptySince) / 60) : -1, 0);
     else if (s.status == ST_FULL) add(AL_FULL, 3, i, s.fullSince ? (int)((now - s.fullSince) / 60) : -1, 0);
-    else if (s.etaEmpty >= 0 && s.etaEmpty <= 60) add(AL_SOON_EMPTY, s.etaEmpty <= 30 ? 2 : 1, i, s.etaEmpty, s.bikes);
-    else if (s.etaFull >= 0 && s.etaFull <= 60) add(AL_SOON_FULL, s.etaFull <= 30 ? 2 : 1, i, s.etaFull, s.docks);
+    else if (s.etaEmpty >= 0 && s.etaEmpty <= soonH) add(AL_SOON_EMPTY, s.etaEmpty <= 30 ? 2 : 1, i, s.etaEmpty, s.bikes);
+    else if (s.etaFull >= 0 && s.etaFull <= soonH) add(AL_SOON_FULL, s.etaFull <= 30 ? 2 : 1, i, s.etaFull, s.docks);
     if (!s.renting) add(AL_CLOSED, 1, i, -1, 1);
     else if (!s.returning) add(AL_CLOSED, 1, i, -1, 2);
     if (s.bikesDis >= g_set.maintBikes) add(AL_MAINT_BIKES, 1, i, -1, s.bikesDis);

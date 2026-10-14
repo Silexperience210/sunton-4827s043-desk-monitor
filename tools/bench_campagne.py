@@ -24,7 +24,10 @@ KEYS = [
     ("mae60_sec", "MAE +60 sec", 3), ("mae60_pluie", "MAE +60 pluie", 3), ("mae120_pluie", "MAE +120 pluie", 3),
     ("orc60_pluie", "oracle +60 pluie", 3), ("orc60", "oracle +60", 3), ("per60", "persistance +60", 3), ("ferie60", "MAE +60 fériés", 3),
     ("fausses_pluie", "fausses/j pluie", 1), ("fausses_sec", "fausses/j sec", 1), ("rappel", "rappel incidents %", 1),
+    ("rappel_pluie", "rappel jours de pluie %", 1), ("rappel_sec", "rappel jours secs %", 1),
     ("annonce_vide", "ruptures annoncées %", 1), ("annonce_pleine", "saturations annoncées %", 1),
+    ("annonces_pluie_j", "annonces rupture+saturation / j de pluie", 1),
+    ("precision_pluie", "précision des annonces, pluie %", 1), ("precision_sec", "précision des annonces, sec %", 1),
 ]
 
 
