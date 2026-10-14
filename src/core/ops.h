@@ -83,4 +83,13 @@ struct Provenance {
 };
 bool provenance(const Model & m, int kpi, Provenance & out);
 
+// ── Part météo d'une prévision ───────────────────────────────────────
+// Origine du coefficient (une phrase, pour l'écran) : météo indisponible / périmée, défaut (trop
+// peu de pluie observée), sans effet mesurable, ou appris (α ± erreur-type).
+void wxOriginText(const Model & m, char * out, size_t n);
+// Phrase de la fiche : part météo `part` (vélos) de la prévision à l'instant `at` ; `forecast` :
+// part issue de la météo ANNONCÉE (au-delà de 2 h) plutôt qu'actuelle. Sans part notable
+// (< 0,5 vélo), dit pourquoi (temps normal, coefficient nul, météo indisponible…).
+void wxPartText(const Model & m, float part, bool forecast, int64_t at, char * out, size_t n);
+
 } // namespace vn

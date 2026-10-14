@@ -56,7 +56,7 @@ exploitation, axe de couleur *vide → pleine* (les stations pleines comptent au
 Pour chaque station, à l'horizon *h* (0 à 120 min) :
 
 ```
-prévu(h) = actuel + c · [profil(t+h) − profil(t)] + (1 − 0,6·c) · tendance(h)
+prévu(h) = actuel + c · [profil(t+h) − profil(t) + part météo(h)] + (1 − 0,6·c) · tendance(h)
 ```
 
 - **profil** : vélos attendus selon le jour de la semaine et le quart d'heure, appris en continu
@@ -65,14 +65,23 @@ prévu(h) = actuel + c · [profil(t+h) − profil(t)] + (1 − 0,6·c) · tendan
   2ᵉ jour au lieu de la 2ᵉ semaine.
 - **tendance** : régression sur les 30 dernières minutes, amortie (τ = 25 min).
 - **c** : confiance (0 → 1) selon le nombre d'observations ; affichée dans les fiches.
+- **part météo** : quand le temps est pire que la normale de l'heure (pluie, vent > 20 km/h, froid,
+  neige, orage — les barèmes de l'indice vélo), le mouvement attendu du profil est freiné d'un
+  coefficient **appris sur le parc** (fenêtres de 30 min, météo observée), appliqué seulement s'il
+  dépasse 3 erreurs-types ; part bornée à ± 40 % de la capacité. Météo actuelle sur 2 h, météo
+  annoncée jusqu'à 6 h, rien au-delà ; sans météo (absente ou de plus de 45 min), aucune part.
+  La fiche dit la part et son origine (« appris », « pas encore appris », « non mesurable »,
+  « météo indisponible »). Le gain, ses limites et les leviers écartés sont **mesurés** dans
+  [`docs/mesures-prevision.md`](docs/mesures-prevision.md).
 
 On en déduit l'**échéance** de rupture / saturation, le **besoin** (vélos à apporter ou retirer pour
 viser 50 % de remplissage à +1 h), la **priorité** de chaque station et des **transferts** (chaque
 station en tension est servie par le donneur le plus proche). La prévision réseau est la somme des
 prévisions des stations.
 
-L'historique 24 h et les profils sont sauvegardés en flash toutes les 30 min (LittleFS) et restaurés au
-redémarrage. Au tout premier démarrage, seule la tendance est disponible : les prévisions s'affinent
+L'historique 24 h (avec la météo de chaque tranche de 5 min) et les profils (avec l'apprentissage
+météo) sont sauvegardés en flash toutes les 30 min (LittleFS) et restaurés au redémarrage ; les
+fichiers d'une version antérieure sont relus, ceux d'un format inconnu ignorés. Au tout premier démarrage, seule la tendance est disponible : les prévisions s'affinent
 jour après jour (progression visible dans **Réglages → Prédiction**).
 
 ## Matériel
@@ -311,7 +320,7 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision
-./test_core ../docs/donnees     # 683 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 691 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin,
                                  # liste Wi-Fi (tri, dédoublonnage, masqués, réessais)
@@ -320,7 +329,7 @@ make sim test_core bench_prevision
 ./sim ../docs/donnees /tmp/boot2 boot-wifi-ko     # réseau enregistré mais injoignable
 ./sim ../docs/donnees /tmp/totaux totaux          # totaux du tableau de bord, sans historique (audit des chiffres)
 ./sim ../docs/donnees /tmp/ops ops                # écrans d'exploitation : fraîcheur, provenance, ingestion, 24 h, « inhabituel »
-                                 # ces écrans sont archivés dans docs/captures/ (24_…36_)
+                                 # ces écrans sont archivés dans docs/captures/ (24_…40_)
 ./bench_prevision                # banc de la prévision : 143 stations et une météo simulées sur 168 jours,
                                  # MAE à +15…+120 min, alertes par jour de pluie / sec, maturation du profil
                                  # (méthode et chiffres : docs/mesures-prevision.md)

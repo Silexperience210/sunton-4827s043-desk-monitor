@@ -288,15 +288,15 @@ void openIngest() {
 // tracé en pointillés : la courbe y repose surtout sur la valeur actuelle.
 static const int N24 = 24 * 4 + 1;
 static const float FC24_MIN_CONF = 0.5f;
-static float s_v[N24], s_c[N24], s_ok[N24], s_weak[N24];
-static lv_obj_t * s_chart, * s_basis, * s_range, * s_boxV[4], * s_boxC[4];
+static float s_v[N24], s_c[N24], s_ok[N24], s_weak[N24], s_w[N24];
+static lv_obj_t * s_chart, * s_basis, * s_range, * s_wx, * s_boxV[4], * s_boxC[4];
 
 static void fc24Fill() {
   int st = s_arg;
   if (st < 0 || st >= g_model.n) return;
   const vn::Station & s = g_model.st[st];
   int64_t t = now();
-  g_model.project(st, t, 15, N24, s_v, s_c);
+  g_model.project(st, t, 15, N24, s_v, s_c, s_w);
   int good = 0;
   for (int k = 0; k < N24; k++) good += s_c[k] >= FC24_MIN_CONF;
   // Deux séries jointives : fiable (trait plein) / peu nourri (pointillés)
@@ -346,6 +346,14 @@ static void fc24Fill() {
            (int)lroundf(s_v[kMin]), lroundf(s_v[kMin]) > 1 ? "s" : "", h1, s_c[kMin] < FC24_MIN_CONF ? " (peu fiable)" : "",
            (int)lroundf(s_v[kMax]), h2, s_c[kMax] < FC24_MIN_CONF ? " (peu fiable)" : "");
   lv_label_set_text(s_range, b);
+  // Part météo : la plus marquée sur la courbe (au-delà de 2 h, elle vient de la météo annoncée)
+  {
+    int kw = 0;
+    for (int k = 1; k < N24; k++) if (fabsf(s_w[k]) > fabsf(s_w[kw])) kw = k;
+    char wb[240];
+    vn::wxPartText(g_model, s_w[kw], kw * 15 > 120, t + (int64_t)kw * 900, wb, sizeof(wb));
+    lv_label_set_text(s_wx, wb + (strncmp(wb, "M\xC3\xA9t\xC3\xA9o : ", 10) == 0 ? 10 : 0));
+  }
   static const int K[4] = { 12, 24, 48, 96 };
   for (int i = 0; i < 4; i++) {
     lv_label_set_text_fmt(s_boxV[i], "%d", (int)lroundf(s_v[K[i]]));
@@ -405,8 +413,10 @@ void openForecast24(int st) {
   lv_obj_set_style_pad_row(info, 4, 0);
   s_basis = kv(info, "REPOSE SUR");
   s_range = kv(info, "REP\xC3\x88RES");
+  s_wx = kv(info, "M\xC3\x89T\xC3\x89O");
   lv_label_set_text(kv(info, "R\xC3\x88GLE"),
-    "Celle de la pr\xC3\xA9vision 2 h, prolong\xC3\xA9" "e : actuel + c\xC2\xB7(profil(t+h) \xE2\x88\x92 profil(t)) + (1 \xE2\x88\x92 0,6c)\xC2\xB7tendance 30 min amortie. "
+    "Celle de la pr\xC3\xA9vision 2 h, prolong\xC3\xA9" "e : actuel + c\xC2\xB7(profil(t+h) \xE2\x88\x92 profil(t)) + part m\xC3\xA9t\xC3\xA9o + (1 \xE2\x88\x92 0,6c)\xC2\xB7tendance 30 min amortie. "
+    "Part m\xC3\xA9t\xC3\xA9o : m\xC3\xA9t\xC3\xA9o actuelle sur 2 h, annonc\xC3\xA9" "e jusqu'\xC3\xA0 6 h, rien au-del\xC3\xA0. "
     "Pointill\xC3\xA9s : cr\xC3\xA9neaux o\xC3\xB9 la confiance c du profil est < 50 %.");
   lv_obj_t * btns = row(body, 8);
   lv_obj_t * bb = button(btns, "Retour \xC3\xA0 la fiche", nullptr, B_SECONDARY, true);

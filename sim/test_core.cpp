@@ -955,6 +955,34 @@ static void testWxLearn() {
   r2.recompute(tq + 300);
   CHECK(memcmp(r2.prof, m.prof, sizeof(ProfCell) * 4 * 7 * 96) == 0 && r2.wxG.sn == 0 && r2.wxAlpha == 0,
         "statistiques météo non finies : ignorées, profils gardés");
+  // Textes de l'écran : chaque origine est nommée, la part affichée est celle calculée
+  {
+    char b2[256];
+    m.wx = wxFor(true, tq + 400);
+    for (int s2 = 0; s2 < 4; s2++) sr[s2] = mkStat(ir[s2].sid, patternAt(s2, tq + 400), s2 == 3 ? 40 : 20);
+    m.applyStatus(sr, 4, tq + 400);
+    wxPartText(m, m.st[0].fcWx[12], false, tq + 400 + 3600, b2, sizeof(b2));
+    char want[32]; snprintf(want, sizeof(want), "dont %+d v", (int)lroundf(m.st[0].fcWx[12]));
+    CHECK(strstr(b2, want) && strstr(b2, "m\xC3\xA9t\xC3\xA9o actuelle") && strstr(b2, "coefficient appris 1,00"),
+          "fiche : « %s »", b2);
+    wxPartText(m, -4.2f, true, tq + 400 + 4 * 3600, b2, sizeof(b2));
+    CHECK(strstr(b2, "dont -4 v\xC3\xA9los") && strstr(b2, "m\xC3\xA9t\xC3\xA9o annonc\xC3\xA9" "e"), "24 h : « %s »", b2);
+    wxPartText(m, 0.2f, false, tq + 400, b2, sizeof(b2));
+    CHECK(strstr(b2, "aucun effet notable") != nullptr, "part < 0,5 vélo : « %s »", b2);
+    wxPartText(z, 0, false, tq, b2, sizeof(b2));
+    CHECK(strstr(b2, "non mesurable") != nullptr, "pluie sans effet : « %s »", b2);
+    wxPartText(y, 0, false, tq, b2, sizeof(b2));
+    CHECK(strstr(b2, "pas encore appris") != nullptr, "défaut : « %s »", b2);
+    m.wx = Weather(); m.recompute(tq + 400);
+    wxPartText(m, 0, false, tq, b2, sizeof(b2));
+    CHECK(strstr(b2, "indisponible") && strstr(b2, "sans m\xC3\xA9t\xC3\xA9o"), "météo absente : « %s »", b2);
+    m.wx = wxFor(true, tq); m.recompute(tq + 400 + 3 * VN_WX_REFRESH_S);
+    wxPartText(m, 0, false, tq, b2, sizeof(b2));
+    CHECK(strstr(b2, "plus de 45 min") != nullptr, "météo périmée : « %s »", b2);
+    Provenance pv;
+    CHECK(provenance(m, KPI_FC60, pv) && strstr(pv.rule, "Part m\xC3\xA9t\xC3\xA9o") && strstr(pv.detail, "p\xC3\xA9rim\xC3\xA9" "e"),
+          "provenance +1 h : règle et état de la météo (« %s »)", pv.detail);
+  }
   // 7. Coefficient borné : statistiques extrêmes → α plafonné à 1 (et à −0,5)
   static Model q;
   q.init();

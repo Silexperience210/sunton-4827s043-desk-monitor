@@ -376,3 +376,19 @@ s'arrête avant la vague du matin.
 juste qu'au-delà de 2 h (courbe 24 h). Sur la fiche (≤ 2 h), la part météo vient de la **météo
 actuelle** : l'écran le dit (« liés à la météo actuelle »), puisque c'est elle, mesurée, qui prévoit le
 mieux à cet horizon.
+
+## Affichage (provenance de la part météo)
+
+- **Fiche station** : une ligne « Météo : dont +1 vélo à 16:42 lié à la météo actuelle (Pluie 1,4 mm/h) ·
+  coefficient appris 0,55 ± 0,12 (184 fenêtres pluvieuses) » — part à +2 h (bout de l'horizon de la
+  fiche) ; sinon la raison de l'absence : « météo indisponible : prévision sans météo », « météo de plus
+  de 45 min », « effet de la météo pas encore appris (trop peu de pluie observée) », « non mesurable sur
+  ce parc », « aucun effet notable (temps normal pour l'heure…) ».
+- **Prévision 24 h** : ligne « MÉTÉO » avec la part la plus marquée de la courbe ; au-delà de 2 h, elle
+  est dite « liée à la météo annoncée » (sans citer la météo actuelle, qui ne la décrit pas).
+- **Provenance « Prévision +1 h »** : la règle inclut la part météo ; le détail donne l'état de la météo
+  (apprise / pas encore apprise / sans effet mesurable / indisponible / périmée) et la part totale en vélos.
+- Captures : `docs/captures/37_fiche_meteo.png`, `38_prevision_24h_meteo.png`,
+  `39_provenance_prevision_meteo.png`, `40_fiche_meteo_indisponible.png` ; fiches existantes mises à jour
+  (`09`, `33`, `36`). L'état « coefficient appris » des captures est **injecté** par le scénario du
+  simulateur (le jeu de données réel n'a pas d'historique météo) ; le scénario vérifie le texte affiché.

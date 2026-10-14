@@ -237,20 +237,65 @@ bool provenance(const Model & m, int kpi, Provenance & p) {
       p.kind = SRC_CALC; p.source = "calcul interne"; p.feed = "station_status";
       p.estimate = true;
       p.rule = "Somme des pr\xC3\xA9visions \xC3\xA0 +1 h des stations ouvertes en location ; par station : "
-               "actuel + c\xC2\xB7(profil(t+1 h) \xE2\x88\x92 profil(t)) + (1 \xE2\x88\x92 0,6c)\xC2\xB7tendance 30 min amortie.";
+               "actuel + c\xC2\xB7(profil(t+1 h) \xE2\x88\x92 profil(t)) + part m\xC3\xA9t\xC3\xA9o + (1 \xE2\x88\x92 0,6c)\xC2\xB7tendance 30 min amortie. "
+               "Part m\xC3\xA9t\xC3\xA9o : mouvement du profil \xC3\x97 \xE2\x88\x92" "coefficient \xC3\x97 (p\xC3\xA9nalit\xC3\xA9 m\xC3\xA9t\xC3\xA9o \xE2\x88\x92 sa normale \xC3\xA0 cette heure) "
+               "si le temps est pire que la normale ; coefficient appris sur le parc, part born\xC3\xA9" "e \xC3\xA0 40 % de la capacit\xC3\xA9.";
       p.validity = "Fiable quand le profil appris couvre ce cr\xC3\xA9neau : confiance moyenne \xE2\x89\xA5 50 %.";
       p.validityMet = m.netConf >= 50;
       status();
       p.value = (float)lroundf(m.netFc[12]);
       p.count = t.nRenting;
-      snprintf(p.detail, sizeof(p.detail), "Confiance moyenne %d %% \xC2\xB7 profil hebdomadaire appris \xC3\xA0 %.0f %%.",
-               m.netConf, m.learnPct());
+      {
+        float wxSum = 0;
+        for (int i = 0; i < m.n; i++) if (m.st[i].active && m.st[i].renting && m.st[i].status != ST_CLOSED) wxSum += m.st[i].fcWx[12];
+        const char * org = m.wxUse == WXU_NONE ? "indisponible" : m.wxUse == WXU_STALE ? "p\xC3\xA9rim\xC3\xA9" "e"
+                         : m.wxSrc == WXC_DEFAULT ? "pas encore apprise" : m.wxSrc == WXC_NULL ? "sans effet mesurable" : "apprise";
+        snprintf(p.detail, sizeof(p.detail), "Confiance %d %% \xC2\xB7 profil appris \xC3\xA0 %.0f %% \xC2\xB7 m\xC3\xA9t\xC3\xA9o %s : %+d v\xC3\xA9los.",
+                 m.netConf, m.learnPct(), org, (int)lroundf(wxSum));
+      }
       break;
 
     default:
       return false;
   }
   return true;
+}
+
+// ── Part météo d'une prévision ───────────────────────────────────────
+static void commaDec(char * s) { for (; *s; s++) if (*s == '.' && s[1] >= '0' && s[1] <= '9') *s = ','; }
+
+void wxOriginText(const Model & m, char * out, size_t n) {
+  if (m.wxUse == WXU_NONE)
+    snprintf(out, n, "m\xC3\xA9t\xC3\xA9o indisponible : pr\xC3\xA9vision sans m\xC3\xA9t\xC3\xA9o");
+  else if (m.wxUse == WXU_STALE)
+    snprintf(out, n, "m\xC3\xA9t\xC3\xA9o de plus de 45 min : pr\xC3\xA9vision sans m\xC3\xA9t\xC3\xA9o");
+  else if (m.wxSrc == WXC_DEFAULT)
+    snprintf(out, n, "effet de la m\xC3\xA9t\xC3\xA9o pas encore appris (trop peu de pluie observ\xC3\xA9" "e) : aucune correction");
+  else if (m.wxSrc == WXC_NULL)
+    snprintf(out, n, "effet de la m\xC3\xA9t\xC3\xA9o non mesurable sur ce parc : aucune correction");
+  else {
+    snprintf(out, n, "coefficient appris %.2f \xC2\xB1 %.2f (%.0f fen\xC3\xAAtres pluvieuses)", m.wxAlpha, m.wxAlphaSE, m.wxG.nRain);
+    commaDec(out);
+  }
+}
+
+void wxPartText(const Model & m, float part, bool forecast, int64_t at, char * out, size_t n) {
+  char org[96], hh[8];
+  wxOriginText(m, org, sizeof(org));
+  hhmm(hh, sizeof(hh), at);
+  int v = (int)lroundf(part);
+  if (m.wxUse == WXU_OK && m.wxSrc == WXC_LEARNED && v != 0) {
+    // la raison de la note (« Pluie 1,4 mm/h ») décrit la météo ACTUELLE : citée seulement pour elle
+    char why[72] = "";
+    if (!forecast) { snprintf(why, sizeof(why), " (%s)", m.wx.reason); commaDec(why); }
+    snprintf(out, n, "M\xC3\xA9t\xC3\xA9o : dont %+d v\xC3\xA9lo%s \xC3\xA0 %s li\xC3\xA9%s \xC3\xA0 %s%s \xC2\xB7 %s",
+             v, abs(v) > 1 ? "s" : "", hh, abs(v) > 1 ? "s" : "",
+             forecast ? "la m\xC3\xA9t\xC3\xA9o annonc\xC3\xA9" "e" : "la m\xC3\xA9t\xC3\xA9o actuelle", why, org);
+  } else if (m.wxUse == WXU_OK && m.wxSrc == WXC_LEARNED) {
+    snprintf(out, n, "M\xC3\xA9t\xC3\xA9o : aucun effet notable \xC3\xA0 %s (temps normal pour l'heure ou pas de mouvement attendu) \xC2\xB7 %s", hh, org);
+  } else {
+    snprintf(out, n, "M\xC3\xA9t\xC3\xA9o : %s", org);
+  }
 }
 
 } // namespace vn

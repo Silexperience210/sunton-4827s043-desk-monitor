@@ -596,6 +596,62 @@ static int opsScenario(const std::string & in, StatusRec * recs, int ns) {
     shot("06_fiche_ecart");
     ui::sheetClose(); run(300);
   }
+  // 7. Météo apprise (étapes 3a / 4) : état d'un coefficient appris injecté — α = 0,55 ± 0,12 sur
+  // 184 fenêtres pluvieuses —, il pleut maintenant, accalmie annoncée dans 5 h.
+  int wst = -1;
+  {
+    plat::LockGuard g;
+    WxStats & w = g_model.wxG;
+    memset(&w, 0, sizeof(w));
+    w.sdd = 1000; w.szz = 10; w.szr = -5.5f; w.sgg = 1.44f; w.sn = 50000; w.nRain = 184;
+    for (int h = 0; h < 24; h++) { g_model.wxClim.sx[h] = 0.6f; g_model.wxClim.sw[h] = 10; }
+    Weather & wx = g_model.wx;
+    wx.rain = 1.4f; wx.code = 63; wx.fetchedAt = plat::now();
+    for (int i = 0; i < wx.nfc; i++) {
+      bool r = i < 5;
+      wx.fc[i].rain = r ? 1.2f : 0.f; wx.fc[i].prob = r ? 85 : 10; wx.fc[i].code = r ? 63 : 2;
+    }
+    wxScore(wx);
+    g_model.recompute(plat::now());
+    float best = 0;
+    for (int i = 0; i < g_model.n; i++) {
+      const Station & s = g_model.st[i];
+      if (s.active && s.status != ST_CLOSED && fabsf(s.fcWx[24]) > best) { best = fabsf(s.fcWx[24]); wst = i; }
+    }
+    printf("  météo : α %.2f ± %.2f, station %d, part +2 h %+.1f\n", g_model.wxAlpha, g_model.wxAlphaSE, wst, wst >= 0 ? g_model.st[wst].fcWx[24] : 0.f);
+  }
+  expect(g_model.wxSrc == WXC_LEARNED && wst >= 0 && fabsf(g_model.st[wst].fcWx[24]) >= 0.5f, "coefficient appris et part météo notable sur une station");
+  if (wst >= 0) {
+    ui::openStation(wst); run(500);
+    drag(300, 240, 300, 40, 10);
+    drag(300, 200, 300, 120, 10);
+    expect(textVisible(lv_layer_top(), "M\xC3\xA9t\xC3\xA9o : dont "), "fiche : « Météo : dont N vélos à HH:MM liés à la météo actuelle »");
+    shot("07_fiche_meteo");
+    ui::sheetClose(); run(300);
+    ui::openForecast24(wst); run(600);
+    drag(300, 240, 300, 40, 10);
+    expect(textVisible(lv_layer_top(), "dont "), "24 h : ligne MÉTÉO avec la part la plus marquée");
+    shot("07b_prevision_24h_meteo");
+    ui::sheetClose(); run(300);
+  }
+  ui::openProvenance(ui::PG_WEATHER); run(500);
+  drag(300, 240, 300, 40, 10);
+  drag(300, 240, 300, 40, 10);
+  drag(300, 240, 300, 110, 10);
+  expect(textVisible(lv_layer_top(), "Confiance "), "provenance +1 h : état de la météo dans le détail");
+  shot("07c_provenance_prevision_meteo");
+  ui::sheetClose(); run(300);
+  // 8. Météo indisponible : même fiche, l'écran le dit, prévision sans part météo
+  { plat::LockGuard g; g_model.wx = Weather(); g_model.recompute(plat::now()); }
+  if (wst >= 0) {
+    expect(g_model.st[wst].fcWx[24] == 0, "météo indisponible : aucune part météo");
+    ui::openStation(wst); run(500);
+    drag(300, 240, 300, 40, 10);
+    drag(300, 200, 300, 120, 10);
+    expect(textVisible(lv_layer_top(), "M\xC3\xA9t\xC3\xA9o : m\xC3\xA9t\xC3\xA9o indisponible"), "fiche : « Météo : météo indisponible : prévision sans météo »");
+    shot("07d_fiche_meteo_indisponible");
+    ui::sheetClose(); run(300);
+  }
   printf("Scénario ops : %d échec(s)\n", fails);
   return fails ? 4 : 0;
 }

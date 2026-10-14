@@ -3,6 +3,7 @@
 #include "widgets/vn_chart.h"
 #include "widgets/vn_map.h"
 #include "../platform/platform.h"
+#include "../core/ops.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -24,7 +25,7 @@ struct SheetW {
   lv_obj_t * meter, * capL;
   lv_obj_t * chart, * chartMeta;
   lv_obj_t * fcV[4];
-  lv_obj_t * insFlash, * insIc, * insTitle, * insWhy, * insNeed, * insConf, * insAnom;
+  lv_obj_t * insFlash, * insIc, * insTitle, * insWhy, * insNeed, * insConf, * insAnom, * insWx;
   lv_obj_t * lastMove, * lastRep, * addr;
 };
 static SheetW W;
@@ -197,6 +198,17 @@ static void fill() {
   lv_label_set_text(W.insAnom, b);
   lv_obj_set_style_text_color(W.insAnom, C(ac), 0);
 
+  // Part météo de la prévision à +2 h (bout de l'horizon : effet cumulé) et son origine
+  // (règles : Model::recompute, étape 3a)
+  if (s.status == vn::ST_CLOSED) lv_obj_add_flag(W.insWx, LV_OBJ_FLAG_HIDDEN);
+  else {
+    char wb[240];
+    vn::wxPartText(g_model, s.fcWx[VN_FC_STEPS - 1], false, t + (VN_FC_STEPS - 1) * 300, wb, sizeof(wb));
+    lv_label_set_text(W.insWx, wb);
+    lv_obj_set_style_text_color(W.insWx, C(lroundf(s.fcWx[VN_FC_STEPS - 1]) != 0 ? HX_ELEC : HX_TEXT3), 0);
+    lv_obj_clear_flag(W.insWx, LV_OBJ_FLAG_HIDDEN);
+  }
+
   char a1[32];
   fmtAgo(a1, sizeof(a1), s.lastChange, t);
   snprintf(b, sizeof(b), "Dernier mouvement d\xC3\xA9tect\xC3\xA9 %s", a1);
@@ -296,6 +308,9 @@ void openStation(int st) {
   W.insAnom = label(ins, &vn_inter_12, HX_TEXT3, "");
   lv_label_set_long_mode(W.insAnom, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(W.insAnom, BW - 18);
+  W.insWx = label(ins, &vn_inter_12, HX_TEXT3, "");
+  lv_label_set_long_mode(W.insWx, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(W.insWx, BW - 18);
   W.insNeed = badge(ins, "", T_GOOD);
 
   // Détails
