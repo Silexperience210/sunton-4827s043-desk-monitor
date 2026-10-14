@@ -255,3 +255,78 @@ suffisantes sont gardées dans `/vn_prof.bin` (étape 3). L'étape 2 sert à deu
 apprendre sur une fenêtre glissante de 30 min à partir de la météo *observée pendant la fenêtre*, et
 relire ce que la carte a vu après un redémarrage. La mémoire réelle (PSRAM : +2,3 Ko pour l'anneau,
 fichier `/vn_hist.bin` + 2,3 Ko) et l'écriture en flash sont **non vérifiées sur la carte**.
+
+## Étape 3a — coefficient météo global appris : **gagne, livré**
+
+### La règle
+
+- **Ce qu'on corrige** : le *mouvement* prévu par le profil, jamais le niveau constaté. Pour chaque
+  pas de la projection : mouvement du profil × (1 − α·(x − x̄ₕ)) quand x > x̄ₕ (rien sinon), où
+  x = pénalité météo 0…1 (les barèmes « maintenant » de `wxScore` / 10 : pluie, vent > 20 km/h,
+  froid, neige, orage — **la même formule que la note**, factorisée dans `wxPenalty`), et x̄ₕ = la
+  pénalité moyenne observée à cette heure de la journée (ce que le profil a moyenné). La part météo
+  est bornée à ± 40 % de la capacité utile. Étape 3 : x = la météo actuelle, sur 2 h au plus.
+- **Ce qu'on apprend** : toutes les 30 min de 7 h 30 à 22 h, pour chaque station ouverte à profil mûr,
+  r = mouvement observé − mouvement du profil sur la fenêtre, sous la météo **observée pendant la
+  fenêtre** (échantillons de l'étape 2). Régression r = β·d − α·(x − x̄ₕ)·d (β absorbe le biais propre
+  du profil, quel que soit le temps), statistiques suffisantes à décroissance exponentielle (~60 jours),
+  gardées dans `/vn_prof.bin` (version 2 ; un fichier version 1 se relit, apprentissage météo à zéro).
+- **Quand on l'applique** : seulement si |α̂| > **3 erreurs-types** (robustes, par grappe : les 143
+  stations d'une fenêtre partagent la même météo), après au moins 12 fenêtres pluvieuses apprises ;
+  borné à [−0,5 ; 1]. Origine affichable : *défaut* (trop peu de pluie : α = 0), *sans effet mesurable*
+  (α = 0), *apprise*. Météo absente ou périmée : **aucune** correction.
+
+### Ce qui a été corrigé en route (trouvé par le banc, pas supposé)
+
+| version | défaut observé | correction |
+|---|---|---|
+| x̄ global, une seule pente, erreur-type naïve | dans le monde **nul**, α = −0,5 « significatif » pendant 5 semaines (froid du matin ≈ heures de pointe, où le profil lissé sous-estime le mouvement) | x̄ par heure, terme β, erreur-type par grappe, profils mûrs seulement |
+| α̂ rétréci de 2 erreurs-types | effet divisé par deux (pluie, moyen : −2,6 % au lieu de −4,5 %) | α̂ entier au-delà du seuil |
+| correction aussi par beau temps (x < x̄ₕ) | +0,4 à +0,6 % d'erreur par temps sec | correction seulement quand le temps est pire que la normale |
+| seuil 2 erreurs-types | une correction inventée **4,3 % des jours** dans le monde nul (6 graines) | seuil 3 : 0,0 % des jours, gain identique (moyen −4,0 % au lieu de −4,2 %) |
+
+Les choix de seuil et de variante ont été faits sur les graines 1–3 et **validés sur des graines
+neuves 4–6** (moyen −3,7 %, fort −7,5 % sur l'horizon pluvieux à +60 min, nul : 0).
+
+### Mesure finale (6 graines, 168 jours, écart apparié levier − référence)
+
+| mesure | effet nul | effet moyen | effet fort |
+|---|---|---|---|
+| MAE +15 min | 0,415 → 0,415 | 0,407 → 0,405 (−0,5 %) | 0,402 → 0,398 (−0,9 %) |
+| MAE +30 min | 0,710 → 0,710 | 0,697 → 0,693 (−0,6 %) | 0,690 → 0,683 (−1,0 %) |
+| MAE +60 min | 1,112 → 1,112 | 1,095 → 1,090 (−0,5 %) | 1,087 → 1,076 (−1,0 %) |
+| MAE +120 min | 1,635 → 1,635 | 1,612 → 1,607 (−0,3 %) | 1,607 → 1,595 (−0,8 %) |
+| MAE +60, temps sec | 1,112 → 1,112 | 1,106 → 1,106 | 1,106 → 1,106 |
+| **MAE +60, horizon pluvieux** | 1,112 → 1,112 | 1,016 → **0,975 (−4,0 % ± 1,1)** | 0,953 → **0,872 (−8,4 % ± 1,7)** |
+| MAE +120, horizon pluvieux | 1,645 → 1,645 | 1,535 → 1,499 (−2,3 %) | 1,471 → 1,391 (−5,5 %) |
+| précision des annonces de rupture, jours de pluie | 59,3 → 59,3 % | 56,3 → 57,5 % | 56,1 → 58,0 % |
+| ruptures réelles annoncées | 51,9 → 51,9 % | 52,4 → 52,3 % | 52,0 → 52,0 % |
+| jours avec une correction appliquée (j ≥ 29) | **0 %** | 87 % | 94 % |
+| oracle (plafond), MAE +60 pluvieux | — | 0,958 (−5,7 %) | 0,840 (−12 %) |
+
+Le levier capte **70 % du plafond** de l'oracle sous la pluie (4,0 / 5,7 ; 8,4 / 12). Sur l'ensemble des
+créneaux, le gain est petit (−0,5 à −1 %) **parce que le plafond lui-même est petit** (étape 0) ; il est
+mesurable (écart apparié ± 0,2 %) et sans contrepartie : il n'agit que sous la pluie, ne fait rien
+quand la pluie est sans effet et rien sans météo. Maturation : le coefficient n'existe qu'après
+~6 semaines (3 semaines de profil mûr, puis assez de fenêtres pluvieuses) ; avant, l'écran dit « défaut ».
+
+**`--meteo absente` reproduit la référence à la dernière décimale** (comportement strictement
+identique sans météo, vérifié sur toutes les mesures du banc).
+
+## Étape 3b — modulation par station : **ne gagne pas, non livrée**
+
+α par station, rétréci vers α global selon sa précision (Bayes empirique : wᵢ = τ² / (τ² + seᵢ²)).
+
+- Mesure (6 graines, levier 3a en référence) : **écart exactement nul** sur toutes les mesures, dans
+  les trois mondes : τ² estimé = 0, tout revient au global.
+- Diagnostic (graine 1) : ~144 fenêtres pluvieuses par station sur la mémoire de 60 jours ;
+  α̂ᵢ dispersés de ± 0,40 (moyen) pour une erreur-type moyenne de 0,45. L'écart **réel** entre stations
+  (sensibilité du parc 0,9 contre 0,25 pour une école, ≈ ± 0,2) est noyé dans le bruit d'estimation —
+  il y a pourtant du signal (corrélation 0,47 à 0,57 avec la vraie sensibilité).
+- Plafond : même en imposant la vraie variance entre stations (τ² = 0,04 ou 0,1), l'écart reste
+  **±0,001** de MAE. Il n'y a rien à gagner à cet horizon : la correction météo d'une station est déjà
+  petite, et la moduler de ± 40 % déplace des fractions de vélo.
+
+Le plan voulait la modulation « seulement là où il y a assez d'échantillons pluvieux pour l'estimer
+honnêtement » : **il n'y en a nulle part** en deux mois de mémoire, avec une pluie sur 10 % des heures.
+Code mesuré au commit d'expérience suivant, puis retiré.

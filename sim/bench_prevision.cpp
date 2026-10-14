@@ -370,8 +370,10 @@ int main(int argc, char ** argv) {
       const char * eq = strchr(kv, '=');
       std::string k = eq ? std::string(kv, eq - kv) : std::string(kv);
       bool v = eq ? atoi(eq + 1) != 0 : true;
-      (void)v;
-      { fprintf(stderr, "levier inconnu : %s\n", k.c_str()); return 1; }
+      if (k == "flux_meteo") g_pred.wxFlow = v;
+      else if (k == "station_meteo") g_pred.wxStation = v;
+      else if (k == "prevue_meteo") g_pred.wxForecast = v;
+      else { fprintf(stderr, "levier inconnu : %s\n", k.c_str()); return 1; }
     }
     else { fprintf(stderr, "option inconnue : %s\n", argv[a]); return 1; }
   }
@@ -412,7 +414,7 @@ int main(int argc, char ** argv) {
   std::vector<int> prevTruth(NST, -1);
   long rupt[2] = {}, ruptAnt[2] = {};                 // ruptures réelles (7 h–22 h, j mûrs) / annoncées dans l'heure d'avant
   struct Day { int falseUnus = 0, trueUnus = 0, onset[AL_TYPE_COUNT] = {}, soonOk[2] = {}, soonN[2] = {}; int rainH = 0; bool hol = false;
-               float learn = 0, conf = 0, anomConf = 0, evalFrac = 0; float chBias = NAN; double chErr = 0; int chN = 0; double twErr = 0; int twN = 0; };
+               float learn = 0, conf = 0, anomConf = 0, evalFrac = 0, alpha = 0, alphaRaw = 0, alphaSE = 0, nRain = 0; int src = 0; float chBias = NAN; double chErr = 0; int chN = 0; double twErr = 0; int twN = 0; };
   std::vector<Day> days(cfg.days);
   struct Soon { int st, type; int64_t t; };
   std::vector<Soon> soons;
@@ -518,6 +520,7 @@ int main(int argc, char ** argv) {
     if (lt.tm_hour == 12 && lt.tm_min == 0) {
       Day & D = days[d];
       D.learn = m.learnPct(); D.conf = m.netConf;
+      D.alpha = m.wxAlpha; D.alphaRaw = m.wxAlphaRaw; D.alphaSE = m.wxAlphaSE; D.src = m.wxSrc; D.nRain = m.wxG.nRain;
       int ev = 0, op = 0; double ac = 0;
       for (int i = 0; i < NST; i++) {
         const Station & s = m.st[i];
@@ -646,6 +649,11 @@ int main(int argc, char ** argv) {
     for (int d : { 1, 2, 3, 5, 7, 10, 14, 21, 28, 42, 56, 84, 112, 140, 167 })
       if (d < cfg.days) printf("| %d | %.0f %% | %.0f %% | %.0f %% | %.0f %% |\n", d + 1, days[d].learn, days[d].conf, days[d].anomConf, days[d].evalFrac);
 
+    printf("\n## 3b. Coefficient météo appris (α global, à midi)\n\n| jour | fenêtres pluvieuses | α brut ± erreur-type | α appliqué | origine |\n|---|---|---|---|---|\n");
+    static const char * SRC[3] = { "défaut (trop peu de pluie)", "sans effet mesurable", "appris" };
+    for (int d : { 7, 14, 21, 28, 42, 56, 84, 112, 140, 167 })
+      if (d < cfg.days) printf("| %d | %.0f | %+.3f ± %.3f | %+.3f | %s |\n", d + 1, days[d].nRain, days[d].alphaRaw, days[d].alphaSE, days[d].alpha, SRC[days[d].src]);
+
     printf("\n## 4. Station agrandie 20 → 30 bornes au jour %d (jumelle de 30 bornes en témoin)\n\n", CHANGE_DAY + 1);
     printf("| jours après | écart moyen du profil à la jumelle (vélos) | MAE +60 agrandie | MAE +60 jumelle |\n|---|---|---|---|\n");
     for (int a : { -1, 0, 1, 3, 7, 14, 21, 28, 42, 56, 70, 84, 98, 111 }) {
@@ -689,6 +697,29 @@ int main(int argc, char ** argv) {
   printf("\nPrécision des alertes prévues (la rupture arrive dans les 75 min) : rupture %.0f %% sec / %.0f %% pluie · saturation %.0f %% sec / %.0f %% pluie\n",
          sn[0] ? 100 * so[0] / sn[0] : NAN, wn[0] ? 100 * wo[0] / wn[0] : NAN, sn[1] ? 100 * so[1] / sn[1] : NAN, wn[1] ? 100 * wo[1] / wn[1] : NAN);
 
+  if (!cfg.brief || true) {
+    // Dispersion des α par station (2 termes, comme le modèle) : vraie sensibilité contre estimation
+    double sr = 0, sr2 = 0, sse = 0; int k = 0; double cov = 0, st2 = 0, smean = 0, nrain = 0;
+    std::vector<double> rv, tv;
+    for (int i = 0; i < NST; i++) {
+      const WxStats & ws = m.wxS[i];
+      double det = (double)ws.sdd * ws.szz - (double)ws.sdz * ws.sdz;
+      if (ws.sn < 1 || det <= 0) continue;
+      double raw = -((double)ws.sdd * ws.szr - (double)ws.sdz * ws.sdr) / det;
+      double se = sqrt((double)ws.sgg) / (det / ws.sdd);
+      sr += raw; sr2 += raw * raw; sse += se * se; k++; nrain += ws.nRain;
+      rv.push_back(raw); tv.push_back(w.st[i].sens * cfg.effect);
+    }
+    if (k > 1) {
+      for (size_t j = 0; j < rv.size(); j++) smean += tv[j];
+      smean /= tv.size(); double rm = sr / k;
+      for (size_t j = 0; j < rv.size(); j++) { cov += (rv[j] - rm) * (tv[j] - smean); st2 += (tv[j] - smean) * (tv[j] - smean); }
+      printf("\nα par station : %d stations, fenêtres pluvieuses %.0f en moyenne ; α̂ moyen %.3f, écart-type %.3f ; erreur-type moyenne %.3f ; "
+             "τ² = %.4f ; corrélation avec la vraie sensibilité %.2f\n",
+             k, nrain / k, rm, sqrt(fmax(0, sr2 / k - rm * rm)), sqrt(sse / k), fmax(0, sr2 / k - rm * rm - sse / k),
+             st2 > 0 ? cov / sqrt(st2 * fmax(1e-12, sr2 - k * rm * rm)) : NAN);
+    }
+  }
   // Ligne de synthèse (pour comparer deux réglages d'un coup d'œil)
   double fRain = 0, fDry = 0; int nR = 0, nD = 0;
   for (int d = matureFrom; d < cfg.days; d++) {
@@ -697,13 +728,13 @@ int main(int argc, char ** argv) {
     if (days[d].rainH == 0) { fDry += days[d].falseUnus; nD++; }
   }
   printf("\nSYNTHESE graine=%llu effet=%s mae15=%.4f mae30=%.4f mae60=%.4f mae120=%.4f mae60_sec=%.4f mae60_pluie=%.4f mae120_pluie=%.4f "
-         "orc60_pluie=%.4f orc60=%.4f per60=%.4f fausses_pluie=%.2f fausses_sec=%.2f rappel=%.1f rappel_pluie=%.1f rappel_sec=%.1f ferie60=%.4f annonce_vide=%.1f annonce_pleine=%.1f annonces_pluie_j=%.2f precision_pluie=%.1f precision_sec=%.1f\n",
+         "orc60_pluie=%.4f orc60=%.4f per60=%.4f fausses_pluie=%.2f fausses_sec=%.2f rappel=%.1f rappel_pluie=%.1f rappel_sec=%.1f ferie60=%.4f annonce_vide=%.1f annonce_pleine=%.1f annonces_pluie_j=%.2f precision_pluie=%.1f precision_sec=%.1f alpha=%.3f alpha_brut=%.3f alpha_se=%.3f jours_alpha=%.1f\n",
          (unsigned long long)cfg.seed, cfg.effName, mature.fc[0].mean(), mature.fc[1].mean(), mature.fc[2].mean(), mature.fc[3].mean(),
          matureDry.fc[2].mean(), matureWet.fc[2].mean(), matureWet.fc[3].mean(), matureWet.orc[2].mean(), mature.orc[2].mean(), mature.per[2].mean(),
          nR ? fRain / nR : NAN, nD ? fDry / nD : NAN, incTot ? 100.0 * incSeen / incTot : 0,
          incR ? 100.0 * incRS / incR : NAN, incD ? 100.0 * incDS / incD : NAN, hol.fc[2].mean(),
          rupt[0] ? 100.0 * ruptAnt[0] / rupt[0] : NAN, rupt[1] ? 100.0 * ruptAnt[1] / rupt[1] : NAN,
          nR ? (wn[0] + wn[1]) / nR : NAN, (wn[0] + wn[1]) ? 100 * (wo[0] + wo[1]) / (wn[0] + wn[1]) : NAN,
-         (sn[0] + sn[1]) ? 100 * (so[0] + so[1]) / (sn[0] + sn[1]) : NAN);
+         (sn[0] + sn[1]) ? 100 * (so[0] + so[1]) / (sn[0] + sn[1]) : NAN, m.wxAlpha, m.wxAlphaRaw, m.wxAlphaSE, [&] { int a = 0, t = 0; for (int d = 28; d < cfg.days; d++) { t++; a += days[d].alpha != 0; } return t ? 100.0 * a / t : 0.0; }());
   return 0;
 }

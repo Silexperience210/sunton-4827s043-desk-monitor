@@ -66,6 +66,19 @@ static float expectedRain(const WxHour & f) {
   return (p / 100.f) * rainPenalty(fmaxf(f.rain, 0.1f));
 }
 
+static float coldPenalty(float t) { return t < 2 ? (t < -2 ? 4.f : 2.f) : 0.f; }
+static float codePenalty(int code) { return (code >= 95 ? 4.f : 0.f) + (code >= 71 && code <= 86 ? 3.f : 0.f); }
+
+float wxPenalty(float temp, float rainMm, float windKmh, int code) {
+  float p = rainPenalty(rainMm) + windPenalty(windKmh) + coldPenalty(temp) + codePenalty(code);
+  return fminf(1.f, p / 10.f);
+}
+
+float wxPenaltyHour(const WxHour & f) {
+  float p = expectedRain(f) + windPenalty(f.wind) + coldPenalty(f.temp) + codePenalty(f.code);
+  return fminf(1.f, p / 10.f);
+}
+
 void wxScore(Weather & w) {
   struct R { float pts; char txt[56]; } rs[8];
   int n = 0;
@@ -78,7 +91,7 @@ void wxScore(Weather & w) {
   float rainNow = rainPenalty(w.rain), windNow = windPenalty(w.wind);
   add(-rainNow, "Pluie %.1f mm/h", w.rain);
   add(-windNow, "Vent %.0f km/h", w.wind);
-  if (w.temp < 2) add(w.temp < -2 ? -4.f : -2.f, w.temp < -2 ? "Gel %.0f\xC2\xB0" : "Froid %.0f\xC2\xB0", w.temp);
+  if (w.temp < 2) add(-coldPenalty(w.temp), w.temp < -2 ? "Gel %.0f\xC2\xB0" : "Froid %.0f\xC2\xB0", w.temp);
   if (w.code >= 95) add(-4.f, "Orage");
   if (w.code >= 71 && w.code <= 86) add(-3.f, "Neige");
 

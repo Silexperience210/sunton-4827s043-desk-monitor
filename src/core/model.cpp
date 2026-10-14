@@ -48,7 +48,8 @@ bool Model::init() {
   prof   = (ProfCell *)plat::psAlloc(sizeof(ProfCell) * (size_t)VN_MAX_ST * PROF_STRIDE);
   cellN  = (uint8_t *)plat::psAlloc(PROF_STRIDE);
   alerts = (Alert *)plat::psAlloc(sizeof(Alert) * VN_MAX_ALERTS);
-  if (!st || !ringT || !ring || !net || !recT || !rec || !prof || !cellN || !alerts) return false;
+  wxS    = (WxStats *)plat::psAlloc(sizeof(WxStats) * VN_MAX_ST);
+  if (!st || !ringT || !ring || !net || !recT || !rec || !prof || !cellN || !alerts || !wxS) return false;
   memset(ring, 255, (size_t)VN_RING_SLOTS * VN_MAX_ST);
   memset(rec, 255, (size_t)VN_RECENT_SLOTS * VN_MAX_ST);
   return true;
@@ -250,6 +251,7 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
       if (cellN[cell] < 255) cellN[cell]++;
       learnSamples++;
       if (!learnSince) learnSince = now;
+      learnWeather(t);
     }
   }
   net[head].dep = (uint16_t)(net[head].dep + dep);
@@ -359,23 +361,54 @@ static float trendSlope(const Model & m, int i, int64_t now, float & oldest) {
 
 // La règle de projection elle-même, partagée par la prévision 2 h (pas 5 min)
 // et la courbe 24 h (Model::project) : un seul endroit à lire et à tester.
+//   fc(h) = actuel + c·[ΔP(h) + M(h)] + (1 − 0,6c)·tendance amortie(h)
+//   M(h)  = Σ sur les pas jusqu'à h de (mouvement du profil sur le pas) × f(pas)
+//   f     = −α·(x − x̄) (wxF, nullptr = aucune correction météo), |c·M| ≤ 40 % de la capacité utile
+// La part météo c·M est rendue dans wxPart (0 sans correction). Elle ne touche que la
+// trajectoire : le point 0 reste le relevé réel.
+static const float WX_MAX_SHARE = 0.4f;
 static void projectSteps(const ProfCell * p, int dow0, int mod0, float cur, float capE, float slope,
-                         int stepMin, int nSteps, float * out, float * conf) {
+                         int stepMin, int nSteps, float * out, float * conf, const float * wxF, float * wxPart) {
   float p0, n0;
   bool has0 = profileLocal(p, dow0, mod0, p0, n0);
   const float tau = 25.f;
+  float prev = p0, M = 0;
   for (int k = 0; k < nSteps; k++) {
     int h = k * stepMin;
     float dS = 0, cS = 0, ph, nh;
     if (has0 && profileLocal(p, dow0, mod0 + h, ph, nh)) {
       dS = ph - p0;
       cS = clampf((n0 < nh ? n0 : nh) / CONF_N, 0, 1);
+      if (wxF && k > 0) M += (ph - prev) * wxF[k];
+      prev = ph;
     }
+    float wxC = clampf(cS * M, -WX_MAX_SHARE * capE, WX_MAX_SHARE * capE);
     float dT = slope * tau * (1 - expf(-h / tau));
-    float v = cur + cS * dS + (1 - 0.6f * cS) * dT;
+    float v = cur + cS * dS + wxC + (1 - 0.6f * cS) * dT;
     out[k] = clampf(v, 0, capE);
     if (conf) conf[k] = cS;
+    if (wxPart) wxPart[k] = wxC;
   }
+}
+
+// Facteurs météo f(pas) = −α·(x − x̄) d'une station ; false = aucune correction (comportement d'avant)
+static bool wxFactors(const Model & m, int i, int64_t now, int stepMin, int nSteps, float * f) {
+  if (!g_pred.wxFlow || m.wxUse != WXU_OK) return false;
+  float a = g_pred.wxStation ? m.st[i].wxAlpha : m.wxAlpha;
+  if (a == 0) return false;
+  for (int k = 0; k < nSteps; k++) {
+    f[k] = 0;
+    if (k == 0) continue;
+    float x;                                  // pénalité attendue au milieu du pas
+    int64_t tau = now + (int64_t)(k * stepMin - stepMin / 2) * 60;
+    if (m.wxPenaltyAt(now, tau, x)) {
+      // seulement un temps PIRE que la normale de l'heure : l'amplification par beau temps
+      // (dx < 0) coûtait par temps sec sans rien gagner (docs/mesures-prevision.md, étape 3a)
+      float dx = x - m.wxClimAt(tau);
+      f[k] = dx > 0 ? -a * dx : 0;
+    }
+  }
+  return true;
 }
 
 static void forecastStation(Model & m, int i, int dow0, int mod0, int64_t now) {
@@ -385,15 +418,17 @@ static void forecastStation(Model & m, int i, int dow0, int mod0, int64_t now) {
   s.conf = 0;
   s.delta30 = 0;
   if (s.status == ST_CLOSED || !s.live) {
-    for (int k = 0; k < VN_FC_STEPS; k++) s.fc[k] = cur;
+    for (int k = 0; k < VN_FC_STEPS; k++) { s.fc[k] = cur; s.fcWx[k] = 0; }
     return;
   }
   float oldest;
   float slope = trendSlope(m, i, now, oldest);
   if (oldest >= 0) s.delta30 = (int16_t)lroundf(cur - oldest);
 
-  float conf[VN_FC_STEPS];
-  projectSteps(m.prof + (size_t)i * PROF_STRIDE, dow0, mod0, cur, capE, slope, 5, VN_FC_STEPS, s.fc, conf);
+  float conf[VN_FC_STEPS], wxF[VN_FC_STEPS];
+  bool wxOn = wxFactors(m, i, now, 5, VN_FC_STEPS, wxF);
+  projectSteps(m.prof + (size_t)i * PROF_STRIDE, dow0, mod0, cur, capE, slope, 5, VN_FC_STEPS, s.fc, conf,
+               wxOn ? wxF : nullptr, s.fcWx);
   float conf60 = conf[12];
   s.conf = (uint8_t)lroundf(conf60 * 100);
 
@@ -418,19 +453,151 @@ static void forecastStation(Model & m, int i, int dow0, int mod0, int64_t now) {
   }
 }
 
-bool Model::project(int i, int64_t now, int stepMin, int nSteps, float * out, float * conf) const {
+bool Model::project(int i, int64_t now, int stepMin, int nSteps, float * out, float * conf, float * wxPart) const {
   if (i < 0 || i >= n || nSteps <= 0 || stepMin <= 0) return false;
   const Station & s = st[i];
   if (s.status == ST_CLOSED || !s.live) {             // même convention que forecastStation
-    for (int k = 0; k < nSteps; k++) { out[k] = s.bikes; if (conf) conf[k] = 0; }
+    for (int k = 0; k < nSteps; k++) { out[k] = s.bikes; if (conf) conf[k] = 0; if (wxPart) wxPart[k] = 0; }
     return true;
   }
   int dow0, mod0;
   localDM(now, dow0, mod0);
   float oldest;
   float slope = trendSlope(*this, i, now, oldest);
-  projectSteps(prof + (size_t)i * PROF_STRIDE, dow0, mod0, s.bikes, s.capEff(), slope, stepMin, nSteps, out, conf);
+  float wxF[128];                                     // la courbe 24 h en a 97
+  bool wxOn = nSteps <= 128 && wxFactors(*this, i, now, stepMin, nSteps, wxF);
+  projectSteps(prof + (size_t)i * PROF_STRIDE, dow0, mod0, s.bikes, s.capEff(), slope, stepMin, nSteps, out, conf,
+               wxOn ? wxF : nullptr, wxPart);
   return true;
+}
+
+// ── Météo apprise (étape 3) ──────────────────────────────────────────
+// Pénalité x(τ) attendue : météo actuelle sur les 2 premières heures (étape 3), ou, avec
+// g_pred.wxForecast (étape 4), la météo prévue de l'heure qui contient τ. Au-delà de ce
+// qu'on sait, aucune correction (x inconnue → facteur 0).
+bool Model::wxPenaltyAt(int64_t now, int64_t tau, float & x) const {
+  if (wxUse != WXU_OK) return false;
+  if (!g_pred.wxForecast) {
+    if (tau - now > 2 * 3600) return false;
+    x = wxNow;
+    return true;
+  }
+  int64_t h0 = wx.fetchedAt - wx.fetchedAt % 3600;          // fc[0] = heure en cours au relevé
+  int idx = (int)((tau - h0) / 3600);
+  if (idx < 0 || idx >= wx.nfc) return false;
+  // dans l'heure du relevé, la mesure actuelle vaut mieux que la prévision de l'heure
+  x = idx == 0 ? wxNow : wxPenaltyHour(wx.fc[idx]);
+  return true;
+}
+
+static const float WX_DECAY = 1.f - 1.f / 1800.f;      // ~60 jours de fenêtres de 30 min (7 h–22 h)
+static const float WX_RES_CLIP = 6.f;                  // résidu écrêté (camions, incidents)
+static const float WX_MIN_RAIN = 12.f;                 // fenêtres pluvieuses avant de juger
+static const float WX_ALPHA_MIN = -0.5f, WX_ALPHA_MAX = 1.f;
+static const float WX_SIGNIF = 3.f;                    // seuil de significativité (erreurs-types)
+
+static void wxDecay(WxStats & w) {
+  float * f = (float *)&w;
+  for (size_t k = 0; k < sizeof(WxStats) / sizeof(float); k++) f[k] *= WX_DECAY;
+}
+
+float Model::wxClimAt(int64_t t) const {
+  struct tm lt;
+  plat::localTime(t, &lt);
+  int h = lt.tm_hour;
+  return wxClim.sw[h] > 0 ? wxClim.sx[h] / wxClim.sw[h] : 0;
+}
+
+// Une fenêtre de 30 min se termine à slotT (tranche :00 ou :30, 7 h 30 → 22 h) : pour chaque
+// station ouverte, mouvement observé contre mouvement du profil, sous la météo OBSERVÉE pendant
+// la fenêtre (échantillons 5 min, étape 2). Ne se nourrit que du flux GBFS (anneau 5 min) et
+// d'Open-Meteo ; une station fermée, inactive ou sans relevé aux deux bouts est exclue.
+void Model::learnWeather(int64_t slotT) {
+  if (slotT % 1800 || count < 7) return;
+  int dow, mod;
+  localDM(slotT, dow, mod);
+  if (mod < 7 * 60 + 30 || mod > 22 * 60) return;
+  int i0 = ringIndex(0), i6 = ringIndex(6);
+  if (i0 < 0 || i6 < 0 || ringT[i0] != slotT || ringT[i6] != slotT - 1800) return;
+  float x = 0;
+  for (int b = 1; b <= 6; b++) {
+    const NetSample & ns = net[ringIndex(b)];
+    if (ns.avail == 0xFFFF || !netWxKnown(ns)) return;      // fenêtre incomplète : rien appris
+    x += wxPenalty(ns.wxTemp, ns.wxRain / 10.f, ns.wxWind == WX_NA ? 0.f : ns.wxWind, ns.wxCode == WX_NA ? 0 : ns.wxCode);
+  }
+  x /= 6;
+  // x̄ₕ : climatologie de la pénalité à l'heure du milieu de la fenêtre
+  struct tm lm;
+  plat::localTime(slotT - 900, &lm);
+  int hh = lm.tm_hour;
+  for (int k = 0; k < 24; k++) { wxClim.sx[k] *= WX_DECAY; wxClim.sw[k] *= WX_DECAY; }
+  wxClim.sx[hh] += x; wxClim.sw[hh] += 1;
+  float xbar = wxClim.sx[hh] / wxClim.sw[hh];
+  wxDecay(wxG);
+  for (int i = 0; i < n; i++) wxDecay(wxS[i]);
+  float g = 0;
+  int used = 0;
+  const uint8_t * r0 = ring + (size_t)i0 * VN_MAX_ST, * r6 = ring + (size_t)i6 * VN_MAX_ST;
+  for (int i = 0; i < n; i++) {
+    const Station & s = st[i];
+    if (!s.active || !s.live || s.status == ST_CLOSED || r0[i] == 255 || r6[i] == 255) continue;
+    float pa, na, pb, nb;
+    if (!profileAt(i, slotT - 1800, pa, na) || !profileAt(i, slotT, pb, nb)) continue;
+    if (na < CONF_N || nb < CONF_N) continue;                 // profil pas encore mûr : référence trop bruitée
+    float d = pb - pa;
+    float r = clampf((float)r0[i] - (float)r6[i] - d, -WX_RES_CLIP, WX_RES_CLIP);
+    float z = (x - xbar) * d;
+    WxStats * ws[2] = { &wxG, &wxS[i] };
+    for (WxStats * w : ws) { w->sdd += d * d; w->sdz += d * z; w->szz += z * z; w->sdr += d * r; w->szr += z * r; w->sn += 1; }
+    wxS[i].sgg += (z * r) * (z * r);                        // grappe = l'observation elle-même
+    if (x > 0.05f) wxS[i].nRain += 1;
+    g += z * r;
+    used++;
+  }
+  wxG.sgg += g * g;                                         // grappe = la fenêtre
+  if (used && x > 0.05f) wxG.nRain += 1;                    // fenêtre pluvieuse réellement apprise
+}
+
+// α̂ (régression à deux termes β·d − α·z) et son erreur-type robuste ; renvoie α appliqué :
+// 0 tant que |α̂| ne dépasse pas 3 erreurs-types, puis α̂ tel quel, borné à [−0,5 ; 1].
+// Mesuré (docs/mesures-prevision.md, étape 3a) : un rétrécissement de 2 erreurs-types divisait
+// l'effet par deux ; un seuil de 2 erreurs-types, vérifié en continu, inventait une correction
+// 4 % des jours dans le monde où la pluie est sans effet ; 3 : jamais, pour le même gain.
+static float alphaOf(const WxStats & w, float & raw, float & se) {
+  raw = se = 0;
+  double det = (double)w.sdd * w.szz - (double)w.sdz * w.sdz;
+  if (w.sn < 1 || w.sdd <= 1e-6f || det <= 1e-9 * (double)w.sdd * w.szz || det <= 0) return 0;
+  raw = (float)(-((double)w.sdd * w.szr - (double)w.sdz * w.sdr) / det);
+  double szzEff = det / w.sdd;                               // Σz² une fois d retiré
+  se = (float)(sqrt((double)w.sgg) / szzEff);
+  return fabsf(raw) > WX_SIGNIF * se ? clampf(raw, WX_ALPHA_MIN, WX_ALPHA_MAX) : 0;
+}
+
+void Model::updateWxCoef() {
+  float a = alphaOf(wxG, wxAlphaRaw, wxAlphaSE);
+  if (wxG.nRain < WX_MIN_RAIN) { wxSrc = WXC_DEFAULT; wxAlpha = 0; }
+  else { wxAlpha = a; wxSrc = a != 0 ? WXC_LEARNED : WXC_NULL; }
+  for (int i = 0; i < n; i++) st[i].wxAlpha = wxAlpha;
+  if (!g_pred.wxStation || wxAlpha == 0) return;
+  // Étape 3b : α par station, rétréci vers α global selon sa précision (Bayes empirique) :
+  //   αᵢ = α + wᵢ·(α̂ᵢ − α),  wᵢ = τ² / (τ² + seᵢ²),  τ² = variance vraie entre stations
+  //   (variance observée des α̂ᵢ moins l'erreur moyenne). Une station peu arrosée reste à α.
+  static float raw[VN_MAX_ST], se[VN_MAX_ST];
+  double sum = 0, sum2 = 0, sse = 0; int k = 0;
+  for (int i = 0; i < n; i++) {
+    raw[i] = se[i] = 0;
+    alphaOf(wxS[i], raw[i], se[i]);
+    if (wxS[i].nRain < WX_MIN_RAIN || se[i] <= 0) { se[i] = 0; continue; }
+    sum += raw[i]; sum2 += (double)raw[i] * raw[i]; sse += (double)se[i] * se[i]; k++;
+  }
+  if (k < 10) return;                                       // trop peu de stations pour estimer τ²
+  double mean = sum / k, var = sum2 / k - mean * mean;
+  float tau2 = (float)fmax(0.0, var - sse / k);
+  for (int i = 0; i < n; i++) {
+    if (se[i] <= 0) continue;
+    float w = tau2 / (tau2 + se[i] * se[i]);
+    st[i].wxAlpha = clampf(wxAlpha + w * (raw[i] - wxAlpha), WX_ALPHA_MIN, WX_ALPHA_MAX);
+  }
 }
 
 // ── Écart au profil (« comportement inhabituel ») ────────────────────
@@ -491,6 +658,9 @@ void Model::recompute(int64_t now) {
   bool activeHours = hour >= 7 && hour < 22;
   // Météo : utilisée seulement si reçue et fraîche (3 périodes de VN_WX_REFRESH_S, comme le bandeau)
   wxUse = wxUseAt(now);
+  wxNow = wxUse == WXU_OK ? wxPenalty(wx.temp, wx.rain, wx.wind, wx.code) : 0;
+  wxXbar = wxClimAt(now);
+  updateWxCoef();
 
   Totals t;
   memset(&t, 0, sizeof(t));
@@ -679,7 +849,11 @@ struct NetSampleV1 {                              // format des versions ≤ 1.0
 };
 static_assert(sizeof(NetSampleV1) == 24, "format v1 de /vn_hist.bin");
 static_assert(sizeof(NetSample) == 32, "format v2 de /vn_hist.bin");
+// /vn_prof.bin : ver 1 (≤ v1.0.8) = profils ; ver 2 = profils + statistiques météo (global,
+// puis une par station dans l'ordre des sid). Une version 1 est relue, apprentissage météo à zéro.
 static const uint32_t PROF_MAGIC = 0x31504E56;   // "VNP1"
+static const uint16_t PROF_VER = 2;
+static_assert(sizeof(WxStats) == 32 && sizeof(WxClimate) == 192, "format v2 de /vn_prof.bin");
 static const char * HIST_PATH = "/vn_hist.bin";
 static const char * PROF_PATH = "/vn_prof.bin";
 
@@ -690,15 +864,19 @@ bool Model::serialize(Blob & out) const {
   h.nSt = (uint16_t)n; h.head = head; h.count = count;
   h.learnSince = learnSince; h.learnSamples = learnSamples; h.savedAt = lastUpdate;
   // Profils
-  size_t sz = sizeof(h) + (size_t)n * 8 + (size_t)n * PROF_STRIDE * sizeof(ProfCell) + PROF_STRIDE;
+  size_t sz = sizeof(h) + (size_t)n * 8 + (size_t)n * PROF_STRIDE * sizeof(ProfCell) + PROF_STRIDE
+              + sizeof(WxClimate) + sizeof(WxStats) * (1 + (size_t)n);
   uint8_t * b = (uint8_t *)plat::psAlloc(sz);
   if (!b) return false;
-  h.magic = PROF_MAGIC; h.ver = 1;
+  h.magic = PROF_MAGIC; h.ver = PROF_VER;
   size_t o = 0;
   memcpy(b + o, &h, sizeof(h)); o += sizeof(h);
   for (int i = 0; i < n; i++) { memcpy(b + o, st[i].sid, 8); o += 8; }
   memcpy(b + o, prof, (size_t)n * PROF_STRIDE * sizeof(ProfCell)); o += (size_t)n * PROF_STRIDE * sizeof(ProfCell);
   memcpy(b + o, cellN, PROF_STRIDE); o += PROF_STRIDE;
+  memcpy(b + o, &wxClim, sizeof(WxClimate)); o += sizeof(WxClimate);
+  memcpy(b + o, &wxG, sizeof(WxStats)); o += sizeof(WxStats);
+  memcpy(b + o, wxS, sizeof(WxStats) * (size_t)n); o += sizeof(WxStats) * (size_t)n;
   out.prof = b; out.profLen = o;
   // Historique 24 h
   sz = sizeof(h) + (size_t)n * 8 + VN_RING_SLOTS * (8 + sizeof(NetSample) + (size_t)n);
@@ -743,12 +921,33 @@ bool Model::load(int64_t now) {
     if (b && plat::fsRead(PROF_PATH, b, psz)) {
       FileHdr h; memcpy(&h, b, sizeof(h));
       size_t need = sizeof(h) + (size_t)h.nSt * 8 + (size_t)h.nSt * PROF_STRIDE * sizeof(ProfCell) + PROF_STRIDE;
-      if (h.magic == PROF_MAGIC && h.ver == 1 && h.nSt <= VN_MAX_ST && (size_t)psz == need) {
+      if (h.ver == PROF_VER) need += sizeof(WxClimate) + sizeof(WxStats) * (1 + (size_t)h.nSt);
+      if (h.magic == PROF_MAGIC && (h.ver == 1 || h.ver == PROF_VER) && h.nSt <= VN_MAX_ST && (size_t)psz == need) {
         mapSids(*this, b + sizeof(h), h.nSt, map);
         const uint8_t * pp = b + sizeof(h) + (size_t)h.nSt * 8;
         for (int j = 0; j < h.nSt; j++)
           if (map[j] >= 0) memcpy(prof + (size_t)map[j] * PROF_STRIDE, pp + (size_t)j * PROF_STRIDE * sizeof(ProfCell), PROF_STRIDE * sizeof(ProfCell));
         memcpy(cellN, pp + (size_t)h.nSt * PROF_STRIDE * sizeof(ProfCell), PROF_STRIDE);
+        if (h.ver == PROF_VER) {
+          const uint8_t * wp = pp + (size_t)h.nSt * PROF_STRIDE * sizeof(ProfCell) + PROF_STRIDE;
+          // Statistiques relues seulement si toutes finies et de signe plausible ; sinon on repart de zéro
+          WxClimate c; memcpy(&c, wp, sizeof(c));
+          static WxStats tmp[VN_MAX_ST + 1];
+          memcpy(tmp, wp + sizeof(WxClimate), sizeof(WxStats) * (1 + (size_t)h.nSt));
+          bool sane = true;
+          for (int k = 0; k < 24; k++) sane &= isfinite(c.sx[k]) && isfinite(c.sw[k]) && c.sw[k] >= 0;
+          for (int j = 0; j <= h.nSt; j++) {
+            const float * f = (const float *)&tmp[j];
+            for (size_t k = 0; k < sizeof(WxStats) / sizeof(float); k++) sane &= isfinite(f[k]);
+            sane &= tmp[j].sdd >= 0 && tmp[j].szz >= 0 && tmp[j].sgg >= 0 && tmp[j].sn >= 0;
+          }
+          if (sane) {
+            wxClim = c;
+            wxG = tmp[0];
+            for (int j = 0; j < h.nSt; j++) if (map[j] >= 0) wxS[map[j]] = tmp[1 + j];
+          }
+          updateWxCoef();
+        }
         learnSince = h.learnSince; learnSamples = h.learnSamples;
         any = true;
       }
@@ -801,6 +1000,10 @@ void Model::resetHistory() {
   memset(prof, 0, sizeof(ProfCell) * (size_t)VN_MAX_ST * PROF_STRIDE);
   memset(cellN, 0, PROF_STRIDE);
   memset(net, 0, sizeof(NetSample) * VN_RING_SLOTS);
+  memset(&wxG, 0, sizeof(wxG));
+  memset(&wxClim, 0, sizeof(wxClim));
+  memset(wxS, 0, sizeof(WxStats) * VN_MAX_ST);
+  updateWxCoef();
   head = -1; count = 0; rHead = -1; rCount = 0;
   learnSince = 0; learnSamples = 0;
   plat::fsRemove(HIST_PATH);

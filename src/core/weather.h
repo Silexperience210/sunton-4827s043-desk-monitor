@@ -33,4 +33,11 @@ const char* wxLabel(int code);          // libellé FR (groupes du dépôt)
 WxIcon      wxIcon(int code);
 void        wxScore(Weather & w);       // calcule score + reason
 
+// Pénalité 0…1 des conditions d'un instant = (somme des pénalités « maintenant » de wxScore) / 10 :
+// pluie, vent > 20 km/h, froid < 2 °C, neige, orage — mêmes barèmes que la note, sans la tendance.
+float       wxPenalty(float temp, float rainMm, float windKmh, int code);
+// Même chose pour une heure prévue : la pluie y compte pour son espérance (probabilité × pénalité,
+// comme la tendance de wxScore), le reste à l'identique.
+float       wxPenaltyHour(const WxHour & f);
+
 } // namespace vn

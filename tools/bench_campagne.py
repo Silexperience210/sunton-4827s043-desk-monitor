@@ -27,6 +27,7 @@ KEYS = [
     ("rappel_pluie", "rappel jours de pluie %", 1), ("rappel_sec", "rappel jours secs %", 1),
     ("annonce_vide", "ruptures annoncées %", 1), ("annonce_pleine", "saturations annoncées %", 1),
     ("annonces_pluie_j", "annonces rupture+saturation / j de pluie", 1),
+    ("jours_alpha", "jours avec α ≠ 0 (j ≥ 29) %", 1),
     ("precision_pluie", "précision des annonces, pluie %", 1), ("precision_sec", "précision des annonces, sec %", 1),
 ]
 

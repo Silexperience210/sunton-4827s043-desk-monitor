@@ -35,6 +35,9 @@ enum AnomState : uint8_t {
 // (docs/mesures-prevision.md). Les valeurs par défaut sont celles de la carte.
 struct PredictOpts {
   // (étape 1 — tolérance météo — mesurée et non livrée : voir le commit 739b5cf)
+  bool wxFlow = false;         // étape 3a : mouvement prévu du profil × (1 − α·(x − x̄)), α global appris
+  bool wxStation = false;      // étape 3b : α modulé par station (rétréci vers α global)
+  bool wxForecast = false;     // étape 4 : x = météo PRÉVUE à t+h (sinon la météo actuelle, ≤ 2 h)
 };
 extern PredictOpts g_pred;
 
@@ -44,6 +47,28 @@ enum WxUse : uint8_t {
   WXU_STALE,                   // reçue mais plus vieille que 3 périodes (45 min) : ignorée
   WXU_OK                       // utilisée
 };
+
+// Origine du coefficient météo (affichée avec la part de la prévision qu'il explique)
+enum WxCoefSrc : uint8_t {
+  WXC_DEFAULT,                 // trop peu de pluie observée pour juger : α = 0, aucune correction
+  WXC_NULL,                    // assez de pluie observée, effet non distinguable du bruit : α = 0
+  WXC_LEARNED                  // appris, au-delà de 2 erreurs-types
+};
+
+// Statistiques suffisantes de l'apprentissage météo (décroissance exponentielle, ~60 jours).
+// Par fenêtre de 30 min et par station : d = mouvement du profil, r = mouvement observé − d,
+// z = (x − x̄ₕ)·d, x̄ₕ = pénalité moyenne à cette heure de la journée (ce que le profil moyenne).
+// Régression r = β·d − α·z : β absorbe le biais du profil (lissage, jeunesse) quel que soit le
+// temps, α est l'effet de la météo. Erreur-type robuste par grappe (une fenêtre = une grappe pour
+// le parc : les stations d'une même fenêtre partagent la même météo).
+struct WxStats {
+  float sdd, sdz, szz;         // Σd², Σd·z, Σz²
+  float sdr, szr;              // Σd·r, Σz·r
+  float sgg;                   // Σ (Σ_grappe z·r)²
+  float sn;                    // observations (fenêtres × stations)
+  float nRain;                 // fenêtres pluvieuses (x > 0,05)
+};
+struct WxClimate { float sx[24], sw[24]; };  // pénalité moyenne par heure locale (x̄ₕ)
 
 struct Station {
   // ── statique (station_information)
@@ -70,6 +95,8 @@ struct Station {
   uint8_t  conf;             // 0…100 (confiance du profil appris)
   int16_t  delta30;          // variation des vélos sur 30 min
   float    fc[VN_FC_STEPS];  // vélos prévus 0…120 min (pas 5 min)
+  float    fcWx[VN_FC_STEPS];// dont part due à la météo (0 sans correction météo)
+  float    wxAlpha;          // coefficient météo appliqué à cette station (0 = aucun)
   // Écart au profil (calculé par recompute) : attendu, tolérance ±, confiance du profil
   uint8_t  anom;             // AnomState
   uint8_t  anomConf;         // 0…100
@@ -155,6 +182,15 @@ struct Model {
   float     netFc[VN_FC_STEPS] = {};
   int       netConf = 0;
   uint8_t   wxUse = WXU_NONE;            // WxUse, évaluée par recompute
+  // Coefficient météo appris (étape 3) — sur le mouvement net, jamais sur le niveau constaté
+  WxStats   wxG{};                       // parc entier
+  WxClimate wxClim{};                    // x̄ₕ
+  WxStats * wxS = nullptr;               // [VN_MAX_ST] par station
+  float     wxAlpha = 0;                 // α global appliqué (0 si non significatif)
+  float     wxAlphaRaw = 0, wxAlphaSE = 0; // estimation brute et son erreur-type
+  float     wxXbar = 0;                  // x̄ₕ de l'heure courante (affichage)
+  uint8_t   wxSrc = WXC_DEFAULT;         // WxCoefSrc
+  float     wxNow = 0;                   // pénalité météo actuelle x (0…1), 0 sans météo
   Alert *   alerts = nullptr;            // [VN_MAX_ALERTS]
   int       nAlerts = 0;
   int       alertCount[AL_TYPE_COUNT] = {};
@@ -187,7 +223,12 @@ struct Model {
   // Projection d'une station sur nSteps pas de stepMin minutes à partir de now (point 0 = actuel),
   // avec la MÊME règle que la prévision 2 h (profil + tendance amortie). conf[k] = 0…1 par pas
   // (confiance du profil sur ce créneau). Renvoie false si la station est inconnue.
-  bool  project(int s, int64_t now, int stepMin, int nSteps, float * out, float * conf) const;
+  bool  project(int s, int64_t now, int stepMin, int nSteps, float * out, float * conf, float * wxPart = nullptr) const;
+  // Pénalité météo attendue x(τ) pour un instant τ ≥ now ; false si inconnue (pas de correction)
+  bool  wxPenaltyAt(int64_t now, int64_t tau, float & x) const;
+  float wxClimAt(int64_t t) const;       // x̄ₕ de l'heure locale de t (0 si inconnue)
+  void  learnWeather(int64_t slotT);     // une fenêtre de 30 min (appelée par applyStatus)
+  void  updateWxCoef();                  // α global et par station depuis les statistiques
   float learnPct() const;                // 0…100
   int   ringIndex(int back) const;       // index du point « back » tranches en arrière (‑1)
 
