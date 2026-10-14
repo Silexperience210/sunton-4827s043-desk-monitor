@@ -677,6 +677,104 @@ static void testAnomaly() {
         "premier relevé : pas d'alerte (état %d)", z.st[0].anom);
 }
 
+// ── Météo dans l'historique 5 min + format versionné de /vn_hist.bin ──
+static void testHistWeather() {
+  settingsDefaults(g_set);
+  static Model m;
+  CHECK(m.init(), "init historique météo");
+  const int64_t t0 = 1791842400 + 10 * 3600;                   // mardi 13/10 10:00
+  InfoRec ir[3] = { mkInfo("1", 49.60f, 6.13f, 20), mkInfo("2", 49.61f, 6.14f, 20), mkInfo("3", 49.62f, 6.15f, 20) };
+  m.applyInfo(ir, 3, t0);
+  StatusRec sr[3] = { mkStat("1", 5, 20), mkStat("2", 10, 20), mkStat("3", 15, 20) };
+  // 1. Météo reçue et fraîche : la tranche la porte (arrondis documentés)
+  Weather w; w.valid = true; w.fetchedAt = t0 - 120; w.temp = 12.4f; w.rain = 1.26f; w.wind = 23.6f; w.code = 63;
+  w.nfc = 1; w.fc[0].prob = 80;
+  m.wx = w;
+  m.applyStatus(sr, 3, t0);
+  const NetSample & a = m.net[m.head];
+  CHECK(netWxKnown(a) && a.wxTemp == 12 && a.wxRain == 13 && a.wxWind == 24 && a.wxCode == 63 && a.wxProb == 80,
+        "tranche avec météo : 12 °C, 1,3 mm, 24 km/h, code 63, 80 %% (%d, %d, %d, %d, %d)", a.wxTemp, a.wxRain, a.wxWind, a.wxCode, a.wxProb);
+  CHECK(m.wxUse == WXU_OK, "météo fraîche : utilisée (%d)", m.wxUse);
+  // 2. Météo jamais reçue : inconnue, pas zéro
+  m.wx = Weather();
+  m.applyStatus(sr, 3, t0 + 300);
+  CHECK(!netWxKnown(m.net[m.head]) && m.net[m.head].wxProb == WX_NA && m.wxUse == WXU_NONE, "météo absente : tranche « inconnue », pas 0 °C ni 0 mm");
+  // 3. Météo périmée (plus de 3 périodes) : inconnue aussi
+  w.fetchedAt = t0 + 600 - 3 * VN_WX_REFRESH_S - 1;
+  m.wx = w;
+  m.applyStatus(sr, 3, t0 + 600);
+  CHECK(!netWxKnown(m.net[m.head]) && m.wxUse == WXU_STALE, "météo de plus de 45 min : ignorée (état %d)", m.wxUse);
+  // 4. Trou de 30 min : les tranches comblées n'inventent pas de météo
+  w.fetchedAt = t0 + 2700;
+  m.wx = w;
+  m.applyStatus(sr, 3, t0 + 2700);
+  CHECK(netWxKnown(m.net[m.head]), "relevé après le trou : météo");
+  int gapOk = 0;
+  for (int b = 1; b <= 5; b++) { const NetSample & g = m.net[m.ringIndex(b)]; gapOk += g.avail == 0xFFFF && !netWxKnown(g); }
+  CHECK(gapOk == 5, "5 tranches comblées : sans relevé et sans météo (%d)", gapOk);
+
+  // 5. Aller-retour au format courant (v2)
+  sim::g_fsDir = "/tmp/vn_test_hist";
+  if (system("rm -rf /tmp/vn_test_hist") != 0) {}
+  Model::Blob blob;
+  CHECK(m.serialize(blob), "sérialisation v2");
+  std::vector<uint8_t> hist(blob.hist, blob.hist + blob.histLen), prof(blob.prof, blob.prof + blob.profLen);
+  CHECK(Model::writeSaved(blob), "écriture v2");
+  const int64_t tl = t0 + 3000;
+  static Model r2;
+  r2.init();
+  CHECK(r2.load(tl) && r2.count == m.count && r2.head == m.head, "relecture v2");
+  CHECK(memcmp(r2.net, m.net, sizeof(NetSample) * VN_RING_SLOTS) == 0, "v2 : échantillons et météo identiques");
+  uint16_t ver2; memcpy(&ver2, hist.data() + 4, 2);
+  CHECK(ver2 == 2, "fichier écrit en version 2 (%d)", ver2);
+
+  // 6. Migration : un fichier v1 (v1.0.8, échantillons de 24 octets) est relu, météo inconnue
+  const size_t n = 3, hdr = hist.size() - n * 8 - (size_t)VN_RING_SLOTS * (8 + 32 + n);
+  CHECK(hdr >= 32 && hdr <= 48, "en-tête de %zu octets", hdr);
+  std::vector<uint8_t> v1(hist.begin(), hist.begin() + hdr + n * 8 + VN_RING_SLOTS * 8);
+  uint16_t one = 1; memcpy(v1.data() + 4, &one, 2);
+  const uint8_t * src = hist.data() + hdr + n * 8 + VN_RING_SLOTS * 8;
+  for (int r = 0; r < VN_RING_SLOTS; r++) v1.insert(v1.end(), src + r * 32, src + r * 32 + 24);   // champs v1 = 24 premiers octets
+  v1.insert(v1.end(), src + VN_RING_SLOTS * 32, (const uint8_t *)hist.data() + hist.size());                   // lignes de vélos
+  CHECK(v1.size() == hist.size() - VN_RING_SLOTS * 8, "fichier v1 : 8 octets de moins par tranche");
+  auto loadWith = [&](const std::vector<uint8_t> & bytes, Model & mm) {
+    plat::fsWrite("/vn_hist.bin", bytes.data(), bytes.size());
+    mm.init();
+    return mm.load(tl);
+  };
+  static Model r1;
+  CHECK(loadWith(v1, r1) && r1.count == m.count && r1.head == m.head, "v1 relu (%d tranches)", r1.count);
+  bool sameCore = true, anyWx = false;
+  for (int r = 0; r < VN_RING_SLOTS; r++) {
+    const NetSample & x = r1.net[r], & y = m.net[r];
+    if (x.t != y.t || x.avail != y.avail || x.docks != y.docks || x.dep != y.dep || x.empty != y.empty) sameCore = false;
+    if (netWxKnown(x) || x.wxWind != WX_NA || x.wxCode != WX_NA || x.wxProb != WX_NA) anyWx = true;
+  }
+  CHECK(sameCore, "v1 → v2 : relevés, retraits, ruptures conservés");
+  CHECK(!anyWx, "v1 → v2 : météo « inconnue » partout (rien d'inventé)");
+  CHECK(memcmp(r1.ring, m.ring, (size_t)VN_RING_SLOTS * VN_MAX_ST) == 0, "v1 → v2 : vélos par station conservés");
+  // la carte continue d'écrire l'historique migré sans erreur
+  r1.wx = w; r1.wx.fetchedAt = tl;
+  r1.applyStatus(sr, 3, tl);
+  CHECK(netWxKnown(r1.net[r1.head]) && r1.count == m.count + 1, "après migration : nouvelle tranche avec météo");
+
+  // 7. Fichiers refusés proprement : tronqué, version future, magic faux, en-tête incohérent
+  auto rejected = [&](std::vector<uint8_t> bytes, const char * what) {
+    static Model z;
+    bool any = loadWith(bytes, z);
+    // le profil v1 (inchangé) peut se charger : on vérifie que l'historique, lui, est ignoré
+    CHECK(z.count == 0 && z.head == -1, "%s : historique ignoré (any=%d, %d tranches)", what, any, z.count);
+  };
+  std::vector<uint8_t> t1 = v1; t1.pop_back();                       rejected(t1, "v1 tronqué d'un octet");
+  std::vector<uint8_t> t2 = hist; t2.resize(t2.size() / 2);         rejected(t2, "v2 coupé en deux");
+  std::vector<uint8_t> t3 = hist; uint16_t three = 3; memcpy(t3.data() + 4, &three, 2); rejected(t3, "version 3 (future)");
+  std::vector<uint8_t> t4 = hist; t4[0] ^= 0xFF;                     rejected(t4, "magic faux");
+  std::vector<uint8_t> t5 = hist; int32_t bad = VN_RING_SLOTS + 7; memcpy(t5.data() + 8, &bad, 4); rejected(t5, "tête hors anneau");
+  std::vector<uint8_t> t6 = v1; uint16_t two = 2; memcpy(t6.data() + 4, &two, 2); rejected(t6, "taille v1 annoncée v2");
+  std::vector<uint8_t> t7(hist.size(), 0xA5);                        rejected(t7, "fichier rempli de bruit");
+  std::vector<uint8_t> t8(10, 0);                                    rejected(t8, "fichier plus court qu'un en-tête");
+}
+
 // Atténuation nocturne : 23 h – 4 h seulement, bornes exactes (heure de Luxembourg)
 static int64_t lux(int y, int mo, int d, int h, int mi) {
   struct tm t = {};
@@ -809,6 +907,7 @@ int main(int argc, char ** argv) {
   testProvenance(argc > 1 ? argv[1] : "");
   testProjection24();
   testAnomaly();
+  testHistWeather();
   testTouchCal();
   testNightDim();
   testWifiScan();

@@ -231,3 +231,27 @@ Le présupposé de l'étape (« par jour de pluie, l'alerte sonne partout ») es
 simulé (voir étape 0, point 3). Ce qui fait vraiment sonner l'alerte à tort, c'est la tolérance fixe
 (max(4 vélos, 20 % de la capacité)) face à une variabilité qui dépend du créneau et de la station :
 voir les recommandations en fin de document.
+
+## Étape 2 — la météo stockée avec l'historique (aucun effet sur la prévision, voulu)
+
+- Chaque échantillon de 5 min (`NetSample`) porte désormais la météo du moment : température (°C),
+  pluie (dixièmes de mm), probabilité de pluie de l'heure en cours (%), vent (km/h), code WMO. Elle
+  n'est notée que si le relevé Open-Meteo est **reçu et frais** (≤ 3 périodes, 45 min) ; sinon, et
+  pour toute tranche comblée après un trou, elle est **« inconnue »** (jamais 0 °C ni 0 mm).
+- `/vn_hist.bin` passe en **version 2** (échantillon de 32 octets au lieu de 24). Un fichier
+  **version 1** (v1.0.8) est relu champ par champ, météo « inconnue » ; une version inconnue, une
+  taille qui ne correspond pas exactement à la version annoncée, un magic faux ou une tête hors de
+  l'anneau sont **ignorés** (pas de lecture hors du fichier, pas de plantage). `/vn_prof.bin` est
+  inchangé à cette étape.
+- 27 vérifications nouvelles dans `test_core` (653 au total) : horodatage de la météo, absente /
+  périmée → inconnue, trou → inconnue, aller-retour v2 octet pour octet, migration d'un vrai fichier
+  v1 reconstruit, poursuite de l'écriture après migration, 8 fichiers corrompus refusés.
+- Banc : chiffres **identiques** à l'étape 0 (MAE +60 = 1,1001 sur 84 jours, graine 1), comme attendu.
+
+**Objection au plan.** L'historique 5 min est un **anneau de 24 h**, rejeté au redémarrage s'il a
+plus de 20 h. Stocker la météo dedans ne rend **rien** apprenable « rétroactivement » au-delà d'une
+journée. Ce qui rend la météo apprenable, c'est un apprentissage **en ligne**, dont les statistiques
+suffisantes sont gardées dans `/vn_prof.bin` (étape 3). L'étape 2 sert à deux choses plus modestes :
+apprendre sur une fenêtre glissante de 30 min à partir de la météo *observée pendant la fenêtre*, et
+relire ce que la carte a vu après un redémarrage. La mémoire réelle (PSRAM : +2,3 Ko pour l'anneau,
+fichier `/vn_hist.bin` + 2,3 Ko) et l'écriture en flash sont **non vérifiées sur la carte**.

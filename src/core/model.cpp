@@ -54,6 +54,24 @@ bool Model::init() {
   return true;
 }
 
+WxUse Model::wxUseAt(int64_t now) const {
+  if (!wx.valid) return WXU_NONE;
+  if (now > 0 && wx.fetchedAt > 0 && now - wx.fetchedAt > 3 * VN_WX_REFRESH_S) return WXU_STALE;
+  return WXU_OK;
+}
+
+// Météo du moment dans un échantillon 5 min (inconnue si absente ou périmée)
+static void stampWeather(const Model & m, NetSample & ns, int64_t now) {
+  netWxUnknown(ns);
+  if (m.wxUseAt(now) != WXU_OK) return;
+  const Weather & w = m.wx;
+  ns.wxTemp = (int8_t)lroundf(clampf(w.temp, -127, 127));
+  ns.wxRain = (uint8_t)lroundf(clampf(w.rain * 10, 0, 254));
+  ns.wxWind = (uint8_t)lroundf(clampf(w.wind, 0, 254));
+  ns.wxCode = (uint8_t)(w.code >= 0 && w.code < 255 ? w.code : WX_NA);
+  ns.wxProb = (w.nfc > 0 && w.fc[0].prob >= 0) ? (uint8_t)(w.fc[0].prob > 100 ? 100 : w.fc[0].prob) : WX_NA;
+}
+
 int Model::find(const char * sid) const {
   for (int i = 0; i < n; i++) if (strcmp(st[i].sid, sid) == 0) return i;
   return -1;
@@ -191,11 +209,13 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
       NetSample & ns = net[head];
       memset(&ns, 0, sizeof(ns));
       ns.t = t;
+      netWxUnknown(ns);
       if (!real) {
         memset(row, 255, VN_MAX_ST);
         ns.avail = ns.docks = ns.dis = ns.bikesRaw = 0xFFFF;
         continue;
       }
+      stampWeather(*this, ns, now);
       int av = 0, dk = 0, ds = 0, raw = 0, em = 0, fu = 0;
       for (int i = 0; i < VN_MAX_ST; i++) {
         if (i >= n || !st[i].active || !st[i].live) { row[i] = 255; continue; }
@@ -470,9 +490,7 @@ void Model::recompute(int64_t now) {
   int hour = mod0 / 60;
   bool activeHours = hour >= 7 && hour < 22;
   // Météo : utilisée seulement si reçue et fraîche (3 périodes de VN_WX_REFRESH_S, comme le bandeau)
-  if (!wx.valid) wxUse = WXU_NONE;
-  else if (now > 0 && wx.fetchedAt > 0 && now - wx.fetchedAt > 3 * VN_WX_REFRESH_S) wxUse = WXU_STALE;
-  else wxUse = WXU_OK;
+  wxUse = wxUseAt(now);
 
   Totals t;
   memset(&t, 0, sizeof(t));
@@ -648,7 +666,19 @@ struct FileHdr {
   uint32_t learnSamples;
   int64_t  savedAt;
 };
-static const uint32_t HIST_MAGIC = 0x31484E56;   // "VNH1"
+// /vn_hist.bin : ver 1 (≤ v1.0.8) = échantillons sans météo ; ver 2 = NetSample avec météo.
+// Une version 1 est relue (météo « inconnue »), une version inconnue ou une taille fausse
+// est ignorée : jamais de lecture hors du fichier, jamais de plantage au démarrage.
+static const uint32_t HIST_MAGIC = 0x31484E56;   // "VNH1" (le chiffre du magic ne suit pas la version)
+static const uint16_t HIST_VER = 2;
+struct NetSampleV1 {                              // format des versions ≤ 1.0.8
+  int64_t  t;
+  uint16_t avail, docks, dis, bikesRaw;
+  uint16_t dep, ret;
+  uint8_t  empty, full;
+};
+static_assert(sizeof(NetSampleV1) == 24, "format v1 de /vn_hist.bin");
+static_assert(sizeof(NetSample) == 32, "format v2 de /vn_hist.bin");
 static const uint32_t PROF_MAGIC = 0x31504E56;   // "VNP1"
 static const char * HIST_PATH = "/vn_hist.bin";
 static const char * PROF_PATH = "/vn_prof.bin";
@@ -674,7 +704,7 @@ bool Model::serialize(Blob & out) const {
   sz = sizeof(h) + (size_t)n * 8 + VN_RING_SLOTS * (8 + sizeof(NetSample) + (size_t)n);
   b = (uint8_t *)plat::psAlloc(sz);
   if (!b) { plat::psFree(out.prof); out = Blob(); return false; }
-  h.magic = HIST_MAGIC; h.ver = 1;
+  h.magic = HIST_MAGIC; h.ver = HIST_VER;
   o = 0;
   memcpy(b + o, &h, sizeof(h)); o += sizeof(h);
   for (int i = 0; i < n; i++) { memcpy(b + o, st[i].sid, 8); o += 8; }
@@ -730,14 +760,27 @@ bool Model::load(int64_t now) {
     uint8_t * b = (uint8_t *)plat::psAlloc(hsz);
     if (b && plat::fsRead(HIST_PATH, b, hsz)) {
       FileHdr h; memcpy(&h, b, sizeof(h));
-      size_t need = sizeof(h) + (size_t)h.nSt * 8 + VN_RING_SLOTS * (8 + sizeof(NetSample) + (size_t)h.nSt);
+      size_t nsz = h.ver == 1 ? sizeof(NetSampleV1) : sizeof(NetSample);
+      size_t need = sizeof(h) + (size_t)h.nSt * 8 + VN_RING_SLOTS * (8 + nsz + (size_t)h.nSt);
       bool fresh = now <= 0 || (h.savedAt > 0 && now - h.savedAt < 20 * 3600);
-      if (h.magic == HIST_MAGIC && h.ver == 1 && h.nSt <= VN_MAX_ST && (size_t)hsz == need && fresh
+      if (h.magic == HIST_MAGIC && (h.ver == 1 || h.ver == HIST_VER) && h.nSt <= VN_MAX_ST && (size_t)hsz == need && fresh
           && h.head >= 0 && h.head < VN_RING_SLOTS && h.count >= 0 && h.count <= VN_RING_SLOTS) {
         mapSids(*this, b + sizeof(h), h.nSt, map);
         size_t o = sizeof(h) + (size_t)h.nSt * 8;
         memcpy(ringT, b + o, VN_RING_SLOTS * 8); o += VN_RING_SLOTS * 8;
-        memcpy(net, b + o, VN_RING_SLOTS * sizeof(NetSample)); o += VN_RING_SLOTS * sizeof(NetSample);
+        if (h.ver == 1) {                           // migration : mêmes champs, météo inconnue
+          for (int r = 0; r < VN_RING_SLOTS; r++) {
+            NetSampleV1 v; memcpy(&v, b + o + (size_t)r * sizeof(v), sizeof(v));
+            NetSample & ns = net[r];
+            memset(&ns, 0, sizeof(ns));
+            ns.t = v.t; ns.avail = v.avail; ns.docks = v.docks; ns.dis = v.dis; ns.bikesRaw = v.bikesRaw;
+            ns.dep = v.dep; ns.ret = v.ret; ns.empty = v.empty; ns.full = v.full;
+            netWxUnknown(ns);
+          }
+        } else {
+          memcpy(net, b + o, VN_RING_SLOTS * sizeof(NetSample));
+        }
+        o += VN_RING_SLOTS * nsz;
         for (int r = 0; r < VN_RING_SLOTS; r++) {
           uint8_t * row = ring + (size_t)r * VN_MAX_ST;
           for (int j = 0; j < h.nSt; j++) if (map[j] >= 0) row[map[j]] = b[o + j];

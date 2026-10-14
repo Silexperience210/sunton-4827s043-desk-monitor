@@ -85,7 +85,21 @@ struct NetSample {             // un point par tranche de 5 min
   uint16_t avail, docks, dis, bikesRaw;   // 0xFFFF = pas de donnée
   uint16_t dep, ret;           // retraits / retours observés dans la tranche
   uint8_t  empty, full;
+  // Météo au moment de la tranche (dernier relevé Open-Meteo, s'il est frais : WXU_OK).
+  // Inconnue (WX_NA / WX_TEMP_NA) si la météo manquait, pour une tranche comblée après un
+  // trou, ou pour un historique d'avant le format v2 de /vn_hist.bin.
+  int8_t   wxTemp;             // °C arrondi (‑127…127)
+  uint8_t  wxRain;             // précipitation actuelle, dixièmes de mm (plafond 25,4 mm)
+  uint8_t  wxProb;             // probabilité de pluie de l'heure en cours, %
+  uint8_t  wxWind;             // vent, km/h (plafond 254)
+  uint8_t  wxCode;             // code WMO
 };
+static const uint8_t WX_NA = 255;
+static const int8_t  WX_TEMP_NA = -128;
+inline void netWxUnknown(NetSample & ns) {
+  ns.wxTemp = WX_TEMP_NA; ns.wxRain = ns.wxProb = ns.wxWind = ns.wxCode = WX_NA;
+}
+inline bool netWxKnown(const NetSample & ns) { return ns.wxTemp != WX_TEMP_NA && ns.wxRain != WX_NA; }
 
 struct Totals {
   int stations, open, closed;
@@ -161,6 +175,7 @@ struct Model {
   bool      dirty = false;               // à sauvegarder
 
   bool init();
+  WxUse wxUseAt(int64_t now) const;      // météo utilisable à l'instant now ?
   int  find(const char * sid) const;
   void applyInfo(const InfoRec * r, int n, int64_t now);
   void applyStatus(const StatusRec * r, int n, int64_t now);

@@ -283,6 +283,7 @@ static void synthHistory(Model & m, int64_t now, const StatusRec * recs, int nre
     NetSample & ns = m.net[m.head];
     memset(&ns, 0, sizeof(ns));
     ns.t = t;
+    netWxUnknown(ns);                              // historique synthétique : météo non reconstituée
     int av = 0, dk = 0, dis = 0, raw = 0, mv = 0;
     for (int i = 0; i < VN_MAX_ST; i++) {
       if (i >= m.n || !syn[i].ok) { row[i] = 255; continue; }
