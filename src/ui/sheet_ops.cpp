@@ -335,6 +335,16 @@ static void fc24Fill() {
     else snprintf(b, sizeof(b), "Profil appris sur %d jour%s (depuis le %s) \xC2\xB7 profil fiable (confiance \xE2\x89\xA5 50 %%) sur %d %% des 24 h.",
                   days, days > 1 ? "s" : "", dd, pct);
   }
+  // Jours fériés couverts par la courbe : prévus avec le profil du dimanche (étape 5a-ii)
+  for (int k = 0; k < N24 && days >= 0; k += 4) {
+    int64_t tk = t + (int64_t)k * 900;
+    if (!g_model.holidayProfile(tk)) continue;
+    struct tm hl;
+    plat::localTime(tk, &hl);
+    size_t L = strlen(b);
+    snprintf(b + L, sizeof(b) - L, " Le %02d/%02d est f\xC3\xA9ri\xC3\xA9 : profil du dimanche.", hl.tm_mday, hl.tm_mon + 1);
+    break;
+  }
   lv_label_set_text(s_basis, b);
   // Points remarquables (créneaux à 15 min)
   int kMin = 0, kMax = 0;

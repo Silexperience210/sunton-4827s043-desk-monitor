@@ -652,6 +652,44 @@ static int opsScenario(const std::string & in, StatusRec * recs, int ns) {
     shot("07d_fiche_meteo_indisponible");
     ui::sheetClose(); run(300);
   }
+  // 9. Jour férié (étape 5a-ii) : la veille de Noël au soir, la courbe 24 h couvre le 25/12, prévu
+  // avec le profil du dimanche, et le dit ; le 25/12 en journée, la ligne d'écart le dit aussi.
+  auto textAny = [&](lv_obj_t * o, const char * sub, auto && self) -> bool {
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return false;
+    if (lv_obj_check_type(o, &lv_label_class) && strstr(lv_label_get_text(o), sub)) return true;
+    for (uint32_t i = 0; i < lv_obj_get_child_cnt(o); i++) if (self(lv_obj_get_child(o, i), sub, self)) return true;
+    return false;
+  };
+  {
+    struct tm e = {}; e.tm_year = 126; e.tm_mon = 11; e.tm_mday = 24; e.tm_hour = 20; e.tm_isdst = -1;
+    sim::g_epoch0 += (int64_t)mktime(&e) - plat::now();
+    plat::LockGuard g;
+    g_model.applyStatus(recs, ns, plat::now()); g_model.feedUpdated = plat::now() - 20;
+  }
+  simFeeds(in, plat::now());
+  run(600);
+  ui::openForecast24(st); run(600);
+  drag(300, 240, 300, 40, 10);
+  expect(textAny(lv_layer_top(), "Le 25/12 est f\xC3\xA9ri\xC3\xA9 : profil du dimanche", textAny), "24 h : « Le 25/12 est férié : profil du dimanche »");
+  shot("09_prevision_24h_ferie");
+  ui::sheetClose(); run(300);
+  {
+    sim::g_epoch0 += 14 * 3600 + 30 * 60 - 20 * 3600 + 24 * 3600;   // 25/12 14:30
+    plat::LockGuard g;
+    g_model.applyStatus(recs, ns, plat::now()); g_model.feedUpdated = plat::now() - 20;
+  }
+  simFeeds(in, plat::now());
+  run(600);
+  int hs = -1;
+  for (int i = 0; i < g_model.n && hs < 0; i++) if (g_model.st[i].anom == AN_NORMAL || g_model.st[i].anom == AN_LOW || g_model.st[i].anom == AN_HIGH) hs = i;
+  expect(hs >= 0 && g_model.holidayProfile(plat::now()), "25/12 14:30 : écart au profil évalué, jour férié reconnu");
+  if (hs >= 0) {
+    ui::openStation(hs); run(500);
+    drag(300, 240, 300, 40, 10);
+    expect(textAny(lv_layer_top(), "jour f\xC3\xA9ri\xC3\xA9 : profil du dimanche", textAny), "fiche : « … · jour férié : profil du dimanche »");
+    shot("09b_fiche_ferie");
+    ui::sheetClose(); run(300);
+  }
   printf("Scénario ops : %d échec(s)\n", fails);
   return fails ? 4 : 0;
 }

@@ -195,7 +195,12 @@ static void fill() {
     default:
       snprintf(b, sizeof(b), "\xC3\x89" "cart au profil non \xC3\xA9valu\xC3\xA9 : station ferm\xC3\xA9" "e");
   }
-  lv_label_set_text(W.insAnom, b);
+  // Un jour férié est attendu comme un dimanche (le profil le dit, pas seulement la règle)
+  if ((s.anom == vn::AN_HIGH || s.anom == vn::AN_LOW || s.anom == vn::AN_NORMAL) && g_model.holidayProfile(t)) {
+    char hb[176];
+    snprintf(hb, sizeof(hb), "%s \xC2\xB7 jour f\xC3\xA9ri\xC3\xA9 : profil du dimanche", b);
+    lv_label_set_text(W.insAnom, hb);
+  } else lv_label_set_text(W.insAnom, b);
   lv_obj_set_style_text_color(W.insAnom, C(ac), 0);
 
   // Part météo de la prévision à +2 h (bout de l'horizon : effet cumulé) et son origine
