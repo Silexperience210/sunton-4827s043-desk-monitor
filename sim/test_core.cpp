@@ -775,6 +775,166 @@ static void testHistWeather() {
   std::vector<uint8_t> t8(10, 0);                                    rejected(t8, "fichier plus court qu'un en-tête");
 }
 
+// ── Coefficient météo appris (étape 3a) ──────────────────────────────
+// Monde déterministe : 4 stations (motifs de testModel), 7 semaines ; pluie de 2 mm/h
+// les jours pairs de 7 h à 11 h et de 16 h à 20 h. Avec `effect`, la pluie freine le
+// mouvement de la station de 60 % ; sans, elle ne change rien.
+static bool wxRainAt(int64_t t, int64_t T0) {
+  struct tm lt; plat::localTime(t, &lt);
+  int day = (int)((t - T0) / 86400);
+  return day % 2 == 0 && ((lt.tm_hour >= 7 && lt.tm_hour < 11) || (lt.tm_hour >= 16 && lt.tm_hour < 20));
+}
+static Weather wxFor(bool rain, int64_t t) {
+  Weather w; w.valid = true; w.fetchedAt = t; w.temp = 14; w.wind = 8; w.code = rain ? 63 : 1; w.rain = rain ? 2.f : 0.f;
+  w.nfc = 6;
+  for (int i = 0; i < 6; i++) { w.fc[i].h = (int8_t)i; w.fc[i].temp = 14; w.fc[i].wind = 8; w.fc[i].rain = w.rain; w.fc[i].prob = rain ? 90 : 5; w.fc[i].code = (int16_t)w.code; }
+  wxScore(w);
+  return w;
+}
+static void wxWorld(Model & m, InfoRec * ir, float effect, int days, int64_t T0) {
+  ir[0] = mkInfo("1", 49.60f, 6.13f, 20); ir[1] = mkInfo("2", 49.61f, 6.14f, 20);
+  ir[2] = mkInfo("3", 49.62f, 6.15f, 20); ir[3] = mkInfo("4", 49.63f, 6.16f, 40);
+  m.applyInfo(ir, 4, T0);
+  static const int CAP[4] = { 20, 20, 20, 40 };
+  float lvl[4];
+  for (int s = 0; s < 4; s++) lvl[s] = (float)patternAt(s, T0);
+  StatusRec sr[4];
+  for (int64_t t = T0; t < T0 + (int64_t)days * 86400; t += 300) {
+    bool rain = wxRainAt(t, T0);
+    struct tm lt; plat::localTime(t, &lt);
+    for (int s = 0; s < 4; s++) {
+      float d = (float)(patternAt(s, t) - patternAt(s, t - 300));
+      lvl[s] += d * (rain ? 1.f - effect : 1.f);
+      if (lt.tm_hour == 3 && lt.tm_min == 0) lvl[s] = (float)patternAt(s, t);    // régulation de nuit
+      lvl[s] = fminf((float)CAP[s], fmaxf(0.f, lvl[s]));
+      sr[s] = mkStat(ir[s].sid, (int)lroundf(lvl[s]), CAP[s]);
+    }
+    m.wx = wxFor(rain, t);
+    m.applyStatus(sr, 4, t);
+  }
+}
+static void testWxLearn() {
+  settingsDefaults(g_set);
+  g_pred = PredictOpts();
+  const int64_t T0 = 1791842400 - 86400 * 49;                  // mardi 25/08/2026
+  CHECK(g_pred.wxFlow, "levier 3a actif par défaut (seul levier météo livré)");
+  // 1. La pluie freine vraiment : α appris, positif, borné
+  static Model m;
+  CHECK(m.init(), "init météo apprise");
+  InfoRec ir[4];
+  wxWorld(m, ir, 0.6f, 49, T0);
+  printf("  α appris %.3f (brut %.3f ± %.3f, origine %d, %.0f fenêtres pluvieuses)\n", m.wxAlpha, m.wxAlphaRaw, m.wxAlphaSE, m.wxSrc, m.wxG.nRain);
+  CHECK(m.wxSrc == WXC_LEARNED && m.wxAlpha > 0.5f && m.wxAlpha <= 1.f, "effet réel : α appris > 0,5 et ≤ 1 (%.3f, origine %d)", m.wxAlpha, m.wxSrc);
+  // Mercredi 14/10 06:55, il pleut : la station 1 doit se vider MOINS que le profil ne le dit
+  const int64_t tq = T0 + 50 * 86400 + 6 * 3600 + 55 * 60;
+  StatusRec sr[4];
+  for (int s = 0; s < 4; s++) sr[s] = mkStat(ir[s].sid, patternAt(s, tq), s == 3 ? 40 : 20);
+  m.wx = wxFor(true, tq);
+  m.applyStatus(sr, 4, tq);
+  const Station & a = m.st[0];
+  float profDrop = 0, pn;
+  { float p0, p1, n0; m.profileAt(0, tq, p0, n0); m.profileAt(0, tq + 3600, p1, pn); profDrop = p1 - p0; }
+  printf("  pluie 06:55 : st1 %d → +1 h %.1f, dont météo %+.1f (profil seul %+.1f)\n", a.bikes, a.fc[12], a.fcWx[12], profDrop);
+  CHECK(profDrop < -3 && a.fcWx[12] > 1.f, "pluie : part météo positive (%.1f) contre une baisse du profil (%.1f)", a.fcWx[12], profDrop);
+  CHECK(a.fc[12] > a.bikes + profDrop + 1.f, "pluie : la station se vide moins que le profil seul");
+  CHECK(fabsf(a.fcWx[0]) < 1e-6f && a.fc[0] == a.bikes, "point 0 = relevé réel, sans part météo");
+  bool bounded = true;
+  for (int k = 0; k < VN_FC_STEPS; k++) bounded &= fabsf(a.fcWx[k]) <= 0.4f * a.capEff() + 1e-4f;
+  CHECK(bounded, "part météo bornée à 40 %% de la capacité utile");
+  // Beau temps : aucune correction (x = 0 n'est pas pire que la normale)
+  m.wx = wxFor(false, tq + 60);
+  m.applyStatus(sr, 4, tq + 60);
+  float mx = 0;
+  for (int k = 0; k < VN_FC_STEPS; k++) mx = fmaxf(mx, fabsf(m.st[0].fcWx[k]));
+  CHECK(mx == 0, "beau temps : part météo nulle partout (max %.3f)", mx);
+  // 2. Météo indisponible ou périmée : prévision STRICTEMENT identique au modèle sans levier
+  for (int mode = 0; mode < 2; mode++) {
+    if (mode == 0) m.wx = Weather(); else { m.wx = wxFor(true, tq); m.wx.fetchedAt = tq + 120 - 3 * VN_WX_REFRESH_S - 1; }
+    m.applyStatus(sr, 4, tq + 120);
+    float on[VN_FC_STEPS]; memcpy(on, m.st[0].fc, sizeof(on));
+    g_pred.wxFlow = false;
+    m.recompute(tq + 120);
+    bool same = memcmp(on, m.st[0].fc, sizeof(on)) == 0;
+    g_pred.wxFlow = true;
+    m.recompute(tq + 120);
+    CHECK(same && m.wxUse == (mode ? WXU_STALE : WXU_NONE), "météo %s : prévision identique octet pour octet au modèle sans météo",
+          mode ? "périmée" : "absente");
+  }
+  // 3. Courbe 24 h : même règle, part météo seulement sur l'horizon connu (2 h avec la météo actuelle)
+  m.wx = wxFor(true, tq);
+  m.applyStatus(sr, 4, tq + 180);
+  float o24[97], c24[97], w24[97];
+  m.project(0, tq + 180, 15, 97, o24, c24, w24);
+  CHECK(fabsf(w24[4] - m.st[0].fcWx[12]) < 1e-3f, "24 h à +1 h : même part météo que la fiche (%.2f / %.2f)", w24[4], m.st[0].fcWx[12]);
+  bool flatAfter = true;
+  for (int k = 9; k < 97; k++) flatAfter &= fabsf(w24[k] - w24[8]) < 1e-4f;
+  CHECK(flatAfter, "au-delà de 2 h : plus de correction supplémentaire (météo inconnue)");
+
+  // 4. La pluie ne change rien : le modèle ne doit RIEN inventer
+  static Model z;
+  CHECK(z.init(), "init pluie sans effet");
+  InfoRec iz[4];
+  wxWorld(z, iz, 0.f, 49, T0);
+  printf("  pluie sans effet : α %.3f (brut %.3f ± %.3f, origine %d)\n", z.wxAlpha, z.wxAlphaRaw, z.wxAlphaSE, z.wxSrc);
+  CHECK(z.wxAlpha == 0 && z.wxSrc == WXC_NULL, "pluie sans effet : α = 0, origine « sans effet mesurable » (%.3f, %d)", z.wxAlpha, z.wxSrc);
+  for (int s = 0; s < 4; s++) sr[s] = mkStat(iz[s].sid, patternAt(s, tq), s == 3 ? 40 : 20);
+  z.wx = wxFor(true, tq);
+  z.applyStatus(sr, 4, tq);
+  CHECK(z.st[0].fcWx[12] == 0, "pluie sans effet : aucune part météo dans la prévision");
+  // 5. Trop peu de pluie : origine « défaut »
+  static Model y;
+  CHECK(y.init(), "init défaut");
+  InfoRec iy[4];
+  wxWorld(y, iy, 0.6f, 9, T0);
+  CHECK(y.wxSrc == WXC_DEFAULT && y.wxAlpha == 0, "9 jours (profil pas mûr) : origine « défaut », α = 0 (%d)", y.wxSrc);
+
+  // 6. Persistance : /vn_prof.bin v2 garde l'apprentissage ; v1 se relit sans lui ; NaN refusé
+  sim::g_fsDir = "/tmp/vn_test_wx";
+  if (system("rm -rf /tmp/vn_test_wx") != 0) {}
+  Model::Blob b;
+  CHECK(m.serialize(b), "sérialisation profils v2");
+  std::vector<uint8_t> prof(b.prof, b.prof + b.profLen);
+  Model::writeSaved(b);
+  static Model r;
+  r.init();
+  r.load(tq + 300);
+  r.recompute(tq + 300);
+  CHECK(memcmp(&r.wxG, &m.wxG, sizeof(WxStats)) == 0 && r.wxAlpha == m.wxAlpha && r.wxSrc == WXC_LEARNED,
+        "v2 relu : statistiques et α identiques (%.3f)", r.wxAlpha);
+  CHECK(memcmp(&r.wxClim, &m.wxClim, sizeof(WxClimate)) == 0 && memcmp(r.wxS, m.wxS, sizeof(WxStats) * 4) == 0, "v2 relu : x̄ par heure et statistiques par station");
+  const size_t wxLen = sizeof(WxClimate) + sizeof(WxStats) * 5;
+  std::vector<uint8_t> v1(prof.begin(), prof.end() - wxLen);
+  uint16_t one = 1; memcpy(v1.data() + 4, &one, 2);
+  plat::fsWrite("/vn_prof.bin", v1.data(), v1.size());
+  static Model r1;
+  r1.init();
+  r1.load(tq + 300);
+  r1.recompute(tq + 300);
+  CHECK(memcmp(r1.prof, m.prof, sizeof(ProfCell) * 4 * 7 * 96) == 0 && r1.wxSrc == WXC_DEFAULT && r1.wxG.sn == 0,
+        "profils v1 (v1.0.8) relus, apprentissage météo reparti de zéro");
+  std::vector<uint8_t> bad = prof;
+  float nanv = NAN; memcpy(bad.data() + (prof.size() - wxLen) + sizeof(WxClimate), &nanv, 4);
+  plat::fsWrite("/vn_prof.bin", bad.data(), bad.size());
+  static Model r2;
+  r2.init();
+  r2.load(tq + 300);
+  r2.recompute(tq + 300);
+  CHECK(memcmp(r2.prof, m.prof, sizeof(ProfCell) * 4 * 7 * 96) == 0 && r2.wxG.sn == 0 && r2.wxAlpha == 0,
+        "statistiques météo non finies : ignorées, profils gardés");
+  // 7. Coefficient borné : statistiques extrêmes → α plafonné à 1 (et à −0,5)
+  static Model q;
+  q.init();
+  q.wxG.sdd = 100; q.wxG.szz = 1; q.wxG.sdz = 0; q.wxG.sdr = 0; q.wxG.szr = -50; q.wxG.sgg = 0.01f; q.wxG.sn = 500; q.wxG.nRain = 100;
+  q.updateWxCoef();
+  CHECK(q.wxAlpha == 1.f && q.wxAlphaRaw > 40, "α brut 50 → α appliqué borné à 1 (%.2f)", q.wxAlpha);
+  q.wxG.szr = 50;
+  q.updateWxCoef();
+  CHECK(q.wxAlpha == -0.5f, "α brut −50 → borné à −0,5 (%.2f)", q.wxAlpha);
+  q.wxG.szr = -0.02f; q.wxG.sgg = 1;
+  q.updateWxCoef();
+  CHECK(q.wxAlpha == 0 && q.wxSrc == WXC_NULL, "α brut sous 3 erreurs-types → 0, « sans effet mesurable »");
+}
+
 // Atténuation nocturne : 23 h – 4 h seulement, bornes exactes (heure de Luxembourg)
 static int64_t lux(int y, int mo, int d, int h, int mi) {
   struct tm t = {};
@@ -908,6 +1068,7 @@ int main(int argc, char ** argv) {
   testProjection24();
   testAnomaly();
   testHistWeather();
+  testWxLearn();
   testTouchCal();
   testNightDim();
   testWifiScan();

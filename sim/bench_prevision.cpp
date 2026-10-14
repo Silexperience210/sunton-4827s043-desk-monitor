@@ -371,7 +371,6 @@ int main(int argc, char ** argv) {
       std::string k = eq ? std::string(kv, eq - kv) : std::string(kv);
       bool v = eq ? atoi(eq + 1) != 0 : true;
       if (k == "flux_meteo") g_pred.wxFlow = v;
-      else if (k == "station_meteo") g_pred.wxStation = v;
       else if (k == "prevue_meteo") g_pred.wxForecast = v;
       else { fprintf(stderr, "levier inconnu : %s\n", k.c_str()); return 1; }
     }

@@ -394,7 +394,7 @@ static void projectSteps(const ProfCell * p, int dow0, int mod0, float cur, floa
 // Facteurs météo f(pas) = −α·(x − x̄) d'une station ; false = aucune correction (comportement d'avant)
 static bool wxFactors(const Model & m, int i, int64_t now, int stepMin, int nSteps, float * f) {
   if (!g_pred.wxFlow || m.wxUse != WXU_OK) return false;
-  float a = g_pred.wxStation ? m.st[i].wxAlpha : m.wxAlpha;
+  float a = m.wxAlpha;
   if (a == 0) return false;
   for (int k = 0; k < nSteps; k++) {
     f[k] = 0;
@@ -577,27 +577,6 @@ void Model::updateWxCoef() {
   float a = alphaOf(wxG, wxAlphaRaw, wxAlphaSE);
   if (wxG.nRain < WX_MIN_RAIN) { wxSrc = WXC_DEFAULT; wxAlpha = 0; }
   else { wxAlpha = a; wxSrc = a != 0 ? WXC_LEARNED : WXC_NULL; }
-  for (int i = 0; i < n; i++) st[i].wxAlpha = wxAlpha;
-  if (!g_pred.wxStation || wxAlpha == 0) return;
-  // Étape 3b : α par station, rétréci vers α global selon sa précision (Bayes empirique) :
-  //   αᵢ = α + wᵢ·(α̂ᵢ − α),  wᵢ = τ² / (τ² + seᵢ²),  τ² = variance vraie entre stations
-  //   (variance observée des α̂ᵢ moins l'erreur moyenne). Une station peu arrosée reste à α.
-  static float raw[VN_MAX_ST], se[VN_MAX_ST];
-  double sum = 0, sum2 = 0, sse = 0; int k = 0;
-  for (int i = 0; i < n; i++) {
-    raw[i] = se[i] = 0;
-    alphaOf(wxS[i], raw[i], se[i]);
-    if (wxS[i].nRain < WX_MIN_RAIN || se[i] <= 0) { se[i] = 0; continue; }
-    sum += raw[i]; sum2 += (double)raw[i] * raw[i]; sse += (double)se[i] * se[i]; k++;
-  }
-  if (k < 10) return;                                       // trop peu de stations pour estimer τ²
-  double mean = sum / k, var = sum2 / k - mean * mean;
-  float tau2 = (float)fmax(0.0, var - sse / k);
-  for (int i = 0; i < n; i++) {
-    if (se[i] <= 0) continue;
-    float w = tau2 / (tau2 + se[i] * se[i]);
-    st[i].wxAlpha = clampf(wxAlpha + w * (raw[i] - wxAlpha), WX_ALPHA_MIN, WX_ALPHA_MAX);
-  }
 }
 
 // ── Écart au profil (« comportement inhabituel ») ────────────────────
