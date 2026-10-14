@@ -472,20 +472,19 @@ bool Model::project(int i, int64_t now, int stepMin, int nSteps, float * out, fl
 }
 
 // ── Météo apprise (étape 3) ──────────────────────────────────────────
-// Pénalité x(τ) attendue : météo actuelle sur les 2 premières heures (étape 3), ou, avec
-// g_pred.wxForecast (étape 4), la météo prévue de l'heure qui contient τ. Au-delà de ce
-// qu'on sait, aucune correction (x inconnue → facteur 0).
+// Pénalité x(τ) attendue : météo actuelle sur les 2 premières heures (étape 3) ; au-delà, avec
+// g_pred.wxForecast (étape 4), la météo prévue de l'heure qui contient τ (pluie comptée pour son
+// espérance). Au-delà de ce qu'on sait, aucune correction (x inconnue → facteur 0).
 bool Model::wxPenaltyAt(int64_t now, int64_t tau, float & x) const {
   if (wxUse != WXU_OK) return false;
-  if (!g_pred.wxForecast) {
-    if (tau - now > 2 * 3600) return false;
-    x = wxNow;
-    return true;
-  }
+  // Sur 2 h, la météo actuelle qui persiste prévoit mieux que la prévision horaire (mesuré :
+  // la prévision gagne quand la pluie commence, perd autant quand elle s'arrête, même parfaite) ;
+  // au-delà, la météo prévue prend le relais (étape 4) — sinon, plus de correction.
+  if (tau - now <= 2 * 3600) { x = wxNow; return true; }
+  if (!g_pred.wxForecast) return false;
   int64_t h0 = wx.fetchedAt - wx.fetchedAt % 3600;          // fc[0] = heure en cours au relevé
   int idx = (int)((tau - h0) / 3600);
   if (idx < 0 || idx >= wx.nfc) return false;
-  // dans l'heure du relevé, la mesure actuelle vaut mieux que la prévision de l'heure
   x = idx == 0 ? wxNow : wxPenaltyHour(wx.fc[idx]);
   return true;
 }

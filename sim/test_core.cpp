@@ -868,8 +868,42 @@ static void testWxLearn() {
   CHECK(fabsf(w24[4] - m.st[0].fcWx[12]) < 1e-3f, "24 h à +1 h : même part météo que la fiche (%.2f / %.2f)", w24[4], m.st[0].fcWx[12]);
   bool flatAfter = true;
   for (int k = 9; k < 97; k++) flatAfter &= fabsf(w24[k] - w24[8]) < 1e-4f;
-  CHECK(flatAfter, "au-delà de 2 h : plus de correction supplémentaire (météo inconnue)");
-
+  CHECK(!flatAfter, "au-delà de 2 h : la pluie prévue (6 h annoncées) continue de corriger");
+  bool flat6 = true;
+  for (int k = 25; k < 97; k++) flat6 &= fabsf(w24[k] - w24[24]) < 1e-4f;
+  CHECK(flat6, "au-delà des 6 h annoncées : plus de correction supplémentaire (météo inconnue)");
+  // Sans le levier 4 : la météo actuelle ne vaut que pour 2 h
+  g_pred.wxForecast = false;
+  m.project(0, tq + 180, 15, 97, o24, c24, w24);
+  bool flat2 = true;
+  for (int k = 9; k < 97; k++) flat2 &= fabsf(w24[k] - w24[8]) < 1e-4f;
+  g_pred.wxForecast = true;
+  CHECK(flat2, "levier 4 coupé : aucune correction au-delà de 2 h");
+  // Reprise après la pluie : jeudi 05:00, il pleut ; pluie annoncée jusqu'à 9 h, sec ensuite.
+  // ≤ 2 h (5 h–7 h) : météo actuelle ; 7 h–9 h, vague de départs de la station 1 : la pluie
+  // ANNONCÉE freine la vague ; à partir de 9 h : plus aucune correction (la pluie a cessé).
+  {
+    const int64_t t5 = T0 + 51 * 86400 + 5 * 3600;
+    for (int s2 = 0; s2 < 4; s2++) sr[s2] = mkStat(ir[s2].sid, patternAt(s2, t5), s2 == 3 ? 40 : 20);
+    Weather r = wxFor(true, t5);
+    for (int i = 4; i < 6; i++) { r.fc[i].rain = 0; r.fc[i].prob = 5; r.fc[i].code = 1; }
+    m.wx = r;
+    m.applyStatus(sr, 4, t5);
+    float rv[97], rc[97], rw[97];
+    m.project(0, t5, 15, 97, rv, rc, rw);
+    float p7, p9, nn;
+    m.profileAt(0, t5 + 2 * 3600, p7, nn); m.profileAt(0, t5 + 4 * 3600, p9, nn);
+    printf("  reprise : part météo à 7 h %+.2f, à 9 h %+.2f (profil 7 h→9 h %+.1f), à 11 h %+.2f\n", rw[8], rw[16], p9 - p7, rw[24]);
+    CHECK(rw[16] - rw[8] > 1.f, "pluie annoncée 7 h–9 h : la vague de départs est freinée (%+.2f)", rw[16] - rw[8]);
+    bool after = true;
+    for (int k = 17; k < 97; k++) after &= fabsf(rw[k] - rw[16]) < 1e-4f;
+    CHECK(after, "reprise après la pluie : aucune correction supplémentaire une fois la pluie annoncée terminée");
+    r.fc[2].rain = r.fc[3].rain = 0; r.fc[2].prob = r.fc[3].prob = 5; r.fc[2].code = r.fc[3].code = 1;
+    m.wx = r;
+    m.recompute(t5);
+    m.project(0, t5, 15, 97, rv, rc, rw);
+    CHECK(fabsf(rw[16] - rw[8]) < 1e-4f, "même matin, pluie annoncée seulement jusqu'à 7 h : la vague n'est pas freinée");
+  }
   // 4. La pluie ne change rien : le modèle ne doit RIEN inventer
   static Model z;
   CHECK(z.init(), "init pluie sans effet");

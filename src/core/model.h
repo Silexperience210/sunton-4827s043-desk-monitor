@@ -37,7 +37,7 @@ struct PredictOpts {
   // (étape 1 — tolérance météo — mesurée et non livrée : voir le commit 739b5cf)
   bool wxFlow = true;          // étape 3a : mouvement prévu du profil × (1 − α·(x − x̄ₕ)), α global appris
   // (étape 3b — α par station — mesurée et non livrée : voir le commit a913bcb)
-  bool wxForecast = false;     // étape 4 : x = météo PRÉVUE à t+h (sinon la météo actuelle, ≤ 2 h)
+  bool wxForecast = true;      // étape 4 : au-delà de 2 h, x = météo PRÉVUE à t+h (≤ 2 h : la météo actuelle)
 };
 extern PredictOpts g_pred;
 

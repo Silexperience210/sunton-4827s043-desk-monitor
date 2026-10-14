@@ -22,6 +22,8 @@ BENCH = os.path.join(HERE, "..", "sim", "bench_prevision")
 KEYS = [
     ("mae15", "MAE +15", 3), ("mae30", "MAE +30", 3), ("mae60", "MAE +60", 3), ("mae120", "MAE +120", 3),
     ("mae60_sec", "MAE +60 sec", 3), ("mae60_pluie", "MAE +60 pluie", 3), ("mae120_pluie", "MAE +120 pluie", 3),
+    ("mae240", "MAE +240 (courbe 24 h)", 3), ("mae240_pluie", "MAE +240 pluie", 3), ("mae240_debut", "MAE +240 pluie qui commence", 3),
+    ("mae60_debut", "MAE +60 pluie qui commence", 3), ("mae60_fin", "MAE +60 pluie qui s'arrête", 3),
     ("orc60_pluie", "oracle +60 pluie", 3), ("orc60", "oracle +60", 3), ("per60", "persistance +60", 3), ("ferie60", "MAE +60 fériés", 3),
     ("fausses_pluie", "fausses/j pluie", 1), ("fausses_sec", "fausses/j sec", 1), ("rappel", "rappel incidents %", 1),
     ("rappel_pluie", "rappel jours de pluie %", 1), ("rappel_sec", "rappel jours secs %", 1),

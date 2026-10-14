@@ -149,6 +149,7 @@ struct Cfg {
   const char * effName = "moyen";
   bool wxAvailable = true;
   bool brief = false;
+  bool perfectFc = false;          // prévision météo = la vérité (plafond de l'étape 4)
 };
 
 static const int NST = 143;
@@ -237,6 +238,7 @@ static void forecastAt(const World & w, int64_t t, Weather & out) {
     // erreur de calage : jusqu'à ±1 h, plus probable loin dans le temps
     double e = hash01(H * 13 + 1, (uint64_t)(h0 / 3) + 99);
     int shift = i == 0 ? 0 : (e < 0.08 * i ? -1 : e > 1 - 0.08 * i ? 1 : 0);
+    if (w.cfg.perfectFc) shift = 0;
     int64_t src = H + shift;
     if (src < 0) src = 0;
     if (src >= (int64_t)w.hours.size()) src = w.hours.size() - 1;
@@ -249,9 +251,11 @@ static void forecastAt(const World & w, int64_t t, Weather & out) {
     double fa = hash01(H * 3 + i, 8);                  // fausse alerte / pluie manquée
     if (tr.rain <= 0 && fa < 0.04 + 0.02 * i) ra = 0.2 + 0.6 * hash01(H, 9);
     if (tr.rain > 0 && fa < 0.03 * i) ra = 0;
+    if (w.cfg.perfectFc) { ra = tr.rain; f.temp = tr.temp; f.wind = tr.wind; }
     f.rain = (float)ra;
-    f.prob = (int16_t)(ra > 0 ? 55 + 40 * (1 - i / 6.0) * hash01(H, 10) : 20 * hash01(H, 11));
+    f.prob = (int16_t)(w.cfg.perfectFc ? (ra > 0 ? 100 : 0) : ra > 0 ? 55 + 40 * (1 - i / 6.0) * hash01(H, 10) : 20 * hash01(H, 11));
     f.code = (int16_t)(ra > 0 ? (ra < 0.5 ? 61 : ra < 2.5 ? 63 : 65) : tr.code > 3 ? 3 : tr.code);
+    if (w.cfg.perfectFc) f.code = (int16_t)tr.code;
   }
   wxScore(out);
 }
@@ -337,9 +341,10 @@ static void stepWorld(World & w, int64_t t, int dayIdx, int64_t & lastTruck) {
 }
 
 // ── Mesures ──────────────────────────────────────────────────────────
-static const int NH = 4;
-static const int HK[NH] = { 3, 6, 12, 24 };          // pas de 5 min : +15, +30, +60, +120
-static const char * HL[NH] = { "+15 min", "+30 min", "+60 min", "+120 min" };
+static const int NH = 5;
+static const int HK[NH] = { 3, 6, 12, 24, 48 };      // pas de 5 min : +15, +30, +60, +120 (fiche), +240 (courbe 24 h)
+static const char * HL[NH] = { "+15 min", "+30 min", "+60 min", "+120 min", "+240 min" };
+static const int NP = 49;                             // pas projetés (Model::project, même règle que la fiche)
 
 struct Acc {
   double s = 0, q = 0; long n = 0;
@@ -365,6 +370,7 @@ int main(int argc, char ** argv) {
       cfg.effect = !strcmp(cfg.effName, "nul") ? 0.f : !strcmp(cfg.effName, "fort") ? 1.6f : 1.f;
     } else if (!strcmp(argv[a], "--meteo") && a + 1 < argc) cfg.wxAvailable = strcmp(argv[++a], "absente") != 0;
     else if (!strcmp(argv[a], "--court")) cfg.brief = true;
+    else if (!strcmp(argv[a], "--prevision-parfaite")) cfg.perfectFc = true;
     else if (!strcmp(argv[a], "--levier") && a + 1 < argc) {
       const char * kv = argv[++a];
       const char * eq = strchr(kv, '=');
@@ -491,16 +497,16 @@ int main(int argc, char ** argv) {
         const Station & s = m.st[i];
         if (!s.live || s.status == ST_CLOSED) continue;
         Pred p; p.st = (int16_t)i; p.step = k; p.cur = s.bikes;
-        float cf[VN_FC_STEPS], tmp[VN_FC_STEPS];
-        m.project(i, t, 5, VN_FC_STEPS, tmp, cf);
+        float cf[NP], tmp[NP];
+        m.project(i, t, 5, NP, tmp, cf);
         float p0, n0;
         bool has0 = m.profileAt(i, t, p0, n0);
         for (int h = 0; h < NH; h++) {
-          p.fc[h] = s.fc[HK[h]];
+          p.fc[h] = HK[h] < VN_FC_STEPS ? s.fc[HK[h]] : tmp[HK[h]];
           // Oracle : la même règle, avec l'écart au profil mis à l'échelle de la demande réelle
           // moyenne sur l'horizon (rapportée à la demande moyenne qui a façonné le profil).
           float ph, nh2;
-          float o = s.fc[HK[h]];
+          float o = p.fc[h];
           p.prof[h] = s.bikes;
           if (has0 && m.profileAt(i, t + HK[h] * 300, ph, nh2)) {
             p.prof[h] = fminf((float)s.capEff(), fmaxf(0.f, s.bikes + cf[HK[h]] * (ph - p0)));
@@ -541,7 +547,7 @@ int main(int argc, char ** argv) {
 
   // ── Évaluation a posteriori des prévisions
   struct Cell { Acc fc[NH], per[NH], orc[NH], prof[NH], raw[NH]; };
-  Cell all, dry, wet, mature, matureWet, matureDry, hol;
+  Cell all, dry, wet, mature, matureWet, matureDry, hol, onset, ending;
   Cell byBlock[8];
   const int matureFrom = cfg.days >= 84 ? 56 : cfg.days / 2;
   for (const Pred & p : preds) {
@@ -555,12 +561,16 @@ int main(int argc, char ** argv) {
       float badMax = 0;
       for (int q = 0; q <= HK[h]; q++) badMax = fmaxf(badMax, w.hourAt(t + q * 300).bad);
       bool isWet = badMax > 0.1f;
+      float badNow = w.hourAt(t).bad, badEnd = w.hourAt(t + HK[h] * 300).bad;
+      bool isOnset = w.hourAt(t).rain <= 0 && w.hourAt(t + HK[h] * 300).rain >= 0.1f;   // sec maintenant, pluie à t+h
+      bool isEnd = w.hourAt(t).rain >= 0.1f && w.hourAt(t + HK[h] * 300).rain <= 0;     // pluie maintenant, sec à t+h
+      (void)badNow; (void)badEnd;
       double ef = shown(p.fc[h]) - tv, ep = p.cur - tv, eo = shown(p.orc[h]) - tv;
       auto add = [&](Cell & c) { c.fc[h].add(ef); c.per[h].add(ep); c.orc[h].add(eo); c.prof[h].add(shown(p.prof[h]) - tv); c.raw[h].add(p.fc[h] - tv); };
       add(all);
       add(isWet ? wet : dry);
       if (days[d].hol) add(hol);
-      if (d >= matureFrom) { add(mature); add(isWet ? matureWet : matureDry); }
+      if (d >= matureFrom) { add(mature); add(isWet ? matureWet : matureDry); if (isOnset) add(onset); if (isEnd) add(ending); }
       int b = d / 21; if (b < 8) add(byBlock[b]);
       if (p.st == CHANGED && h == 2) { days[d].chErr += fabs(ef); days[d].chN++; }
       if (p.st == TWIN && h == 2) { days[d].twErr += fabs(ef); days[d].twN++; }
@@ -606,7 +616,7 @@ int main(int argc, char ** argv) {
   printf("## 1. MAE (vélos) du chiffre affiché (prévision arrondie) — modèle / persistance / oracle météo\n\n");
   printf("| %-28s |", "échantillon");
   for (int h = 0; h < NH; h++) printf(" %-23s |", HL[h]);
-  printf(" n (+15) |\n|---|---|---|---|---|---|\n");
+  printf(" n (+15) |\n|---|---|---|---|---|---|---|\n");
   mae("tout", all);
   mae("tout · sec", dry);
   mae("tout · pluie", wet);
@@ -727,13 +737,13 @@ int main(int argc, char ** argv) {
     if (days[d].rainH == 0) { fDry += days[d].falseUnus; nD++; }
   }
   printf("\nSYNTHESE graine=%llu effet=%s mae15=%.4f mae30=%.4f mae60=%.4f mae120=%.4f mae60_sec=%.4f mae60_pluie=%.4f mae120_pluie=%.4f "
-         "orc60_pluie=%.4f orc60=%.4f per60=%.4f fausses_pluie=%.2f fausses_sec=%.2f rappel=%.1f rappel_pluie=%.1f rappel_sec=%.1f ferie60=%.4f annonce_vide=%.1f annonce_pleine=%.1f annonces_pluie_j=%.2f precision_pluie=%.1f precision_sec=%.1f alpha=%.3f alpha_brut=%.3f alpha_se=%.3f jours_alpha=%.1f\n",
+         "orc60_pluie=%.4f orc60=%.4f per60=%.4f fausses_pluie=%.2f fausses_sec=%.2f rappel=%.1f rappel_pluie=%.1f rappel_sec=%.1f ferie60=%.4f annonce_vide=%.1f annonce_pleine=%.1f annonces_pluie_j=%.2f precision_pluie=%.1f precision_sec=%.1f alpha=%.3f alpha_brut=%.3f alpha_se=%.3f jours_alpha=%.1f mae60_debut=%.4f mae60_fin=%.4f n60_debut=%ld mae240=%.4f mae240_pluie=%.4f mae240_debut=%.4f\n",
          (unsigned long long)cfg.seed, cfg.effName, mature.fc[0].mean(), mature.fc[1].mean(), mature.fc[2].mean(), mature.fc[3].mean(),
          matureDry.fc[2].mean(), matureWet.fc[2].mean(), matureWet.fc[3].mean(), matureWet.orc[2].mean(), mature.orc[2].mean(), mature.per[2].mean(),
          nR ? fRain / nR : NAN, nD ? fDry / nD : NAN, incTot ? 100.0 * incSeen / incTot : 0,
          incR ? 100.0 * incRS / incR : NAN, incD ? 100.0 * incDS / incD : NAN, hol.fc[2].mean(),
          rupt[0] ? 100.0 * ruptAnt[0] / rupt[0] : NAN, rupt[1] ? 100.0 * ruptAnt[1] / rupt[1] : NAN,
          nR ? (wn[0] + wn[1]) / nR : NAN, (wn[0] + wn[1]) ? 100 * (wo[0] + wo[1]) / (wn[0] + wn[1]) : NAN,
-         (sn[0] + sn[1]) ? 100 * (so[0] + so[1]) / (sn[0] + sn[1]) : NAN, m.wxAlpha, m.wxAlphaRaw, m.wxAlphaSE, [&] { int a = 0, t = 0; for (int d = 28; d < cfg.days; d++) { t++; a += days[d].alpha != 0; } return t ? 100.0 * a / t : 0.0; }());
+         (sn[0] + sn[1]) ? 100 * (so[0] + so[1]) / (sn[0] + sn[1]) : NAN, m.wxAlpha, m.wxAlphaRaw, m.wxAlphaSE, [&] { int a = 0, t = 0; for (int d = 28; d < cfg.days; d++) { t++; a += days[d].alpha != 0; } return t ? 100.0 * a / t : 0.0; }(), onset.fc[2].mean(), ending.fc[2].mean(), onset.fc[2].n, mature.fc[4].mean(), matureWet.fc[4].mean(), onset.fc[4].mean());
   return 0;
 }

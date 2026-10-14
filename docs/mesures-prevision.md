@@ -330,3 +330,49 @@ identique sans météo, vérifié sur toutes les mesures du banc).
 Le plan voulait la modulation « seulement là où il y a assez d'échantillons pluvieux pour l'estimer
 honnêtement » : **il n'y en a nulle part** en deux mois de mémoire, avec une pluie sur 10 % des heures.
 Code mesuré au commit d'expérience suivant, puis retiré.
+
+## Étape 4 — la météo prévue, au bon horizon : **livrée au-delà de 2 h seulement**
+
+Le banc évalue désormais aussi **+240 min** (la courbe 24 h, `Model::project`, même règle) et isole deux
+cas : la pluie **qui commence** dans l'horizon (sec maintenant, pluie à t+h) et celle **qui s'arrête**.
+Option `--prevision-parfaite` : la carte reçoit la vraie météo future (plafond du levier).
+
+### 4a — météo prévue à t+h partout (y compris sur 2 h) : ne gagne pas
+
+x(τ) = pénalité de l'heure prévue qui contient τ (pluie comptée pour son espérance, probabilité ×
+pénalité, comme la tendance de `wxScore`), la mesure actuelle dans l'heure en cours. 6 graines, levier 3a
+en référence :
+
+| MAE +60 min | effet moyen | effet fort | effet fort, prévision **parfaite** |
+|---|---|---|---|
+| horizon pluvieux | 0,975 → 0,978 (+0,3 %) | 0,872 → 0,877 (+0,5 %) | 0,864 → 0,859 (−0,5 %) |
+| pluie qui commence | 1,099 → 1,088 (−1,0 %) | 1,065 → 1,043 (−2,1 %) | 1,080 → 1,043 (−3,4 %) |
+| pluie qui s'arrête | 1,003 → 1,011 (+0,8 %) | 0,931 → 0,939 (+0,8 %) | 0,942 → 0,953 (+1,1 %) |
+
+Sur 2 h, « la météo actuelle persiste » est déjà presque la bonne prévision (les épisodes de pluie
+simulés durent ~4 h). La prévision gagne quand la pluie commence et perd autant quand elle s'arrête —
+**y compris quand elle est parfaite**. Hypothèse (non démontrée) : α est appris sur des fenêtres de
+30 min de pluie *observée* et sous-estime l'effet ; prolonger le freinage après la fin de la pluie
+compense en partie. Quoi qu'il en soit, **à 2 h, la prévision n'apporte rien de mesurable**.
+
+### 4b — météo actuelle sur 2 h, météo prévue au-delà : gagne, livré
+
+C'est là que la correction de l'étape 3 s'arrêtait faute d'information. Variante choisie au vu des
+graines 1–6, **validée sur des graines neuves 7–9** :
+
+| mesure (graines 7–9) | effet nul | effet moyen | effet fort |
+|---|---|---|---|
+| MAE +15 … +120 min | inchangées | inchangées | inchangées |
+| MAE +240, tout | 2,261 → 2,261 | 2,238 → 2,236 (−0,1 %) | 2,227 → 2,222 (−0,2 %) |
+| **MAE +240, horizon pluvieux** | 2,250 → 2,250 | 2,132 → **2,119 (−0,6 % ± 0,1)** | 2,067 → **2,037 (−1,5 % ± 0,1)** |
+| MAE +240, pluie qui commence | 2,215 → 2,215 | 2,165 → 2,149 (−0,7 %) | 2,158 → 2,121 (−1,7 %) |
+
+Petit, mais sans contrepartie et sur une zone de la courbe 24 h qui n'avait aucune information météo.
+Au-delà des 6 heures annoncées : aucune correction. Tests : la correction suit la pluie annoncée et
+**s'arrête quand elle cesse** (« reprise après la pluie »), et rien n'est corrigé si la pluie annoncée
+s'arrête avant la vague du matin.
+
+**Ce que la fiche peut dire, honnêtement.** « 12 vélos à 14 h, dont −4 liés à la pluie annoncée » n'est
+juste qu'au-delà de 2 h (courbe 24 h). Sur la fiche (≤ 2 h), la part météo vient de la **météo
+actuelle** : l'écran le dit (« liés à la météo actuelle »), puisque c'est elle, mesurée, qui prévoit le
+mieux à cet horizon.
