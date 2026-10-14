@@ -34,15 +34,13 @@ enum AnomState : uint8_t {
 // Un interrupteur par levier, pour que sim/bench_prevision mesure chacun SÉPARÉMENT
 // (docs/mesures-prevision.md). Les valeurs par défaut sont celles de la carte.
 struct PredictOpts {
-  bool wxTol = false;          // étape 1 : tolérance « inhabituel » × (1 + pénalité météo)
-  bool wxRupture = false;      // étape 1b : horizon des alertes « rupture / saturation prévue » ÷ (1 + pénalité)
-  float tolScale = 1.f;        // témoin du banc : tolérance « inhabituel » × tolScale, tous temps confondus
+  // (étape 1 — tolérance météo — mesurée et non livrée : voir le commit 739b5cf)
 };
 extern PredictOpts g_pred;
 
 // Disponibilité de la météo pour le modèle (affichée : la carte dit quand elle s'en passe)
 enum WxUse : uint8_t {
-  WXU_NONE,                    // jamais reçue, ou dernier relevé illisible : comportement sans météo
+  WXU_NONE,                    // jamais reçue : comportement sans météo
   WXU_STALE,                   // reçue mais plus vieille que 3 périodes (45 min) : ignorée
   WXU_OK                       // utilisée
 };
@@ -77,7 +75,6 @@ struct Station {
   uint8_t  anomConf;         // 0…100
   int16_t  anomExp;          // vélos attendus (profil arrondi), ‑1 = inconnu
   int16_t  anomTol;          // tolérance en vélos, 0 = non évaluée
-  uint8_t  anomWxPct;        // part de la tolérance due à la météo (+50 % → 50), 0 = aucune
 
   uint16_t capEff() const { return (uint16_t)(bikes + docks); }
   float    fill() const { int c = bikes + docks; return c ? (float)bikes / c : 0.f; }
@@ -144,7 +141,6 @@ struct Model {
   float     netFc[VN_FC_STEPS] = {};
   int       netConf = 0;
   uint8_t   wxUse = WXU_NONE;            // WxUse, évaluée par recompute
-  float     wxPen = 0;                   // pénalité météo 0…1 = (10 − note vélo) / 10, 0 sans météo
   Alert *   alerts = nullptr;            // [VN_MAX_ALERTS]
   int       nAlerts = 0;
   int       alertCount[AL_TYPE_COUNT] = {};

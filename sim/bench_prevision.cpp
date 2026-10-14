@@ -370,10 +370,8 @@ int main(int argc, char ** argv) {
       const char * eq = strchr(kv, '=');
       std::string k = eq ? std::string(kv, eq - kv) : std::string(kv);
       bool v = eq ? atoi(eq + 1) != 0 : true;
-      if (k == "tol_meteo") g_pred.wxTol = v;
-      else if (k == "rupture_meteo") g_pred.wxRupture = v;
-      else if (k == "tol_echelle") g_pred.tolScale = eq ? (float)atof(eq + 1) : 1.f;
-      else { fprintf(stderr, "levier inconnu : %s\n", k.c_str()); return 1; }
+      (void)v;
+      { fprintf(stderr, "levier inconnu : %s\n", k.c_str()); return 1; }
     }
     else { fprintf(stderr, "option inconnue : %s\n", argv[a]); return 1; }
   }

@@ -184,8 +184,8 @@ aucun mouvement 64, **inhabituel 262** (≈ 159 épisodes).
 
 ## Étape 1 — tolérance météo : **ne gagne pas, non livrée**
 
-Deux leviers, mesurés séparément (commit d'expérience `EXP1`, rejouable :
-`git checkout EXP1 && python3 tools/bench_campagne.py --levier tol_meteo=1`) :
+Deux leviers, mesurés séparément (commit d'expérience `739b5cf`, rejouable :
+`git checkout 739b5cf && python3 tools/bench_campagne.py --levier tol_meteo=1`) :
 
 - **1a** `tol_meteo` : tolérance « inhabituel » × (1 + pénalité), pénalité = (10 − note vélo) / 10, la
   note « conditions vélo » existante (`wxScore`), météo ignorée si absente ou plus vieille que 45 min ;
