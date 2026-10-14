@@ -388,9 +388,7 @@ int main(int argc, char ** argv) {
       bool v = eq ? atoi(eq + 1) != 0 : true;
       if (k == "flux_meteo") g_pred.wxFlow = v;
       else if (k == "prevue_meteo") g_pred.wxForecast = v;
-      else if (k == "ferie_exclu") g_pred.holidaySkip = v;
       else if (k == "ferie_dimanche") g_pred.holidaySunday = v;
-      else if (k == "plafond") g_pred.profCap = (uint8_t)(eq ? atoi(eq + 1) : VN_PROFILE_CAP_N);
       else { fprintf(stderr, "levier inconnu : %s\n", k.c_str()); return 1; }
     }
     else { fprintf(stderr, "option inconnue : %s\n", argv[a]); return 1; }

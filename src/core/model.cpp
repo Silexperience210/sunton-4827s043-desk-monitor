@@ -249,22 +249,20 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
       int dow, mod;
       profDM(t, dow, mod);
       int cell = dow * DAYQ + mod / 15;
-      const bool skipDay = g_pred.holidaySkip && holidayAt(t);
-      const int capN = g_pred.profCap >= 2 ? g_pred.profCap : 2;
-      for (int i = 0; i < n && !skipDay; i++) {
+      for (int i = 0; i < n; i++) {
         const Station & s = st[i];
         if (!s.active || !s.live || s.status == ST_CLOSED) continue;
         ProfCell & c = prof[(size_t)i * PROF_STRIDE + cell];
         float x = s.bikes * 256.f;
         if (c.n == 0) { c.a = (uint16_t)clampf(x, 0, 65535); c.n = 1; }
         else {
-          int nn = c.n < capN ? c.n + 1 : capN;
+          int nn = c.n < VN_PROFILE_CAP_N ? c.n + 1 : VN_PROFILE_CAP_N;
           float a = c.a + (x - c.a) / nn;
           c.a = (uint16_t)clampf(a + 0.5f, 0, 65535);
           c.n = (uint8_t)nn;
         }
       }
-      if (!skipDay && cellN[cell] < 255) cellN[cell]++;
+      if (cellN[cell] < 255) cellN[cell]++;
       learnSamples++;
       if (!learnSince) learnSince = now;
       learnWeather(t);

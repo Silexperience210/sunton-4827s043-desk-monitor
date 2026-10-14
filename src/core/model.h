@@ -38,9 +38,8 @@ struct PredictOpts {
   bool wxFlow = true;          // étape 3a : mouvement prévu du profil × (1 − α·(x − x̄ₕ)), α global appris
   // (étape 3b — α par station — mesurée et non livrée : voir le commit a913bcb)
   bool wxForecast = true;      // étape 4 : au-delà de 2 h, x = météo PRÉVUE à t+h (≤ 2 h : la météo actuelle)
-  bool holidaySkip = false;    // étape 5a-i : un jour férié n'alimente pas le profil
   bool holidaySunday = true;   // étape 5a-ii : un jour férié se prévoit (et s'évalue) avec le profil du dimanche
-  uint8_t profCap = VN_PROFILE_CAP_N;  // étape 5b : plafond de la moyenne mobile (récence)
+  // (5a-i — férié exclu du profil — et 5b — plafond de récence — mesurés et non livrés : commit 011ef52)
 };
 extern PredictOpts g_pred;
 
