@@ -53,6 +53,11 @@ static bool holidayAt(int64_t t) {
   plat::localTime(t, &lt);
   return isPublicHoliday(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
 }
+const char * holidayNameAt(int64_t t) {
+  struct tm lt;
+  plat::localTime(t, &lt);
+  return publicHolidayName(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
+}
 // Jour « de profil » : le jour de semaine, ou dimanche pour un jour férié (levier 5a-ii)
 static void profDM(int64_t t, int & dow, int & mod) {
   struct tm lt;
@@ -60,6 +65,32 @@ static void profDM(int64_t t, int & dow, int & mod) {
   dow = lt.tm_wday;
   mod = lt.tm_hour * 60 + lt.tm_min;
   if (g_pred.holidaySunday && isPublicHoliday(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday)) dow = 0;
+}
+
+// Case de profil qu'un relevé à l'instant t nourrit (levier « fériés » (a)) ; false = jour non appris
+static bool learnDM(int64_t t, int & dow, int & mod) {
+  struct tm lt;
+  plat::localTime(t, &lt);
+  dow = lt.tm_wday;
+  mod = lt.tm_hour * 60 + lt.tm_min;
+  if (g_pred.holidayLearn == HL_DAY || !isPublicHoliday(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday)) return true;
+  if (g_pred.holidayLearn == HL_SKIP) return false;
+  dow = 0;
+  return true;
+}
+
+// ── Mémoire du profil (levier « récence ») ───────────────────────────
+// Montée : moyenne simple des n premiers relevés (poids 1/(n + 1)) ; ensuite poids fixe 1/N, soit
+// a_k = λ·a_(k−1) + (1 − λ)·x_k avec λ = 1 − 1/N : le relevé d'il y a j relevés pèse λ^j, la
+// constante de temps est N relevés (N/3 semaines), la demi-vie N·ln 2 relevés. n tient sur 5 bits :
+// au-delà de 31, une cellule saturée prend directement 1/N.
+static const int PROF_N_BITS_MAX = 31;
+int profCountMax(int N) { return N < 2 ? 2 : N > PROF_N_BITS_MAX ? PROF_N_BITS_MAX : N; }
+float profWeight(int n, int N) {
+  if (N < 2) N = 2;
+  if (n < 0) n = 0;
+  if (n >= PROF_N_BITS_MAX) return 1.f / N;
+  return 1.f / (n + 1 < N ? n + 1 : N);
 }
 
 // ── Initialisation ───────────────────────────────────────────────────
@@ -260,11 +291,12 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
       ns.avail = (uint16_t)av; ns.docks = (uint16_t)dk; ns.dis = (uint16_t)ds; ns.bikesRaw = (uint16_t)raw;
       ns.empty = (uint8_t)(em > 255 ? 255 : em); ns.full = (uint8_t)(fu > 255 ? 255 : fu);
 
-      // Profils : moyenne mobile plafonnée (≈ fenêtre exponentielle, cf. useAvailability.js)
+      // Profils : moyenne simple puis décroissance exponentielle (profWeight)
       int dow, mod;
-      profDM(t, dow, mod);
+      const bool learnDay = learnDM(t, dow, mod);
       int cell = dow * DAYQ + mod / 15;
-      for (int i = 0; i < n; i++) {
+      const int decN = g_pred.profDecayN, nMax = profCountMax(decN);
+      for (int i = 0; i < n && learnDay; i++) {
         const Station & s = st[i];
         if (!s.active || !s.live || s.status == ST_CLOSED) continue;
         ProfCell & c = prof[(size_t)i * PROF_STRIDE + cell];
@@ -272,13 +304,13 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
         float x = s.bikes * 256.f;
         if (c.n == 0) { c.a = (uint16_t)clampf(x, 0, 65535); c.n = 1; }
         else {
-          int nn = c.n < VN_PROFILE_CAP_N ? c.n + 1 : VN_PROFILE_CAP_N;
-          float a = c.a + (x - c.a) / nn;
+          float a = c.a + (x - c.a) * profWeight(c.n, decN);
           c.a = (uint16_t)clampf(a + 0.5f, 0, 65535);
-          c.n = (uint8_t)nn;
+          if (c.n < nMax) c.n++;
+          else if (c.n > nMax) c.n = (uint8_t)nMax;     // N raccourci depuis l'écriture du fichier
         }
       }
-      if (cellN[cell] < 255) cellN[cell]++;
+      if (learnDay && cellN[cell] < 255) cellN[cell]++;
       learnSamples++;
       if (!learnSince) learnSince = now;
       learnWeather(t);
@@ -387,7 +419,8 @@ void Model::learnDispersion(int i, int cell, int64_t t) {
     ProfCell & c = prof[(size_t)i * PROF_STRIDE + pc];
     float dev = dispPendDev[i];
     float x = clampf(dev * DISP_SCALE, 0, 255);
-    int w = c.dn < DISP_DN_MAX ? c.dn + 1 : (c.n > 8 ? c.n : 8);
+    int nw = c.n >= PROF_N_BITS_MAX && g_pred.profDecayN > PROF_N_BITS_MAX ? g_pred.profDecayN : c.n;
+    int w = c.dn < DISP_DN_MAX ? c.dn + 1 : (nw > 8 ? nw : 8);
     float v = c.d + (x - c.d) / w;
     int iv = (int)floorf(v);
     if (v - iv > dither01((uint32_t)i * PROF_STRIDE + (uint32_t)pc, learnSamples)) iv++;
@@ -745,8 +778,8 @@ void Model::updateWxCoef() {
 //      g_alertOpt.persist relevés de 5 min consécutifs (le relevé courant et les tranches
 //      précédentes de l'historique, chacune jugée contre le profil de SON instant) ; avant,
 //      l'état est AN_PENDING (affiché, sans alerte). Une tranche manquante interrompt la série.
-// Limite connue : le relevé courant vient d'alimenter la cellule du profil (moyenne
-// plafonnée à VN_PROFILE_CAP_N), ce qui rapproche P de N d'au plus 1/n : l'écart est
+// Limite connue : le relevé courant vient d'alimenter la cellule du profil (avec le poids
+// profWeight), ce qui rapproche P de N d'au plus ce poids : l'écart est
 // légèrement sous-estimé, jamais gonflé.
 struct AnomEval { float p, c, tol, disp, dcnt; uint8_t src; };
 
@@ -757,8 +790,10 @@ static bool anomEval(const Model & m, const Station & s, int i, int64_t t, AnomE
   e.disp = e.dcnt = 0;
   bool dk = m.dispersionAt(i, t, e.disp, e.dcnt) && e.dcnt >= DISP_MIN_N;
   if (!dk) e.disp = e.dcnt = 0;
-  float formula = fmaxf(ANOM_MIN_BIKES, ANOM_REL_CAP * s.capEff()) * (2.f - e.c) * g_alertOpt.scale;
-  if (g_alertOpt.disp && dk) { e.tol = (float)lroundf(fmaxf(ANOM_MIN_BIKES, g_alertOpt.k * e.disp)); e.src = ATS_DISP; }
+  // levier « fériés » (c) : tolérance élargie un jour férié (holidayScale = 1 : inchangée)
+  float hs = g_alertOpt.holidayScale != 1.f && holidayAt(t) ? g_alertOpt.holidayScale : 1.f;
+  float formula = fmaxf(ANOM_MIN_BIKES, ANOM_REL_CAP * s.capEff()) * (2.f - e.c) * g_alertOpt.scale * hs;
+  if (g_alertOpt.disp && dk) { e.tol = (float)lroundf(fmaxf(ANOM_MIN_BIKES, g_alertOpt.k * e.disp) * hs); e.src = ATS_DISP; }
   else { e.tol = formula; e.src = g_alertOpt.disp ? ATS_FORMULA_YOUNG : ATS_FORMULA; }
   return true;
 }
@@ -1118,7 +1153,8 @@ bool Model::load(int64_t now) {
             const uint8_t * c3 = src + (size_t)q * PROF_CELL_V12;
             uint16_t a; memcpy(&a, c3, 2);
             dst[q].a = a;
-            dst[q].n = c3[2] > VN_PROFILE_CAP_N ? VN_PROFILE_CAP_N : c3[2];
+            int nMax = profCountMax(g_pred.profDecayN);
+            dst[q].n = c3[2] > nMax ? nMax : c3[2];
             dst[q].dn = 0; dst[q].d = 0;
           }
         }

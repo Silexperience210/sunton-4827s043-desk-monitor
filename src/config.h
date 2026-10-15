@@ -34,7 +34,7 @@
 #define VN_RING_SLOTS     288   // 24 h au pas de 5 min
 #define VN_RING_STEP_S    300
 #define VN_RECENT_SLOTS    60   // 60 min au pas de 1 min (tendance court terme)
-#define VN_PROFILE_CAP_N   24   // 3 relevés/jour/créneau → fenêtre ≈ 8 semaines par (jour, quart d'heure)
+#define VN_PROFILE_DECAY_N 24   // constante de temps du profil en relevés (3 par semaine et par créneau) : 8 semaines
 #define VN_FC_STEPS        25   // prévision 0…120 min au pas de 5 min
 #define VN_MAX_ALERTS      96
 #define VN_MAX_TRANSFERS    8

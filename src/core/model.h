@@ -39,6 +39,12 @@ enum AnomTolSrc : uint8_t {
 };
 
 // ── Leviers de prévision ─────────────────────────────────────────────
+// Ce qu'un jour férié verse au profil
+enum HolLearn : uint8_t {
+  HL_DAY,                      // la case de son jour de semaine (comportement de la v1.0.8)
+  HL_SUNDAY,                   // la case du dimanche (étape 5a-ii)
+  HL_SKIP                      // rien : le jour férié n'est pas appris
+};
 // Un interrupteur par levier, pour que sim/bench_prevision mesure chacun SÉPARÉMENT
 // (docs/mesures-prevision.md). Les valeurs par défaut sont celles de la carte.
 struct PredictOpts {
@@ -47,9 +53,18 @@ struct PredictOpts {
   // (étape 3b — α par station — mesurée et non livrée : voir le commit a913bcb)
   bool wxForecast = true;      // étape 4 : au-delà de 2 h, x = météo PRÉVUE à t+h (≤ 2 h : la météo actuelle)
   bool holidaySunday = true;   // étape 5a-ii : un jour férié se prévoit (et s'évalue) avec le profil du dimanche
-  // (5a-i — férié exclu du profil — et 5b — plafond de récence — mesurés et non livrés : commit 011ef52)
+  // Ce qu'un jour férié verse au profil (levier « fériés » (a), mesuré : docs/mesures-prevision.md)
+  uint8_t holidayLearn = HL_SUNDAY;
+  // Constante de temps du profil, en relevés de la cellule (3 par semaine) : au-delà de la montée
+  // (moyenne simple des premiers relevés), a ← a + (x − a) / profDecayN, soit une décroissance
+  // exponentielle de facteur λ = 1 − 1/profDecayN par relevé (24 = 8 semaines, levier « récence »).
+  int profDecayN = VN_PROFILE_DECAY_N;
 };
 extern PredictOpts g_pred;
+// Poids du relevé suivant dans une cellule qui en a déjà compté n (n saturé à 31) : 1/(n + 1) pendant la
+// montée (moyenne simple), puis 1/N (décroissance exponentielle, λ = 1 − 1/N). N < 2 est traité comme 2.
+float profWeight(int n, int N);
+int   profCountMax(int N);         // plafond de n : min(N, 31)
 
 // ── Leviers de l'alerte « inhabituel » (docs/mesures-prevision.md, « alerte calme ») ──
 // Mesurés séparément par le banc ; les valeurs par défaut sont celles de la carte.
@@ -58,6 +73,7 @@ struct AlertOpts {
   float k = 3.f;               // 1a : multiple de la dispersion (écart absolu moyen)
   int   persist = 1;           // 1b : relevés de 5 min consécutifs hors tolérance avant d'alerter (1 = aussitôt)
   float scale = 1.f;           // témoin du banc : formule fixe × scale (élargissement uniforme, sans information)
+  float holidayScale = 1.f;    // levier « fériés » (c) : tolérance × holidayScale un jour férié (1 = inchangée)
 };
 extern AlertOpts g_alertOpt;
 
@@ -182,7 +198,8 @@ struct Alert {
 
 struct Transfer { int16_t from, to; uint8_t n; uint16_t distM; };
 
-// Cellule de profil (jour × quart d'heure) : moyenne ×256 et n plafonné à VN_PROFILE_CAP_N (5 bits),
+// Cellule de profil (jour × quart d'heure) : moyenne ×256 et n = relevés comptés, plafonné à
+// min(g_pred.profDecayN, 31) (5 bits) — voir profWeight,
 // dispersion d = écart absolu moyen au profil ×16 (plafond 15,9 vélos) et son compte dn (3 bits,
 // plafonné à 7 : au-delà, d suit la même moyenne mobile que a). d n'est pas utilisé tant que dn = 0.
 struct ProfCell { uint16_t a; uint8_t n : 5; uint8_t dn : 3; uint8_t d; } __attribute__((packed));
@@ -285,6 +302,7 @@ struct Model {
 extern Model g_model;
 
 const char * statusShort(uint8_t status);        // « VIDE »… (badges)
+const char * holidayNameAt(int64_t t);           // nom du jour férié légal de l'instant t (heure locale), nullptr sinon
 float haversineM(float lat1, float lon1, float lat2, float lon2);
 
 } // namespace vn

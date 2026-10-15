@@ -6,6 +6,7 @@
 //   make bench_prevision
 //   ./bench_prevision [--jours N] [--graine S] [--effet nul|moyen|fort] [--meteo ok|absente]
 //                     [--levier nom=0|1]… [--court] [--prevision-parfaite] [--ferie-comme dimanche|mixte|ouvre]
+//                     [--derive F]
 //
 // Ce qu'il mesure (voir docs/mesures-prevision.md) :
 //   1. MAE de la prévision à +15 / +30 / +60 / +120 min, par temps sec et par temps de pluie,
@@ -138,6 +139,7 @@ struct SimSt {
   int bikes;
   int64_t badSince = 0;            // vide ou pleine depuis (camion de régulation)
   bool closed = false;
+  float drift = 0;                 // dérive lente de l'amplitude (--derive) : ± F sur toute la période
   char sid[8];
   float lat, lon;
 };
@@ -152,6 +154,8 @@ struct Cfg {
   bool perfectFc = false;          // prévision météo = la vérité (plafond de l'étape 4)
   float holWe = 1.f;               // part « week-end » d'un férié : 1 dimanche (défaut), 0,5 mixte, 0 jour ouvré
                                    // (le monde n'a qu'un profil de week-end : samedi = dimanche)
+  float drift = 0;                 // --derive F : l'amplitude de chaque station dérive linéairement de ± F
+                                   // (signe tiré par station) du premier au dernier jour — un parc non stationnaire
 };
 
 static const int NST = 143;
@@ -179,7 +183,9 @@ struct World {
     float ww = hol ? cfg.holWe : we ? 1.f : 0.f;
     auto shp = [&](float hh) { return ww * shapeF(st[i].kind, true, 0, hh) + (1 - ww) * shapeF(st[i].kind, false, dow, hh); };
     float base = shp(3.f);
-    float f = base + st[i].amp * (shp(h) - base);
+    float amp = st[i].amp;
+    if (st[i].drift != 0) amp *= 1.f + st[i].drift * fminf(1.f, fmaxf(0.f, (float)(t - T0) / (cfg.days * 86400.f)));
+    float f = base + amp * (shp(h) - base);
     f = 0.05f + 0.85f * f;                       // parc moins rempli (instantané réel : ~1/3 à 14 h 30)
     return fminf(0.97f, fmaxf(0.03f, f));
   }
@@ -286,6 +292,9 @@ static void buildStations(World & w) {
     s.kind = K_RES; s.cap = j == CHANGED ? 20 : 30; s.amp = 1; s.phase = 0; s.sens = KSENS[K_RES];
   }
   w.st[CHANGED].capFrom = 20; w.st[CHANGED].capChangeDay = CHANGE_DAY;
+  // Dérive (--derive) : tirée à part, pour que le reste du monde ne change pas ; jamais l'agrandie ni sa jumelle
+  if (w.cfg.drift != 0)
+    for (int j = 0; j < CHANGED; j++) w.st[j].drift = w.cfg.drift * (hash01(w.cfg.seed * 7 + 5, j) < 0.5 ? -1.f : 1.f);
   for (int j = 0; j < NST; j++) {
     SimSt & s = w.st[j];
     snprintf(s.sid, sizeof(s.sid), "%d", 1000 + j);
@@ -378,6 +387,7 @@ int main(int argc, char ** argv) {
     } else if (!strcmp(argv[a], "--meteo") && a + 1 < argc) cfg.wxAvailable = strcmp(argv[++a], "absente") != 0;
     else if (!strcmp(argv[a], "--court")) cfg.brief = true;
     else if (!strcmp(argv[a], "--prevision-parfaite")) cfg.perfectFc = true;
+    else if (!strcmp(argv[a], "--derive") && a + 1 < argc) cfg.drift = (float)atof(argv[++a]);
     else if (!strcmp(argv[a], "--ferie-comme") && a + 1 < argc) {
       const char * v = argv[++a];
       cfg.holWe = !strcmp(v, "mixte") ? 0.5f : !strcmp(v, "ouvre") ? 0.f : 1.f;
@@ -394,7 +404,10 @@ int main(int argc, char ** argv) {
       else if (k == "inertie") g_alertOpt.persist = (int)num;        // 1b : relevés consécutifs avant d'alerter
       else if (k == "alerte_echelle") g_alertOpt.scale = (float)num; // témoin : formule fixe élargie uniformément
       else if (k == "prevue_meteo") g_pred.wxForecast = v;
-      else if (k == "ferie_dimanche") g_pred.holidaySunday = v;
+      else if (k == "ferie_dimanche") g_pred.holidaySunday = v;                 // (b) prévoir un férié en dimanche
+      else if (k == "ferie_appris") g_pred.holidayLearn = (uint8_t)num;       // (a) 0 son jour, 1 dimanche, 2 exclu
+      else if (k == "ferie_alerte") g_alertOpt.holidayScale = (float)num;     // (c) tolérance × e un jour férié
+      else if (k == "profil_n") g_pred.profDecayN = (int)num;                 // récence : constante de temps (relevés)
       else { fprintf(stderr, "levier inconnu : %s\n", k.c_str()); return 1; }
     }
     else { fprintf(stderr, "option inconnue : %s\n", argv[a]); return 1; }
@@ -436,7 +449,7 @@ int main(int argc, char ** argv) {
   std::vector<int> prevTruth(NST, -1);
   long rupt[2] = {}, ruptAnt[2] = {};                 // ruptures réelles (7 h–22 h, j mûrs) / annoncées dans l'heure d'avant
   struct Day { int falseUnus = 0, trueUnus = 0, onset[AL_TYPE_COUNT] = {}, soonOk[2] = {}, soonN[2] = {}; int rainH = 0; bool hol = false;
-               float learn = 0, conf = 0, anomConf = 0, evalFrac = 0, alpha = 0, alphaRaw = 0, alphaSE = 0, nRain = 0; int src = 0; float chBias = NAN; double chErr = 0; int chN = 0; double twErr = 0; int twN = 0; };
+               float learn = 0, conf = 0, anomConf = 0, evalFrac = 0, alpha = 0, alphaRaw = 0, alphaSE = 0, nRain = 0; int src = 0; float chBias = NAN, chBiasS = NAN; double chErr = 0; int chN = 0; double twErr = 0; int twN = 0; };
   std::vector<Day> days(cfg.days);
   struct Soon { int st, type; int64_t t; };
   std::vector<Soon> soons;
@@ -450,6 +463,11 @@ int main(int argc, char ** argv) {
   double jFalse[NJ] = {}; int jDays = 0;
   std::vector<std::vector<char>> jSeen(NJ);
   struct Dg { double obs = 0, lrn = 0, z2 = 0, z3 = 0; long n = 0; } dg[24];
+  // Nervosité du profil : variation d'une semaine à l'autre du profil d'un même jour (7 h–22 h), relevée
+  // à la fin de chaque jour ; dans un monde stationnaire, toute variation est du bruit appris.
+  static const int SQ0 = 28, SQ = 60;
+  std::vector<float> snap((size_t)7 * NST * SQ, NAN);
+  double stabSum = 0; long stabN = 0;
 
   for (int k = 0; k < steps; k++) {
     int64_t t = w.T0 + (int64_t)k * VN_RING_STEP_S;
@@ -596,6 +614,21 @@ int main(int argc, char ** argv) {
       }
     }
 
+    // ── Nervosité du profil (fin de journée, période mûre, jours ni fériés ni à 7 jours d'un férié)
+    if (lt.tm_hour == 23 && lt.tm_min == 55) {
+      int64_t d0 = t - (23 * 3600 + 55 * 60);
+      for (int i = 0; i < NST; i++) {
+        if (i == CHANGED) continue;
+        for (int q = 0; q < SQ; q++) {
+          float pv, pn;
+          float v = m.profileAt(i, d0 + (int64_t)(SQ0 + q) * 900 + 450, pv, pn) ? pv : NAN;
+          float & old = snap[((size_t)(d % 7) * NST + i) * SQ + q];
+          if (d >= 63 && !days[d].hol && !days[d - 7].hol && !isnan(old) && !isnan(v)) { stabSum += fabsf(v - old); stabN++; }
+          old = v;
+        }
+      }
+    }
+
     // ── Maturation (chaque jour à midi) et station agrandie
     if (lt.tm_hour == 12 && lt.tm_min == 0) {
       Day & D = days[d];
@@ -610,19 +643,20 @@ int main(int argc, char ** argv) {
       }
       D.anomConf = op ? (float)(ac / op) : 0; D.evalFrac = op ? 100.f * ev / op : 0;
       // Biais du profil de la station agrandie contre sa jumelle (7 h – 22 h, les 7 jours)
-      double bias = 0; int nb = 0;
+      double bias = 0, biasS = 0; int nb = 0;
       for (int dd = 0; dd < 7; dd++) for (int q = 7 * 4; q < 22 * 4; q++) {
         int64_t tq = t + (int64_t)dd * 86400 + (int64_t)(q * 15 - 12 * 60) * 60;
         float a, na, b, nb2;
-        if (m.profileAt(CHANGED, tq, a, na) && m.profileAt(TWIN, tq, b, nb2)) { bias += fabs(a - b); nb++; }
+        if (m.profileAt(CHANGED, tq, a, na) && m.profileAt(TWIN, tq, b, nb2)) { bias += fabs(a - b); biasS += a - b; nb++; }
       }
       D.chBias = nb ? (float)(bias / nb) : NAN;
+      D.chBiasS = nb ? (float)(biasS / nb) : NAN;     // signé : le bruit des deux profils s'y annule en moyenne
     }
   }
 
   // ── Évaluation a posteriori des prévisions
   struct Cell { Acc fc[NH], per[NH], orc[NH], prof[NH], raw[NH]; };
-  Cell all, dry, wet, mature, matureWet, matureDry, hol, onset, ending, postHol;
+  Cell all, dry, wet, mature, matureWet, matureDry, hol, onset, ending, postHol, holM, ordM;
   Cell byBlock[8];
   const int matureFrom = cfg.days >= 84 ? 56 : cfg.days / 2;
   for (const Pred & p : preds) {
@@ -645,6 +679,7 @@ int main(int argc, char ** argv) {
       add(all);
       add(isWet ? wet : dry);
       if (days[d].hol) add(hol);
+      if (d >= matureFrom) add(days[d].hol ? holM : ordM);
       if (!days[d].hol && ((d >= 7 && days[d - 7].hol) || (d >= 14 && days[d - 14].hol) || (d >= 21 && days[d - 21].hol))) add(postHol);
       if (d >= matureFrom) { add(mature); add(isWet ? matureWet : matureDry); if (isOnset) add(onset); if (isEnd) add(ending); }
       int b = d / 21; if (b < 8) add(byBlock[b]);
@@ -653,6 +688,7 @@ int main(int argc, char ** argv) {
     }
   }
   // Rappel « inhabituel » sur les incidents, précision « rupture prévue »
+  int incHM = 0, incHMS = 0;                              // incidents des jours fériés de la période mûre
   int incTot = 0, incSeen = 0, incR = 0, incRS = 0, incD = 0, incDS = 0, incM = 0, incMS = 0, incMR = 0, incMRS = 0;
   std::vector<double> lat, latR;                        // retard d'annonce (min) des incidents détectés, période mûre
   for (auto & in : incs) {
@@ -663,6 +699,7 @@ int main(int argc, char ** argv) {
     if (D.rainH == 0) { incD++; incDS += in.seen; }
     if (di >= (cfg.days >= 84 ? 56 : cfg.days / 2)) {
       incM++; incMS += in.seen;
+      if (D.hol) { incHM++; incHMS += in.seen; }
       if (D.rainH >= 3) { incMR++; incMRS += in.seen; }
       if (in.seen) { lat.push_back((in.first - in.t0) / 60.0); if (D.rainH >= 3) latR.push_back((in.first - in.t0) / 60.0); }
     }
@@ -859,7 +896,7 @@ int main(int argc, char ** argv) {
   printf("\nSYNTHESE graine=%llu effet=%s mae15=%.4f mae30=%.4f mae60=%.4f mae120=%.4f mae60_sec=%.4f mae60_pluie=%.4f mae120_pluie=%.4f "
          "orc60_pluie=%.4f orc60=%.4f per60=%.4f fausses_pluie=%.2f fausses_sec=%.2f rappel=%.1f rappel_pluie=%.1f rappel_sec=%.1f ferie60=%.4f annonce_vide=%.1f annonce_pleine=%.1f annonces_pluie_j=%.2f precision_pluie=%.1f precision_sec=%.1f alpha=%.3f alpha_brut=%.3f alpha_se=%.3f jours_alpha=%.1f mae60_debut=%.4f mae60_fin=%.4f n60_debut=%ld mae240=%.4f mae240_pluie=%.4f mae240_debut=%.4f postferie60=%.4f fausses_ferie=%.2f ferie240=%.4f absorb_moitie=%d ecart_plus28=%.3f ecart_plancher=%.3f "
          "fausses=%.2f vraies=%.2f rappel_mur=%.1f rappel_mur_pluie=%.1f latence=%.1f latence_med=%.0f latence_p90=%.0f latence_pluie=%.1f "
-         "saut5_fausses=%.2f saut5_rappel=%.1f saut6_fausses=%.2f saut6_rappel=%.1f saut5c_fausses=%.2f saut5c_rappel=%.1f saut6c_fausses=%.2f saut6c_rappel=%.1f saut5r_fausses=%.2f saut5r_rappel=%.1f origine_derive=%.1f\n",
+         "saut5_fausses=%.2f saut5_rappel=%.1f saut6_fausses=%.2f saut6_rappel=%.1f saut5c_fausses=%.2f saut5c_rappel=%.1f saut6c_fausses=%.2f saut6c_rappel=%.1f saut5r_fausses=%.2f saut5r_rappel=%.1f origine_derive=%.1f",
          (unsigned long long)cfg.seed, cfg.effName, mature.fc[0].mean(), mature.fc[1].mean(), mature.fc[2].mean(), mature.fc[3].mean(),
          matureDry.fc[2].mean(), matureWet.fc[2].mean(), matureWet.fc[3].mean(), matureWet.orc[2].mean(), mature.orc[2].mean(), mature.per[2].mean(),
          nR ? fRain / nR : NAN, nD ? fDry / nD : NAN, incTot ? 100.0 * incSeen / incTot : 0,
@@ -872,5 +909,22 @@ int main(int argc, char ** argv) {
          nA ? fAll / nA : NAN, nA ? tAll / nA : NAN, incM ? 100.0 * incMS / incM : NAN, incMR ? 100.0 * incMRS / incMR : NAN,
          mean(lat), pct(lat, 0.5), pct(lat, 0.9), mean(latR),
          jF[0], jR[0], jF[1], jR[1], jF[2], jR[2], jF[3], jR[3], jF[4], jR[4], [&] { long ft = falseCat[0] + falseCat[1] + falseCat[2] + falseCat[3]; return ft ? 100.0 * falseCat[3] / ft : (double)NAN; }());
+  // Suite de la synthèse : fériés de la période mûre, jours ordinaires, absorption, nervosité
+  {
+    double fH = 0, fO = 0; int nH = 0, nO = 0;
+    for (int d = matureFrom; d < cfg.days; d++) { if (days[d].hol) { fH += days[d].falseUnus; nH++; } else { fO += days[d].falseUnus; nO++; } }
+    printf(" ferie_mur_n=%d ferie_mur15=%.4f ferie_mur60=%.4f ferie_mur240=%.4f per_ferie_mur60=%.4f fausses_ferie_mur=%.2f rappel_ferie_mur=%.1f incidents_ferie_mur=%d "
+           "ordinaire15=%.4f ordinaire60=%.4f ordinaire240=%.4f fausses_ordinaire=%.2f stab_profil=%.4f",
+           nH, holM.fc[0].mean(), holM.fc[2].mean(), holM.fc[4].mean(), holM.per[2].mean(), nH ? fH / nH : NAN,
+           incHM ? 100.0 * incHMS / incHM : NAN, incHM, ordM.fc[0].mean(), ordM.fc[2].mean(), ordM.fc[4].mean(), nO ? fO / nO : NAN,
+           stabN ? stabSum / stabN : NAN);
+    for (int a : { 0, 7, 14, 21, 28, 35, 42, 56, 70, 84, 98, 108 })
+      printf(" ecart_j%d=%.3f", a, CHANGE_DAY + a < cfg.days ? days[CHANGE_DAY + a].chBias : NAN);
+    for (int a = 0; a <= 108; a++)
+      printf(" biais_j%d=%.3f", a, CHANGE_DAY + a < cfg.days ? days[CHANGE_DAY + a].chBiasS : NAN);
+    double ce = 0, te = 0; int cn = 0, tn = 0;
+    for (int d = CHANGE_DAY; d < CHANGE_DAY + 28 && d < cfg.days; d++) { ce += days[d].chErr; cn += days[d].chN; te += days[d].twErr; tn += days[d].twN; }
+    printf(" agrandie60_4sem=%.4f jumelle60_4sem=%.4f\n", cn ? ce / cn : NAN, tn ? te / tn : NAN);
+  }
   return 0;
 }

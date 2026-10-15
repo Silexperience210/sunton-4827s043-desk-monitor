@@ -17,13 +17,22 @@ static int dayOfYear(int y, int m, int d) {
   return CUM[m - 1] + d + (leap && m > 2 ? 1 : 0);
 }
 
-bool isPublicHoliday(int y, int m, int d) {
-  static const int FIX[][2] = { { 1, 1 }, { 5, 1 }, { 5, 9 }, { 6, 23 }, { 8, 15 }, { 11, 1 }, { 12, 25 }, { 12, 26 } };
-  for (const auto & f : FIX) if (f[0] == m && f[1] == d) return true;
+const char * publicHolidayName(int y, int m, int d) {
+  static const struct { int m, d; const char * name; } FIX[] = {
+    { 1, 1, "Nouvel An" }, { 5, 1, "1er mai" }, { 5, 9, "Journ\xC3\xA9" "e de l'Europe" },
+    { 6, 23, "F\xC3\xAA" "te nationale" }, { 8, 15, "Assomption" }, { 11, 1, "Toussaint" },
+    { 12, 25, "No\xC3\xAB" "l" }, { 12, 26, "Saint-\xC3\x89tienne" } };
+  if (m < 1 || m > 12 || d < 1 || d > 31) return nullptr;
+  for (const auto & f : FIX) if (f.m == m && f.d == d) return f.name;
   int em, ed;
   easterDate(y, em, ed);
-  int delta = dayOfYear(y, m, d) - dayOfYear(y, em, ed);
-  return delta == 1 || delta == 39 || delta == 50;
+  int delta = dayOfYear(y, m, d) - dayOfYear(y, em, ed);   // Pâques + 50 j reste dans la même année
+  if (delta == 1) return "lundi de P\xC3\xA2ques";
+  if (delta == 39) return "Ascension";
+  if (delta == 50) return "lundi de Pentec\xC3\xB4te";
+  return nullptr;
 }
+
+bool isPublicHoliday(int y, int m, int d) { return publicHolidayName(y, m, d) != nullptr; }
 
 } // namespace vn

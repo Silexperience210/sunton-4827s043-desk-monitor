@@ -911,7 +911,7 @@ static void testAlertCalm() {
     x[40 + 3 * 8 + 2] = 200;
     plat::fsWrite("/vn_prof.bin", x.data(), x.size());
     static Model q2; q2.init(); q2.load(tl);
-    CHECK(q2.prof[0].n == VN_PROFILE_CAP_N, "v2, n = 200 dans une cellule : plafonné à %d (%d)", VN_PROFILE_CAP_N, q2.prof[0].n);
+    CHECK(q2.prof[0].n == VN_PROFILE_DECAY_N, "v2, n = 200 dans une cellule : plafonné à %d (%d)", VN_PROFILE_DECAY_N, q2.prof[0].n);
     auto y = v3;
     int64_t fut = tl + 400 * 86400;
     memcpy(y.data() + y.size() - 3 * 8, &fut, 8);
@@ -1317,6 +1317,214 @@ static void testHolidays() {
         && !q.holidayProfile(lux(2027, 1, 2, 0, 0)), "provenance affichable : « profil du dimanche » du 1er janvier 00:00 à 23:59, pas la veille ni le lendemain");
 }
 
+// ── Fériés et récence (branche feat/feries-recense) ─────────────────
+// Calendrier : Pâques et les trois fêtes mobiles sur plusieurs années (dates de contrôle calculées par un
+// second algorithme indépendant — Knuth, TAOCP 1.3.2 — et, pour 2026 et 2027, la liste officielle de
+// luxembourg.public.lu) ; noms ; collisions (Ascension le 1er mai en 2008, le 9 mai en 2024).
+static void testCalendarYears() {
+  static const int E[][7] = {   // année, Pâques (m, j), Ascension (m, j), lundi de Pentecôte (m, j)
+    { 2000, 4, 23, 6, 1, 6, 12 }, { 2008, 3, 23, 5, 1, 5, 12 }, { 2011, 4, 24, 6, 2, 6, 13 },
+    { 2019, 4, 21, 5, 30, 6, 10 }, { 2024, 3, 31, 5, 9, 5, 20 }, { 2025, 4, 20, 5, 29, 6, 9 },
+    { 2026, 4, 5, 5, 14, 5, 25 }, { 2027, 3, 28, 5, 6, 5, 17 }, { 2028, 4, 16, 5, 25, 6, 5 },
+    { 2030, 4, 21, 5, 30, 6, 10 }, { 2038, 4, 25, 6, 3, 6, 14 }, { 2285, 3, 22, 4, 30, 5, 11 } };
+  int okE = 0, okM = 0;
+  for (auto & e : E) {
+    int m, d;
+    easterDate(e[0], m, d);
+    okE += m == e[1] && d == e[2];
+    // lundi de Pâques = lendemain (passage de mois compris : 31/3 → 1/4 en 2024)
+    int lm = e[1], ld = e[2] + 1;
+    if (lm == 3 && ld == 32) { lm = 4; ld = 1; }
+    const char * a = publicHolidayName(e[0], lm, ld), * b = publicHolidayName(e[0], e[3], e[4]), * c = publicHolidayName(e[0], e[5], e[6]);
+    bool collide = (e[3] == 5 && (e[4] == 1 || e[4] == 9));   // l'Ascension tombe sur un férié fixe : le nom fixe l'emporte
+    okM += a && !strcmp(a, "lundi de P\xC3\xA2ques") && b && (collide || !strcmp(b, "Ascension")) && c && !strcmp(c, "lundi de Pentec\xC3\xB4te");
+    okM -= isPublicHoliday(e[0], e[1], e[2]);                  // le dimanche de Pâques n'est pas férié
+  }
+  CHECK(okE == 12, "Pâques juste sur 12 années de 2000 à 2285, dont la plus précoce (22 mars) et des plus tardives (%d/12)", okE);
+  CHECK(okM == 12, "lundi de Pâques, Ascension, lundi de Pentecôte nommés sur les 12 années, dimanche de Pâques non férié (%d/12)", okM);
+  // Les 11 fériés de 2026 et 2027, tels que luxembourg.public.lu les publie
+  static const int OFF[][3] = { { 2026, 1, 1 }, { 2026, 4, 6 }, { 2026, 5, 1 }, { 2026, 5, 9 }, { 2026, 5, 14 }, { 2026, 5, 25 },
+    { 2026, 6, 23 }, { 2026, 8, 15 }, { 2026, 11, 1 }, { 2026, 12, 25 }, { 2026, 12, 26 },
+    { 2027, 1, 1 }, { 2027, 3, 29 }, { 2027, 5, 1 }, { 2027, 5, 9 }, { 2027, 5, 6 }, { 2027, 5, 17 },
+    { 2027, 6, 23 }, { 2027, 8, 15 }, { 2027, 11, 1 }, { 2027, 12, 25 }, { 2027, 12, 26 } };
+  int okO = 0;
+  for (auto & d : OFF) okO += isPublicHoliday(d[0], d[1], d[2]);
+  CHECK(okO == 22, "liste officielle 2026 et 2027 : 22/22 (%d)", okO);
+  // Nombre de jours fériés par année : 11, sauf collision (10 jours distincts en 2008 et en 2024)
+  auto count = [](int y) {
+    static const int ML[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    int c = 0;
+    bool leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    for (int m = 1; m <= 12; m++) for (int d = 1; d <= ML[m - 1] + (m == 2 && leap); d++) c += isPublicHoliday(y, m, d);
+    return c;
+  };
+  int c11 = 0;
+  for (int y = 2025; y <= 2040; y++) c11 += count(y) == 11;
+  CHECK(c11 == 16 && count(2024) == 10 && count(2008) == 10, "11 fériés par an de 2025 à 2040 (%d/16), 10 jours distincts en 2024 et 2008 (%d, %d)",
+        c11, count(2024), count(2008));
+  CHECK(!strcmp(publicHolidayName(2026, 12, 26), "Saint-\xC3\x89tienne") && !strcmp(publicHolidayName(2026, 6, 23), "F\xC3\xAAte nationale")
+        && !publicHolidayName(2026, 2, 30) && !publicHolidayName(2026, 13, 1), "noms des fêtes fixes ; dates impossibles refusées");
+}
+
+// Levier « fériés » (a) : ce qu'un jour férié verse au profil, selon g_pred.holidayLearn
+static void testHolidayLearn() {
+  settingsDefaults(g_set);
+  InfoRec ir[1] = { mkInfo("1", 49.6f, 6.13f, 20) };
+  StatusRec sr[1];
+  const int64_t T0 = lux(2026, 4, 27, 0, 0), H = lux(2026, 5, 14, 0, 0), H1 = lux(2026, 5, 15, 0, 0);   // 14/05/2026 : Ascension (jeudi)
+  const int THU = 4 * 96 + 40, SUN = 0 * 96 + 40;                  // cellules jeudi et dimanche 10:00
+  static const char * NAME[3] = { "son jour", "dimanche", "exclu" };
+  for (int v = HL_DAY; v <= HL_SKIP; v++) {
+    g_pred = PredictOpts();
+    g_pred.holidayLearn = (uint8_t)v;
+    static Model m;
+    m = Model(); m.init();
+    m.applyInfo(ir, 1, T0);
+    for (int64_t t = T0; t < H; t += 300) { sr[0] = mkStat("1", 10, 20); m.applyStatus(sr, 1, t); }
+    ProfCell thu = m.prof[THU], sun = m.prof[SUN];
+    uint8_t cn = m.cellN[THU], cs = m.cellN[SUN];
+    for (int64_t t = H; t < H1; t += 300) { sr[0] = mkStat("1", 2, 20); m.applyStatus(sr, 1, t); }
+    bool thuMoved = m.prof[THU].a != thu.a || m.prof[THU].n != thu.n, sunMoved = m.prof[SUN].a != sun.a || m.prof[SUN].n != sun.n;
+    bool cnMoved = m.cellN[THU] != cn || m.cellN[SUN] != cs;
+    if (v == HL_DAY) CHECK(thuMoved && !sunMoved, "férié appris à « %s » : la case du jeudi bouge, pas celle du dimanche", NAME[v]);
+    if (v == HL_SUNDAY) CHECK(!thuMoved && sunMoved && m.prof[SUN].n == sun.n + 3, "férié appris à « %s » : 3 relevés de plus au dimanche 10:00, jeudi intact", NAME[v]);
+    if (v == HL_SKIP) CHECK(!thuMoved && !sunMoved && !cnMoved, "férié « %s » : ni le jeudi ni le dimanche ne bougent, progression non comptée", NAME[v]);
+    // le lendemain (vendredi) s'apprend normalement quelle que soit la variante
+    ProfCell fri = m.prof[5 * 96 + 40];
+    for (int64_t t = H1; t < H1 + 86400; t += 300) { sr[0] = mkStat("1", 10, 20); m.applyStatus(sr, 1, t); }
+    CHECK(m.prof[5 * 96 + 40].n == (fri.n + 3 > VN_PROFILE_DECAY_N ? VN_PROFILE_DECAY_N : fri.n + 3), "« %s » : le lendemain d'un férié s'apprend (vendredi 10:00)", NAME[v]);
+  }
+  g_pred = PredictOpts();
+  CHECK(g_pred.holidayLearn == HL_SUNDAY && g_pred.holidaySunday, "réglage livré : férié appris et prévu comme un dimanche");
+}
+
+// Levier « fériés » (c) : tolérance élargie un jour férié, et seulement ce jour-là
+static void testHolidayAlert() {
+  settingsDefaults(g_set);
+  g_pred = PredictOpts();
+  g_alertOpt = AlertOpts();
+  CHECK(g_alertOpt.holidayScale == 1.f, "réglage livré : alerte inchangée un jour férié");
+  static Model q;
+  q = Model(); q.init();
+  InfoRec ir[1] = { mkInfo("1", 49.6f, 6.13f, 20) };
+  StatusRec sr[1];
+  const int64_t T0 = lux(2026, 11, 9, 0, 0);
+  q.applyInfo(ir, 1, T0);
+  const int64_t sun = lux(2026, 12, 20, 10, 0), hol = lux(2026, 12, 25, 10, 0);   // dimanche ordinaire ; Noël (vendredi)
+  for (int64_t t = T0; t < sun; t += 300) { sr[0] = mkStat("1", holTruth(t), 20); q.applyStatus(sr, 1, t); }
+  // 3 vélos attendus (profil du dimanche), 8 relevés : écart 5 > ± 4
+  sr[0] = mkStat("1", 8, 20);
+  g_alertOpt.holidayScale = 1.5f;
+  q.applyStatus(sr, 1, sun + 60);
+  CHECK(q.st[0].anom == AN_HIGH && q.st[0].anomTol == 4, "dimanche ordinaire, tolérance des fériés × 1,5 : ± %d inchangé, alerte (état %d)", q.st[0].anomTol, q.st[0].anom);
+  for (int64_t t = sun + 300; t < hol; t += 300) { sr[0] = mkStat("1", holTruth(t), 20); q.applyStatus(sr, 1, t); }
+  sr[0] = mkStat("1", 8, 20);
+  g_alertOpt.holidayScale = 1.f;
+  q.applyStatus(sr, 1, hol + 60);
+  CHECK(q.st[0].anom == AN_HIGH && countAlerts(q, AL_UNUSUAL, -1) == 1, "Noël 10:00, 8 vélos contre 3 : alerte sans détente (état %d)", q.st[0].anom);
+  g_alertOpt.holidayScale = 1.5f;
+  q.recompute(hol + 60);
+  CHECK(q.st[0].anom == AN_NORMAL && q.st[0].anomTol == 6 && countAlerts(q, AL_UNUSUAL, -1) == 0, "Noël, tolérance × 1,5 : ± %d, pas d'alerte (état %d)", q.st[0].anomTol, q.st[0].anom);
+  g_alertOpt = AlertOpts();
+}
+
+// Levier « récence » : poids exacts, valeur exacte après k relevés, cas limites, fichiers d'une autre mémoire
+static void feedCell(Model & m, int64_t day0, int weeks, int bikes) {
+  // 3 relevés par semaine dans la cellule du jour à 10:00 (10:00, 10:05, 10:10)
+  StatusRec sr[1];
+  for (int w = 0; w < weeks; w++)
+    for (int k = 0; k < 3; k++) { sr[0] = mkStat("1", bikes, 30); m.applyStatus(sr, 1, day0 + (int64_t)w * 7 * 86400 + 10 * 3600 + k * 300); }
+}
+static void testDecay() {
+  CHECK(profWeight(0, 24) == 1.f && profWeight(1, 24) == 0.5f && profWeight(22, 24) == 1.f / 23 && profWeight(23, 24) == 1.f / 24
+        && profWeight(24, 24) == 1.f / 24, "poids : 1, 1/2 … 1/23, puis 1/24 (montée puis décroissance)");
+  CHECK(profWeight(30, 48) == 1.f / 31 && profWeight(31, 48) == 1.f / 48 && profCountMax(48) == 31, "N = 48 > 5 bits : n saturé à 31, puis 1/48");
+  CHECK(profWeight(5, 1) == 0.5f && profWeight(5, 0) == 0.5f && profCountMax(1) == 2 && profCountMax(-3) == 2 && profWeight(-1, 24) == 1.f,
+        "cas limites : N < 2 traité comme 2, n négatif comme 0");
+  settingsDefaults(g_set);
+  InfoRec ir[1] = { mkInfo("1", 49.6f, 6.13f, 30) };
+  // mardi 6 avril 2027 : 20 semaines sans changement d'heure ni mardi férié
+  const int64_t M0 = lux(2027, 4, 6, 0, 0);
+  const int C = 2 * 96 + 40;
+  for (int N : { 2, 6, 12, 24, 48 }) {
+    g_pred = PredictOpts();
+    g_pred.profDecayN = N;
+    static Model m;
+    m = Model(); m.init();
+    m.applyInfo(ir, 1, M0);
+    feedCell(m, M0, 12, 10);                               // 36 relevés de 10 : moyenne exacte, n saturé
+    bool flat = m.prof[C].a == 10 * 256 && m.prof[C].n == profCountMax(N);
+    // puis 16 vélos : a_k = 16 − 6·λ^k, λ = 1 − 1/N ; erreur d'arrondi bornée par N/512 vélo
+    float worst = 0;
+    for (int w = 1; w <= 6; w++) {
+      feedCell(m, M0 + (int64_t)(12 + w - 1) * 7 * 86400, 1, 16);
+      double expect = 16 - 6 * pow(1 - 1.0 / (N < 2 ? 2 : N), 3 * w);
+      worst = fmaxf(worst, fabsf((float)(m.prof[C].a / 256.0 - expect)));
+    }
+    CHECK(flat && worst <= N / 512.f + 1 / 256.f, "N = %d : 10 constant → a = 10 exactement ; puis 16 : a = 16 − 6·λ^k à %.4f vélo près (borne %.4f)",
+          N, worst, N / 512.f + 1 / 256.f);
+  }
+  // N = 24 : exactement la règle de la v1.0.9 (moyenne plafonnée à 24), relevé par relevé
+  {
+    g_pred = PredictOpts();
+    static Model m;
+    m = Model(); m.init();
+    m.applyInfo(ir, 1, M0);
+    uint16_t a = 0; int n = 0; bool same = true;
+    StatusRec sr[1];
+    uint32_t h = 12345;
+    for (int w = 0; w < 30; w++) for (int k = 0; k < 3; k++) {
+      h = h * 1103515245u + 12345u;
+      int x = (int)((h >> 16) % 31);
+      sr[0] = mkStat("1", x, 30);
+      m.applyStatus(sr, 1, M0 + (int64_t)w * 7 * 86400 + 10 * 3600 + k * 300);
+      if (n == 0) { a = (uint16_t)(x * 256); n = 1; }
+      else { int nn = n < 24 ? n + 1 : 24; float v = a + (x * 256.f - a) / nn; a = (uint16_t)fminf(65535.f, fmaxf(0.f, v + 0.5f)); n = nn; }
+      same &= m.prof[C].a == a && m.prof[C].n == n;
+    }
+    CHECK(same, "N = 24 (livré) : identique au bit près à la moyenne plafonnée de la v1.0.9 sur 90 relevés aléatoires");
+  }
+  // Un fichier écrit avec une mémoire de 24 relu avec une autre : format inchangé (v3), n relu tel quel,
+  // puis ramené au plafond de la nouvelle mémoire au premier relevé
+  {
+    g_pred = PredictOpts();
+    sim::g_fsDir = "/tmp/vn_test_decay";
+    if (system("rm -rf /tmp/vn_test_decay") != 0) {}
+    static Model m;
+    m = Model(); m.init();
+    m.applyInfo(ir, 1, M0);
+    feedCell(m, M0, 10, 10);
+    Model::Blob b;
+    CHECK(m.serialize(b), "sérialisation (mémoire 24)");
+    uint16_t ver; memcpy(&ver, b.prof + 4, 2);
+    Model::writeSaved(b);
+    const int64_t tl = M0 + 10 * 7 * 86400;
+    for (int N : { 12, 48 }) {
+      g_pred.profDecayN = N;
+      static Model r;
+      r = Model(); r.init(); r.load(tl); r.applyInfo(ir, 1, tl);
+      bool same = r.prof[C].a == 10 * 256 && r.prof[C].n == 24;
+      feedCell(r, tl, 1, 16);                                   // mardi suivant (tl est un mardi 00:00)
+      double expect = N == 12 ? 16 - 6 * pow(11.0 / 12, 3) : 10 + (16 - 10) * (1 - (24.0 / 25) * (25.0 / 26) * (26.0 / 27));
+      CHECK(ver == 3 && same && fabsf(r.prof[C].a / 256.f - (float)expect) < 0.02f && r.prof[C].n == (N == 12 ? 12 : 27),
+            "fichier v3 écrit avec N = 24, relu avec N = %d : moyenne et n = 24 relus, puis %s (a = %.3f, attendu %.3f, n = %d)", N,
+            N == 12 ? "poids 1/12 et n ramené à 12" : "la montée continue (1/25, 1/26, 1/27)", r.prof[C].a / 256.f, expect, r.prof[C].n);
+    }
+    // une v2 (cellules de 3 octets) relue avec N = 12 : n plafonné à 12 dès la lecture
+    g_pred.profDecayN = 24;
+    Model::Blob b2; m.serialize(b2);
+    std::vector<uint8_t> v3(b2.prof, b2.prof + b2.profLen);
+    plat::psFree(b2.prof); plat::psFree(b2.hist);
+    std::vector<uint8_t> v2 = legacyProf(v3, 1, 2);
+    plat::fsWrite("/vn_prof.bin", v2.data(), v2.size());
+    g_pred.profDecayN = 12;
+    static Model r2;
+    r2 = Model(); r2.init();
+    CHECK(r2.load(tl) && r2.prof[C].a == 10 * 256 && r2.prof[C].n == 12, "v2 relue avec N = 12 : moyenne intacte, n plafonné à 12 (%d)", r2.prof[C].n);
+  }
+  g_pred = PredictOpts();
+}
+
 static void testNightDim() {
   settingsDefaults(g_set);
   struct { int h, mi; bool dim; } T[] = {
@@ -1446,6 +1654,10 @@ int main(int argc, char ** argv) {
   testHistWeather();
   testWxLearn();
   testHolidays();
+  testCalendarYears();
+  testHolidayLearn();
+  testHolidayAlert();
+  testDecay();
   testTouchCal();
   testNightDim();
   testWifiScan();
