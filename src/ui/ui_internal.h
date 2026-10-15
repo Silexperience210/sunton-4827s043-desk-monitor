@@ -52,9 +52,10 @@ void stationSheetRefresh();
 
 // Bandeau d'avertissement (style « hors ligne ») : icône, titre, message (*msg)
 lv_obj_t * warnStrip(lv_obj_t * parent, const lv_img_dsc_t * ic, const char * title, lv_obj_t ** titleOut, lv_obj_t ** msgOut);
-// Fraîcheur des données : true si station_status ou la météo dépasse son seuil
-// (title / msg remplis pour le bandeau ; minutes d'âge dans *key pour éviter les redessins)
-bool freshness(int64_t now, char * title, size_t tn, char * msg, size_t mn, int * key);
+// État des données : true s'il faut un bandeau — aucune donnée, hors ligne (avec la cause),
+// station_status ou météo au-delà de son seuil. title / msg / icône remplis pour le bandeau ;
+// *key change avec le texte (évite les redessins).
+bool freshness(int64_t now, char * title, size_t tn, char * msg, size_t mn, int * key, const lv_img_dsc_t ** ic);
 void dashFreshTick();                          // bandeau du tableau de bord (appelé par la coquille)
 
 // Feuilles d'exploitation (sheet_ops.cpp)

@@ -87,3 +87,4 @@ jobs:
           ./sim ../docs/donnees /tmp/captures
           ./sim ../docs/donnees /tmp/boot boot
           ./sim ../docs/donnees /tmp/boot_wifi_ko boot-wifi-ko
+          ./sim ../docs/donnees /tmp/hors_ligne hors-ligne

@@ -268,8 +268,14 @@ int gbfsParseInfo(const char * buf, size_t len, InfoRec * out, int max) {
 }
 
 // ── station_status ───────────────────────────────────────────────────
+int64_t sanitizeReported(int64_t t, int64_t feedAt) {
+  if (t < 1577836800) return 0;                        // avant le 2020-01-01
+  if (feedAt > 0 && t > feedAt + 3600) return 0;       // dans le futur du flux
+  return t;
+}
+
 int gbfsParseStatus(const char * buf, size_t len, StatusRec * out, int max,
-                    const ElecTypes & et, int64_t * lastUpdated) {
+                    const ElecTypes & et, int64_t * lastUpdated, int * badReported) {
   JsonDocument filter;
   filter["last_updated"] = true;
   JsonObject f = filter["data"]["stations"].add<JsonObject>();
@@ -287,10 +293,10 @@ int gbfsParseStatus(const char * buf, size_t len, StatusRec * out, int max,
   if (deserializeJson(doc, buf, len, DeserializationOption::Filter(filter))) return -1;
   JsonArrayConst arr = doc["data"]["stations"].as<JsonArrayConst>();
   if (arr.isNull()) return -1;
-  if (lastUpdated) {
-    JsonVariantConst lu = doc["last_updated"];
-    *lastUpdated = lu.is<const char *>() ? parseIso8601(lu.as<const char *>()) : (lu.is<long>() ? lu.as<long>() : 0);
-  }
+  JsonVariantConst lu = doc["last_updated"];
+  int64_t feedAt = lu.is<const char *>() ? parseIso8601(lu.as<const char *>()) : (lu.is<long>() ? lu.as<long>() : 0);
+  if (lastUpdated) *lastUpdated = feedAt;
+  if (badReported) *badReported = 0;
   int n = 0;
   for (JsonObjectConst s : arr) {
     if (n >= max) break;
@@ -317,7 +323,11 @@ int gbfsParseStatus(const char * buf, size_t len, StatusRec * out, int max,
     r.renting   = r.installed && (s["is_renting"].is<bool>() ? s["is_renting"].as<bool>() : true);
     r.returning = r.installed && (s["is_returning"].is<bool>() ? s["is_returning"].as<bool>() : true);
     JsonVariantConst lr = s["last_reported"];
-    r.lastReported = lr.is<const char *>() ? parseIso8601(lr.as<const char *>()) : (lr.is<long>() ? lr.as<long>() : 0);
+    if (!lr.isNull()) {
+      int64_t t = lr.is<const char *>() ? parseIso8601(lr.as<const char *>()) : (lr.is<long>() ? lr.as<long>() : 0);
+      r.lastReported = sanitizeReported(t, feedAt);
+      if (!r.lastReported && badReported) (*badReported)++;
+    }
     n++;
   }
   return n;

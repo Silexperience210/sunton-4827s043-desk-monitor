@@ -1,6 +1,8 @@
 // ── Écran « Réseau » : tableau de bord temps réel ────────────────────
 #include "ui_internal.h"
 #include "widgets/vn_chart.h"
+#include "../net/net.h"
+#include "../core/ops.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -23,8 +25,11 @@ static lv_color_t s_histCol[10];
 
 struct Kpi { lv_obj_t * value, * sub; };
 static Kpi s_kpi[4];
+static const uint32_t KPI_COL[4] = { HX_GOOD, HX_ACCENT, HX_TEXT, HX_WARN };
+static int s_ds = -1;                    // vn::DataState du dernier rafraîchissement
+static const char * const NO_DATA = "\xE2\x80\x94";   // « — » : jamais un 0 sans relevé
 static lv_obj_t * s_chart, * s_chartMeta;
-static lv_obj_t * s_arc, * s_arcPct, * s_cnt[5];
+static lv_obj_t * s_arc, * s_arcPct, * s_arcOk, * s_cnt[5];
 static lv_obj_t * s_wxIc, * s_wxTemp, * s_wxLbl, * s_wxScore, * s_fcVal, * s_fcDelta, * s_fcIc;
 static lv_obj_t * s_actChart, * s_actMeta, * s_histChart, * s_histMeta;
 static lv_obj_t * s_prio, * s_prioRows[5], * s_modelLbl;
@@ -71,16 +76,21 @@ static void build(lv_obj_t * root) {
   // ── Fraîcheur : bandeau dans le flux (il décale les tuiles au lieu de les masquer)
   s_fresh = warnStrip(sc, &ic_clock_16, "", &s_freshTitle, &s_freshMsg);
   lv_obj_set_width(s_fresh, W);
+  lv_obj_set_height(s_fresh, LV_SIZE_CONTENT);           // la cause (Wi-Fi, NTP, flux) peut tenir sur 2 lignes
+  lv_obj_set_style_min_height(s_fresh, 26, 0);
+  lv_obj_set_style_pad_ver(s_fresh, 4, 0);
+  lv_label_set_long_mode(s_freshMsg, LV_LABEL_LONG_WRAP);
+  lv_obj_set_height(s_freshMsg, LV_SIZE_CONTENT);
   lv_obj_add_flag(s_fresh, LV_OBJ_FLAG_HIDDEN);
   s_freshKey = -1;
 
   // ── Indicateurs clés (tap → provenance)
   lv_obj_t * ra = row(sc, 6);
   lv_obj_set_size(ra, W, 74);
-  kpiTile(ra, &ic_bike_12, "V\xC3\x89LOS DISPO", HX_GOOD, s_kpi[0], PG_BIKES);
-  kpiTile(ra, &ic_activity_12, "EN TRAJET", HX_ACCENT, s_kpi[1], PG_INUSE);
-  kpiTile(ra, &ic_dock_12, "BORNES LIB.", HX_TEXT, s_kpi[2], PG_DOCKS);
-  kpiTile(ra, &ic_wrench_12, "V\xC3\x89LOS HS", HX_WARN, s_kpi[3], PG_DISABLED);
+  kpiTile(ra, &ic_bike_12, "V\xC3\x89LOS DISPO", KPI_COL[0], s_kpi[0], PG_BIKES);
+  kpiTile(ra, &ic_activity_12, "EN TRAJET", KPI_COL[1], s_kpi[1], PG_INUSE);
+  kpiTile(ra, &ic_dock_12, "BORNES LIB.", KPI_COL[2], s_kpi[2], PG_DOCKS);
+  kpiTile(ra, &ic_wrench_12, "V\xC3\x89LOS HS", KPI_COL[3], s_kpi[3], PG_DISABLED);
 
   // ── Disponibilité 24 h + prévision / équilibre
   lv_obj_t * rb = row(sc, 6);
@@ -132,8 +142,8 @@ static void build(lv_obj_t * root) {
   lv_obj_set_style_pad_all(s_arc, 0, 0);
   s_arcPct = label(s_arc, &vn_inter_15b, HX_TEXT, "\xE2\x80\x94");
   lv_obj_align(s_arcPct, LV_ALIGN_CENTER, 0, -2);
-  lv_obj_t * okl = label(s_arc, &vn_mono_10, HX_TEXT3, "OK");
-  lv_obj_align(okl, LV_ALIGN_CENTER, 0, 13);
+  s_arcOk = label(s_arc, &vn_mono_10, HX_TEXT3, "OK");
+  lv_obj_align(s_arcOk, LV_ALIGN_CENTER, 0, 13);
   lv_obj_t * lst = col(hc, 0);
   lv_obj_align(lst, LV_ALIGN_TOP_RIGHT, 0, 14);
   static const uint8_t ORDER[5] = { vn::ST_EMPTY, vn::ST_LOW, vn::ST_OK, vn::ST_HIGH, vn::ST_FULL };
@@ -244,46 +254,69 @@ static void build(lv_obj_t * root) {
   lv_label_set_long_mode(s_modelLbl, LV_LABEL_LONG_WRAP);
 }
 
+static vn::DataState curState(int64_t nowT) {
+  net::Status ns = net::status();
+  return vn::dataState(g_model.lastUpdate, nowT, vn::staleThresholdS(g_set), ns.wifi == net::W_CONNECTED);
+}
+
 static void refresh() {
   const vn::Totals & t = g_model.tot;
   int64_t nowT = now();
   char b[192], c2[32];
+  // Sans relevé, le modèle vaut 0 partout : « — » au lieu de chiffres qui se feraient
+  // passer pour une mesure. Hors ligne ou en retard : dernières valeurs, en gris, et
+  // le bandeau (dashFreshTick) les date ; la prévision, elle, n'a plus de point de départ.
+  const vn::DataState ds = curState(nowT);
+  s_ds = ds;
+  const bool has = ds != vn::DS_NONE, live = ds == vn::DS_LIVE;
+  for (int k = 0; k < 4; k++) lv_obj_set_style_text_color(s_kpi[k].value, C(live ? KPI_COL[k] : HX_TEXT3), 0);
 
   // KPI
-  fmtInt(b, sizeof(b), t.bikes); lv_label_set_text(s_kpi[0].value, b);
+  if (has) fmtInt(b, sizeof(b), t.bikes); else snprintf(b, sizeof(b), "%s", NO_DATA);
+  lv_label_set_text(s_kpi[0].value, b);
   // Sans une heure de relevés, « +0 sur 1 h » se lit « stable » alors que rien
   // n'est connu : on affiche l'absence de mesure plutôt qu'un zéro trompeur.
-  if (t.deltaValid) { fmtSigned(c2, sizeof(c2), t.delta1h); snprintf(b, sizeof(b), "%s sur 1 h", c2); }
+  if (!has) snprintf(b, sizeof(b), "sans relev\xC3\xA9");
+  else if (t.deltaValid) { fmtSigned(c2, sizeof(c2), t.delta1h); snprintf(b, sizeof(b), "%s sur 1 h", c2); }
   else snprintf(b, sizeof(b), "recul de 1 h requis");
   lv_label_set_text(s_kpi[0].sub, b);
   // Idem pour les vélos en circulation : c'est une estimation tirée du parc, qui
   // ne se lit qu'après un creux de nuit. Tant qu'il n'a pas été observé, la
   // valeur vaut 0 par construction — l'afficher en gros serait un mensonge.
-  if (t.inUseValid) fmtInt(b, sizeof(b), t.inUse);
-  else snprintf(b, sizeof(b), "\xE2\x80\x94");
+  if (has && t.inUseValid) fmtInt(b, sizeof(b), t.inUse);
+  else snprintf(b, sizeof(b), "%s", NO_DATA);
   lv_label_set_text(s_kpi[1].value, b);
-  if (t.inUseValid) { fmtInt(c2, sizeof(c2), t.fleet); snprintf(b, sizeof(b), "parc \xE2\x89\x88 %s", c2); }
+  if (has && t.inUseValid) { fmtInt(c2, sizeof(c2), t.fleet); snprintf(b, sizeof(b), "parc \xE2\x89\x88 %s", c2); }
   else snprintf(b, sizeof(b), "estimation apr\xC3\xA8s une nuit");
   lv_label_set_text(s_kpi[1].sub, b);
-  fmtInt(b, sizeof(b), t.docks); lv_label_set_text(s_kpi[2].value, b);
-  snprintf(b, sizeof(b), "rempli \xC3\xA0 %.0f %%", t.fillPct); lv_label_set_text(s_kpi[2].sub, b);
-  fmtInt(b, sizeof(b), t.bikesDis); lv_label_set_text(s_kpi[3].value, b);
-  snprintf(b, sizeof(b), "%d borne%s HS", t.docksDis, t.docksDis > 1 ? "s" : ""); lv_label_set_text(s_kpi[3].sub, b);
+  if (has) fmtInt(b, sizeof(b), t.docks); else snprintf(b, sizeof(b), "%s", NO_DATA);
+  lv_label_set_text(s_kpi[2].value, b);
+  if (has) snprintf(b, sizeof(b), "rempli \xC3\xA0 %.0f %%", t.fillPct); else snprintf(b, sizeof(b), "sans relev\xC3\xA9");
+  lv_label_set_text(s_kpi[2].sub, b);
+  if (has) fmtInt(b, sizeof(b), t.bikesDis); else snprintf(b, sizeof(b), "%s", NO_DATA);
+  lv_label_set_text(s_kpi[3].value, b);
+  if (has) snprintf(b, sizeof(b), "%d borne%s HS", t.docksDis, t.docksDis > 1 ? "s" : ""); else snprintf(b, sizeof(b), "sans relev\xC3\xA9");
+  lv_label_set_text(s_kpi[3].sub, b);
 
   // Courbe 24 h
   ChartData * d = chartData(s_chart);
   float mn = 1e9f, mx = -1e9f;
+  // Chaque point à SA tranche horaire (et non « n tranches avant la dernière ») : après
+  // une coupure ou un redémarrage, l'historique restauré ne glisse plus jusqu'à « maintenant ».
+  const int64_t slotNow = nowT - nowT % VN_RING_STEP_S;
   for (int x = 0; x < VN_RING_SLOTS; x++) s_real[x] = NAN;
   for (int bk = 0; bk < g_model.count; bk++) {
     int idx = g_model.ringIndex(bk);
     const vn::NetSample & ns = g_model.net[idx];
     if (ns.avail == 0xFFFF) continue;
-    s_real[VN_RING_SLOTS - 1 - bk] = ns.avail;
+    int64_t back = (nowT > 0 && ns.t > 0) ? (slotNow - ns.t) / VN_RING_STEP_S : bk;
+    if (back < 0 || back >= VN_RING_SLOTS) continue;
+    s_real[VN_RING_SLOTS - 1 - back] = ns.avail;
   }
-  if (g_model.lastUpdate) s_real[VN_RING_SLOTS - 1] = (float)t.bikes;
-  for (int k = 0; k < VN_FC_STEPS; k++) s_fc[k] = g_model.netFc[k];
+  if (live) s_real[VN_RING_SLOTS - 1] = (float)t.bikes;
+  for (int k = 0; k < VN_FC_STEPS; k++) s_fc[k] = live ? g_model.netFc[k] : NAN;
   for (float v : s_real) if (!isnan(v)) { mn = fminf(mn, v); mx = fmaxf(mx, v); }
-  for (float v : s_fc) { mn = fminf(mn, v); mx = fmaxf(mx, v); }
+  for (float v : s_fc) if (!isnan(v)) { mn = fminf(mn, v); mx = fmaxf(mx, v); }
   if (mn > mx) { mn = 0; mx = 1; }
   float pad = fmaxf(10.f, (mx - mn) * 0.12f);
   d->ymin = fmaxf(0, floorf((mn - pad) / 10) * 10);
@@ -308,12 +341,16 @@ static void refresh() {
   lv_label_set_text(s_chartMeta, b);
 
   // Équilibre
-  lv_arc_set_value(s_arc, (int16_t)lroundf(t.balancePct));
-  lv_obj_set_style_arc_color(s_arc, t.balancePct >= 70 ? C(HX_GOOD) : t.balancePct >= 50 ? C(HX_WARN) : C(HX_BAD), LV_PART_INDICATOR);
-  snprintf(b, sizeof(b), "%.0f%%", t.balancePct);
+  lv_arc_set_value(s_arc, has ? (int16_t)lroundf(t.balancePct) : 0);
+  lv_obj_set_style_arc_color(s_arc, !live ? C(HX_TEXT3) : t.balancePct >= 70 ? C(HX_GOOD) : t.balancePct >= 50 ? C(HX_WARN) : C(HX_BAD), LV_PART_INDICATOR);
+  if (has) snprintf(b, sizeof(b), "%.0f%%", t.balancePct); else snprintf(b, sizeof(b), "%s", NO_DATA);
   lv_label_set_text(s_arcPct, b);
+  if (has) lv_obj_clear_flag(s_arcOk, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(s_arcOk, LV_OBJ_FLAG_HIDDEN);   // « — OK » se lirait « tout va bien »
   static const uint8_t ORDER[5] = { vn::ST_EMPTY, vn::ST_LOW, vn::ST_OK, vn::ST_HIGH, vn::ST_FULL };
-  for (int i = 0; i < 5; i++) lv_label_set_text_fmt(s_cnt[i], "%d", t.byStatus[ORDER[i]]);
+  for (int i = 0; i < 5; i++) {
+    if (has) lv_label_set_text_fmt(s_cnt[i], "%d", t.byStatus[ORDER[i]]);
+    else lv_label_set_text(s_cnt[i], NO_DATA);
+  }
 
   // Météo + prévision
   const vn::Weather & w = g_model.wx;
@@ -325,29 +362,39 @@ static void refresh() {
     lv_label_set_text(s_wxScore, b);
     lv_obj_set_style_text_color(s_wxScore, w.score >= 7 ? C(HX_GOOD) : w.score >= 4 ? C(HX_WARN) : C(HX_BAD), 0);
   }
-  int f60 = (int)lroundf(g_model.netFc[12]);
-  int dlt = f60 - t.bikes;
-  fmtInt(b, sizeof(b), f60); lv_label_set_text(s_fcVal, b);
-  fmtSigned(c2, sizeof(c2), dlt); lv_label_set_text(s_fcDelta, c2);
-  lv_img_set_src(s_fcIc, dlt < 0 ? &ic_trend_down_16 : &ic_trend_up_16);
-  lv_color_t dc = dlt <= -15 ? C(HX_WARN) : dlt >= 15 ? C(HX_ELEC) : C(HX_TEXT2);
-  iconColor(s_fcIc, dc);
-  lv_obj_set_style_text_color(s_fcDelta, dc, 0);
-
-  // Activité par heure (24 dernières heures)
-  for (int h = 0; h < 24; h++) s_moves[h] = NAN;
-  float mvMax = 10;
-  for (int h = 0; h < 24; h++) {
-    float sum = 0; int n = 0;
-    for (int k = 0; k < 12; k++) {
-      int idx = g_model.ringIndex(h * 12 + k);
-      if (idx < 0) break;
-      const vn::NetSample & ns = g_model.net[idx];
-      if (ns.avail == 0xFFFF) continue;
-      sum += ns.dep + ns.ret; n++;
-    }
-    if (n) { s_moves[23 - h] = sum * 12.f / n; mvMax = fmaxf(mvMax, s_moves[23 - h]); }
+  // Prévision +1 h : partie d'un relevé frais seulement (sinon « +1 h » de quoi ?)
+  if (!live) {
+    lv_label_set_text(s_fcVal, NO_DATA);
+    lv_label_set_text(s_fcDelta, ds == vn::DS_OFFLINE ? "hors ligne" : ds == vn::DS_STALE ? "en retard" : "");
+    lv_obj_set_style_text_color(s_fcDelta, C(HX_TEXT3), 0);
+    lv_obj_add_flag(s_fcIc, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_clear_flag(s_fcIc, LV_OBJ_FLAG_HIDDEN);
+    int f60 = (int)lroundf(g_model.netFc[12]);
+    int dlt = f60 - t.bikes;
+    fmtInt(b, sizeof(b), f60); lv_label_set_text(s_fcVal, b);
+    fmtSigned(c2, sizeof(c2), dlt); lv_label_set_text(s_fcDelta, c2);
+    lv_img_set_src(s_fcIc, dlt < 0 ? &ic_trend_down_16 : &ic_trend_up_16);
+    lv_color_t dc = dlt <= -15 ? C(HX_WARN) : dlt >= 15 ? C(HX_ELEC) : C(HX_TEXT2);
+    iconColor(s_fcIc, dc);
+    lv_obj_set_style_text_color(s_fcDelta, dc, 0);
   }
+
+  // Activité par heure (24 dernières heures) : chaque tranche dans l'heure de SON horodatage
+  for (int h = 0; h < 24; h++) s_moves[h] = NAN;
+  float mvMax = 10, mvSum[24] = {};
+  int mvN[24] = {};
+  for (int bk = 0; bk < g_model.count; bk++) {
+    int idx = g_model.ringIndex(bk);
+    if (idx < 0) break;
+    const vn::NetSample & ns = g_model.net[idx];
+    if (ns.avail == 0xFFFF) continue;
+    int64_t h = (nowT > 0 && ns.t > 0) ? (slotNow - ns.t) / 3600 : bk / 12;
+    if (h < 0 || h >= 24) continue;
+    mvSum[h] += ns.dep + ns.ret; mvN[h]++;
+  }
+  for (int h = 0; h < 24; h++)
+    if (mvN[h]) { s_moves[23 - h] = mvSum[h] * 12.f / mvN[h]; mvMax = fmaxf(mvMax, s_moves[23 - h]); }
   d = chartData(s_actChart);
   d->ymin = 0; d->ymax = ceilf(mvMax / 50) * 50;
   snprintf(d->ylab[0], sizeof(d->ylab[0]), "%d", (int)d->ymax);
@@ -382,7 +429,8 @@ static void refresh() {
   snprintf(d->ylab[0], sizeof(d->ylab[0]), "%d", (int)d->ymax);
   d->ylab[1][0] = 0;
   chartInvalidate(s_histChart);
-  snprintf(b, sizeof(b), "%d stations ouvertes \xC2\xB7 %d ferm\xC3\xA9" "es", t.open, t.closed);
+  if (has) snprintf(b, sizeof(b), "%d stations ouvertes \xC2\xB7 %d ferm\xC3\xA9" "es", t.open, t.closed);
+  else snprintf(b, sizeof(b), "aucune donn\xC3\xA9" "e");
   lv_label_set_text(s_histMeta, b);
 
   // Priorités
@@ -411,10 +459,11 @@ static void refresh() {
   if (!shown) {
     lv_obj_clear_flag(s_prioRows[0], LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_user_data(s_prioRows[0], (void *)(intptr_t)-1);
-    lv_img_set_src(lv_obj_get_child(s_prioRows[0], 0), &ic_check_16);
-    iconColor(lv_obj_get_child(s_prioRows[0], 0), C(HX_GOOD));
-    lv_label_set_text(lv_obj_get_child(s_prioRows[0], 1), "R\xC3\xA9seau \xC3\xA9quilibr\xC3\xA9");
-    lv_label_set_text(lv_obj_get_child(s_prioRows[0], 2), "Aucune intervention prioritaire");
+    // Sans relevé, « Réseau équilibré » serait un mensonge de plus
+    lv_img_set_src(lv_obj_get_child(s_prioRows[0], 0), has ? &ic_check_16 : &ic_clock_16);
+    iconColor(lv_obj_get_child(s_prioRows[0], 0), C(has ? HX_GOOD : HX_TEXT3));
+    lv_label_set_text(lv_obj_get_child(s_prioRows[0], 1), has ? "R\xC3\xA9seau \xC3\xA9quilibr\xC3\xA9" : "Aucune donn\xC3\xA9" "e");
+    lv_label_set_text(lv_obj_get_child(s_prioRows[0], 2), has ? "Aucune intervention prioritaire" : "priorit\xC3\xA9s connues au premier relev\xC3\xA9");
     lv_obj_add_flag(lv_obj_get_child(s_prioRows[0], 3), LV_OBJ_FLAG_HIDDEN);
   }
 
@@ -431,18 +480,44 @@ static void refresh() {
 // qu'aucune donnée ne change) ; on ne touche aux objets que si le texte change.
 void dashFreshTick() {
   if (!s_fresh) return;
-  char t[48], m[64];
+  int64_t t0 = now();
+  // Le Wi-Fi tombe ou revient sans que le modèle change : les tuiles suivent quand même
+  if ((int)curState(t0) != s_ds) refresh();
+  char t[48], m[128];
   int key = 0;
-  bool on = freshness(now(), t, sizeof(t), m, sizeof(m), &key);
+  const lv_img_dsc_t * ic = &ic_clock_16;
+  bool on = freshness(t0, t, sizeof(t), m, sizeof(m), &key, &ic);
   if (!on) key = -2;
   if (key == s_freshKey) return;
   s_freshKey = key;
   if (on) {
+    lv_img_set_src(lv_obj_get_child(s_fresh, 0), ic);
     lv_label_set_text(s_freshTitle, t);
     lv_label_set_text(s_freshMsg, m);
     lv_obj_clear_flag(s_fresh, LV_OBJ_FLAG_HIDDEN);
   } else lv_obj_add_flag(s_fresh, LV_OBJ_FLAG_HIDDEN);
 }
+
+#ifdef VN_SIM
+// Textes affichés, pour les vérifications du simulateur (scénario « hors-ligne »)
+const char * debugDashText(int w) {
+  switch (w) {
+    case 0: case 1: case 2: case 3: return lv_label_get_text(s_kpi[w].value);
+    case 4: return lv_label_get_text(s_arcPct);
+    case 5: return lv_label_get_text(s_fcVal);
+    case 6: return lv_obj_has_flag(s_fresh, LV_OBJ_FLAG_HIDDEN) ? "" : lv_label_get_text(s_freshTitle);
+    case 7: return lv_obj_has_flag(s_fresh, LV_OBJ_FLAG_HIDDEN) ? "" : lv_label_get_text(s_freshMsg);
+    case 8: return lv_label_get_text(s_cnt[0]);
+    case 9: return lv_label_get_text(lv_obj_get_child(s_prioRows[0], 1));
+    case 10: return lv_label_get_text(s_kpi[0].sub);
+    case 11: return lv_label_get_text(s_fcDelta);
+    default: return "";
+  }
+}
+int debugDashCurvePoints() { int n = 0; for (float v : s_real) n += !isnan(v); return n; }
+int debugDashCurveLastX() { for (int x = VN_RING_SLOTS - 1; x >= 0; x--) if (!isnan(s_real[x])) return x; return -1; }
+int debugDashForecastPoints() { int n = 0; for (float v : s_fc) n += !isnan(v); return n; }
+#endif
 
 const ScreenDef SCR_DASH = { "R\xC3\xA9seau", "TABLEAU DE BORD", &ic_dashboard_20, build, refresh, nullptr };
 

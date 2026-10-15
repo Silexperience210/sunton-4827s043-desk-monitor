@@ -49,6 +49,29 @@ int64_t dataAgeS(int64_t okAt, int64_t now);
 // (c'est un autre état : rien reçu, l'écran d'accueil ou le bandeau hors ligne le disent).
 bool isStale(int64_t okAt, int64_t now, int thresholdS);
 
+// ── État des chiffres affichés ───────────────────────────────────────
+// Ce que le tableau de bord a le droit d'afficher. Un modèle sans relevé vaut 0
+// partout : sans cette règle, « 0 vélo » se lisait comme une mesure.
+enum DataState : uint8_t {
+  DS_LIVE,                     // relevé frais, Wi-Fi associé
+  DS_STALE,                    // Wi-Fi associé, relevé plus vieux que le seuil : dernières valeurs, datées
+  DS_OFFLINE,                  // Wi-Fi perdu : dernières valeurs, « hors ligne depuis HH:MM »
+  DS_NONE                      // aucun relevé depuis le démarrage : « — » partout, jamais 0
+};
+DataState dataState(int64_t lastUpdate, int64_t now, int thresholdS, bool wifiUp);
+
+// ── Association Wi-Fi ────────────────────────────────────────────────
+// reason : code wifi_err_reason_t d'ESP-IDF rapporté par l'évènement « déconnecté »
+// (0 = aucun évènement : la borne n'a jamais répondu).
+enum AssocCause : uint8_t { AC_NOT_FOUND, AC_AUTH, AC_TIMEOUT, AC_LOST, AC_REFUSED };
+AssocCause assocCause(int reason);
+const char * assocCauseText(int cause);      // « réseau introuvable », « mot de passe refusé »…
+
+// Pourquoi aucun relevé frais n'arrive : une phrase, la même au port série et à l'écran.
+// wifi = net::WifiState (0 aucun réseau, 1 connexion, 2 associé, 3 échec) ; reason comme ci-dessus ;
+// st = compteurs de station_status.
+void offlineCause(char * out, size_t n, int wifi, const char * ssid, int reason, bool timeOk, const FeedStat & st);
+
 // ── Provenance d'un chiffre ──────────────────────────────────────────
 enum KpiId : uint8_t {
   KPI_BIKES, KPI_DELTA1H,      // tuile « Vélos dispo »

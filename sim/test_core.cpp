@@ -2136,6 +2136,82 @@ static void testDump() {
   CHECK(!dumpSnapshot(e, s2), "modèle sans station : instantané refusé (la carte répond ABANDON)");
 }
 
+// ── Hors ligne : état des chiffres, association Wi-Fi, horodatages de station ──
+static void testHorsLigne(const std::string & dir) {
+  const int64_t T = 1791894641;
+  // État des chiffres affichés
+  CHECK(dataState(0, T, 180, true) == DS_NONE, "aucun relevé, Wi-Fi associé : aucune donnée");
+  CHECK(dataState(0, T, 180, false) == DS_NONE, "aucun relevé, Wi-Fi absent : aucune donnée (pas « hors ligne depuis »)");
+  CHECK(dataState(0, 0, 180, false) == DS_NONE, "heure inconnue, rien reçu : aucune donnée");
+  CHECK(dataState(T, T + 30, 180, true) == DS_LIVE, "relevé frais : en direct");
+  CHECK(dataState(T, T + 180, 180, true) == DS_LIVE, "âge = seuil : encore en direct");
+  CHECK(dataState(T, T + 181, 180, true) == DS_STALE, "âge = seuil + 1 s : en retard");
+  CHECK(dataState(T, T + 30, 180, false) == DS_OFFLINE, "Wi-Fi perdu, même 30 s après : hors ligne");
+  CHECK(dataState(T, T + 7200, 180, false) == DS_OFFLINE, "Wi-Fi perdu et relevé vieux : hors ligne (le Wi-Fi prime)");
+
+  // Raisons d'association (codes ESP-IDF) → les quatre causes demandées
+  CHECK(assocCause(201) == AC_NOT_FOUND, "201 NO_AP_FOUND : introuvable");
+  CHECK(assocCause(202) == AC_AUTH && assocCause(15) == AC_AUTH && assocCause(204) == AC_AUTH, "202/15/204 : mot de passe");
+  CHECK(assocCause(0) == AC_TIMEOUT && assocCause(205) == AC_TIMEOUT && assocCause(4) == AC_TIMEOUT, "0/205/4 : délai");
+  CHECK(assocCause(200) == AC_LOST && assocCause(8) == AC_LOST, "200 BEACON_TIMEOUT / 8 : déconnexion");
+  CHECK(assocCause(203) == AC_REFUSED, "203 ASSOC_FAIL : refus");
+  CHECK(strcmp(assocCauseText(AC_NOT_FOUND), "r\xC3\xA9seau introuvable") == 0 && strcmp(assocCauseText(AC_AUTH), "mot de passe refus\xC3\xA9") == 0
+        && strcmp(assocCauseText(AC_TIMEOUT), "d\xC3\xA9lai d\xC3\xA9pass\xC3\xA9") == 0 && strcmp(assocCauseText(AC_LOST), "d\xC3\xA9" "connexion") == 0,
+        "libellés des causes");
+
+  // La phrase de cause (port série et bandeau)
+  FeedStat st; memset(&st, 0, sizeof(st));
+  char b[128];
+  offlineCause(b, sizeof(b), 3, "BUREAU", 15, true, st);
+  CHECK(strstr(b, "BUREAU") && strstr(b, "mot de passe refus\xC3\xA9") && strstr(b, "code 15"), "échec : réseau, cause, code (%s)", b);
+  offlineCause(b, sizeof(b), 3, "BUREAU", 201, true, st);
+  CHECK(strstr(b, "introuvable"), "échec introuvable (%s)", b);
+  offlineCause(b, sizeof(b), 0, "", 0, false, st);
+  CHECK(strstr(b, "non configur"), "aucun réseau (%s)", b);
+  offlineCause(b, sizeof(b), 1, "BUREAU", 0, false, st);
+  CHECK(strstr(b, "connexion") && !strstr(b, "code"), "connexion en cours, sans refus (%s)", b);
+  offlineCause(b, sizeof(b), 2, "BUREAU", 0, false, st);
+  CHECK(strstr(b, "NTP"), "associé sans heure : NTP nommé (%s)", b);
+  ingestErr(st, T, 503, 0, 900); ingestErr(st, T + 60, 503, 0, 900);
+  offlineCause(b, sizeof(b), 2, "BUREAU", 0, true, st);
+  CHECK(strstr(b, "station_status") && strstr(b, "503") && strstr(b, "2"), "associé, flux en échec : code et nombre (%s)", b);
+
+  // Horodatages de station
+  CHECK(sanitizeReported(0, T) == 0, "0 reste inconnu");
+  CHECK(sanitizeReported(parseIso8601("0001-01-01T00:00:00Z"), T) == 0, "an 1 (publié par la source) : inconnu");
+  CHECK(sanitizeReported(946684800, T) == 0, "an 2000 : implausible, inconnu");
+  CHECK(sanitizeReported(T + 86400 * 365, T) == 0, "dans le futur du flux : inconnu");
+  CHECK(sanitizeReported(T + 600, T) == T + 600, "10 min d'avance (horloges) : gardé");
+  CHECK(sanitizeReported(parseIso8601("2025-05-28T01:38:59Z"), T) == parseIso8601("2025-05-28T01:38:59Z"), "ancien mais plausible : gardé (l'âge est une information)");
+  CHECK(sanitizeReported(T - 8580, 0) == T - 8580, "last_updated inconnu : seule la borne basse s'applique");
+  static const char * J =
+    "{\"last_updated\":\"2026-10-13T12:30:41Z\",\"data\":{\"stations\":["
+    "{\"station_id\":\"1\",\"num_vehicles_available\":3,\"num_docks_available\":5,\"last_reported\":\"2026-10-13T12:20:00Z\"},"
+    "{\"station_id\":\"2\",\"num_vehicles_available\":1,\"num_docks_available\":9,\"last_reported\":\"0001-01-01T00:00:00Z\"},"
+    "{\"station_id\":\"3\",\"num_vehicles_available\":0,\"num_docks_available\":7,\"last_reported\":\"2099-01-01T00:00:00Z\"},"
+    "{\"station_id\":\"4\",\"num_vehicles_available\":2,\"num_docks_available\":2,\"last_reported\":1791894000},"
+    "{\"station_id\":\"5\",\"num_vehicles_available\":2,\"num_docks_available\":2}]}}";
+  StatusRec r[8]; ElecTypes et; int64_t lu = 0; int bad = -1;
+  int n = gbfsParseStatus(J, strlen(J), r, 8, et, &lu, &bad);
+  CHECK(n == 5 && lu == T, "flux de test lu (%d)", n);
+  CHECK(n == 5 && r[0].lastReported == parseIso8601("2026-10-13T12:20:00Z") && r[3].lastReported == 1791894000, "horodatages valides gardés (texte et nombre)");
+  CHECK(n == 5 && r[1].lastReported == 0 && r[2].lastReported == 0, "an 1 et 2099 : inconnus");
+  CHECK(n == 5 && r[4].lastReported == 0, "champ absent : inconnu");
+  CHECK(bad == 2, "2 horodatages invalides comptés, l'absent n'en est pas un (%d)", bad);
+  CHECK(n == 5 && r[1].bikes == 1 && r[2].docks == 7, "la station reste lue malgré son horodatage");
+  // Le vrai flux (instantané du dépôt) : stations 148 et 149 publient l'an 1
+  if (!dir.empty()) {
+    auto v = readFile(dir + "/station_status.json");
+    static StatusRec sr[VN_MAX_ST];
+    int nb = -1;
+    int ns = v.empty() ? 0 : gbfsParseStatus(v.data(), v.size(), sr, VN_MAX_ST, et, &lu, &nb);
+    CHECK(ns > 0 && nb == 2, "instantané réel : 2 horodatages invalides (%d)", nb);
+    int futur = 0, absurde = 0;
+    for (int i = 0; i < ns; i++) { if (sr[i].lastReported > lu + 3600) futur++; if (sr[i].lastReported && sr[i].lastReported < 1577836800) absurde++; }
+    CHECK(ns > 0 && !futur && !absurde, "instantané réel : aucun horodatage absurde ne passe");
+  }
+}
+
 int main(int argc, char ** argv) {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   testNames();
@@ -2164,6 +2240,7 @@ int main(int argc, char ** argv) {
   testRecurRules();
   testRecurWorld();
   testDump();
+  testHorsLigne(argc > 1 ? argv[1] : "");
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;
 }

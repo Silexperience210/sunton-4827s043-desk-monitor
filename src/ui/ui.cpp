@@ -291,12 +291,13 @@ static void updateHeader() {
     snprintf(b, sizeof(b), "%.0f\xC2\xB0", g_model.wx.temp);
     lv_label_set_text(s_wxLbl, b);
   }
-  // Bandeau hors ligne
-  bool off = ns.wifi != net::W_CONNECTED && g_model.lastUpdate;
+  // Bandeau hors ligne (autres onglets : le tableau de bord a le sien, dans le flux, avec la cause)
+  bool off = ns.wifi != net::W_CONNECTED && g_model.lastUpdate && s_tab != TAB_DASH;
   if (off) {
-    char ago[32], m[64];
+    char ago[32], hm[8], m[64];
     fmtAgo(ago, sizeof(ago), g_model.lastUpdate, t);
-    snprintf(m, sizeof(m), "Donn\xC3\xA9" "es %s", ago);
+    fmtClock(hm, sizeof(hm), g_model.lastUpdate);
+    snprintf(m, sizeof(m), "depuis %s \xC2\xB7 donn\xC3\xA9" "es %s", hm, ago);
     lv_label_set_text(s_offlineLbl, m);
     lv_obj_clear_flag(s_offline, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(s_offline);
@@ -325,16 +326,33 @@ lv_obj_t * warnStrip(lv_obj_t * parent, const lv_img_dsc_t * ic, const char * ti
   return s;
 }
 
-// Âge du dernier relevé réussi, comparé au seuil (core/ops : la règle et ses tests)
-bool freshness(int64_t t, char * title, size_t tn, char * msg, size_t mn, int * key) {
+// État des chiffres (core/ops : la règle et ses tests) : aucune donnée, hors ligne,
+// relevé vieux, météo vieille. Le titre et le message disent la cause, jamais un 0.
+bool freshness(int64_t t, char * title, size_t tn, char * msg, size_t mn, int * key, const lv_img_dsc_t ** ic) {
+  net::Status ns = net::status();
   int thr = vn::staleThresholdS(g_set), wthr = vn::wxStaleThresholdS();
-  bool st = vn::isStale(g_model.lastUpdate, t, thr);
+  vn::DataState ds = vn::dataState(g_model.lastUpdate, t, thr, ns.wifi == net::W_CONNECTED);
+  bool st = ds == vn::DS_STALE;
   bool wx = g_model.wx.valid && vn::isStale(g_model.wx.fetchedAt, t, wthr);
   int am = st ? (int)(vn::dataAgeS(g_model.lastUpdate, t) / 60) : -1;
   int wm = wx ? (int)(vn::dataAgeS(g_model.wx.fetchedAt, t) / 60) : -1;
+  if (ic) *ic = &ic_clock_16;
+  char a[24], b[24];
+  if (ds == vn::DS_NONE || ds == vn::DS_OFFLINE) {
+    if (ds == vn::DS_NONE) snprintf(title, tn, "Aucune donn\xC3\xA9" "e");
+    else { fmtClock(a, sizeof(a), g_model.lastUpdate); snprintf(title, tn, "Hors ligne depuis %s", a); }
+    vn::offlineCause(msg, mn, ns.wifi, ns.ssid, ns.wifiReason, ns.timeOk, ns.feed[vn::FEED_STATUS]);
+    if (ic && ns.wifi != net::W_CONNECTED) *ic = &ic_wifi_off_16;
+    if (key) {                                       // le texte change → on redessine
+      uint32_t h = 2166136261u;
+      for (const char * p = title; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+      for (const char * p = msg; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+      *key = (int)(h & 0x7FFFFFFF) | 0x40000000;
+    }
+    return true;
+  }
   if (key) *key = (am + 1) * 100000 + (wm + 1) + thr;
   if (!st && !wx) return false;
-  char a[24], b[24];
   if (st) {
     fmtDur(a, sizeof(a), am);
     snprintf(title, tn, "Donn\xC3\xA9" "es vieilles de %s", a);

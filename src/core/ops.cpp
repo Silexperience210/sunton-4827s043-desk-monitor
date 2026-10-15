@@ -87,6 +87,58 @@ bool isStale(int64_t okAt, int64_t now, int thresholdS) {
   return a >= 0 && a > thresholdS;
 }
 
+DataState dataState(int64_t lastUpdate, int64_t now, int thresholdS, bool wifiUp) {
+  if (lastUpdate <= 0) return DS_NONE;
+  if (!wifiUp) return DS_OFFLINE;
+  return isStale(lastUpdate, now, thresholdS) ? DS_STALE : DS_LIVE;
+}
+
+// ── Association Wi-Fi ────────────────────────────────────────────────
+// Codes de esp_wifi_types.h (ESP-IDF 4.4). Le framework Arduino les journalise en
+// « warning », filtré par CORE_DEBUG_LEVEL=1 : sans cette traduction, un échec
+// d'association ne laissait aucune trace.
+AssocCause assocCause(int r) {
+  switch (r) {
+    case 0:                                          // aucun évènement : pas de réponse
+    case 2: case 4: case 39: case 205:               // AUTH_EXPIRE, ASSOC_EXPIRE, TIMEOUT, CONNECTION_FAIL
+      return AC_TIMEOUT;
+    case 201: case 210: case 211: case 212:          // NO_AP_FOUND (et variantes IDF 5)
+      return AC_NOT_FOUND;
+    case 14: case 15: case 16: case 23: case 202: case 204:   // MIC, 4WAY/GROUP_KEY, 802.1X, AUTH_FAIL, HANDSHAKE
+      return AC_AUTH;
+    case 3: case 6: case 7: case 8: case 34: case 200:        // AUTH_LEAVE, NOT_AUTHED/ASSOCED, ASSOC_LEAVE, ACKS, BEACON
+      return AC_LOST;
+    default:
+      return AC_REFUSED;
+  }
+}
+
+const char * assocCauseText(int c) {
+  switch (c) {
+    case AC_NOT_FOUND: return "r\xC3\xA9seau introuvable";
+    case AC_AUTH: return "mot de passe refus\xC3\xA9";
+    case AC_TIMEOUT: return "d\xC3\xA9lai d\xC3\xA9pass\xC3\xA9";
+    case AC_LOST: return "d\xC3\xA9" "connexion";
+    default: return "refus\xC3\xA9 par la borne";
+  }
+}
+
+void offlineCause(char * out, size_t n, int wifi, const char * ssid, int reason, bool timeOk, const FeedStat & st) {
+  const char * s = ssid && *ssid ? ssid : "?";
+  switch (wifi) {
+    case 0: snprintf(out, n, "Wi-Fi non configur\xC3\xA9"); return;
+    case 1:
+      if (reason) snprintf(out, n, "Wi-Fi %s : connexion\xE2\x80\xA6 (refus : %s, code %d)", s, assocCauseText(assocCause(reason)), reason);
+      else snprintf(out, n, "Wi-Fi %s : connexion\xE2\x80\xA6", s);
+      return;
+    case 3: snprintf(out, n, "Wi-Fi %s : %s (code %d)", s, assocCauseText(assocCause(reason)), reason); return;
+    default: break;
+  }
+  if (!timeOk) snprintf(out, n, "Wi-Fi associ\xC3\xA9, heure NTP non synchronis\xC3\xA9" "e");
+  else if (st.fails) snprintf(out, n, "station_status : \xC3\xA9" "chec %d (%s) \xC3\x97%u", st.errCode, ingestErrText(st.errCode), (unsigned)st.fails);
+  else snprintf(out, n, "Wi-Fi associ\xC3\xA9, premier relev\xC3\xA9 en cours");
+}
+
 // ── Provenance ───────────────────────────────────────────────────────
 // Les phrases ci-dessous décrivent Model::recompute (totaux) et wxScore (indice
 // vélo) : test_core recalcule chaque somme indépendamment, station par station,
