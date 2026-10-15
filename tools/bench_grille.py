@@ -67,11 +67,16 @@ def main():
                     if key in cache:
                         continue
                     jobs[key] = ex.submit(run, args)
-        for key, f in jobs.items():
+        done = 0
+        for f in cf.as_completed(jobs.values()):      # cache écrit au fil de l'eau : une campagne coupée reprend
+            key = next(k for k, v in jobs.items() if v is f)
             cache[key] = f.result()
-    if jobs:
-        with open(CACHE, "w") as f:
-            json.dump(cache, f)
+            done += 1
+            if done % 4 == 0 or done == len(jobs):
+                tmp = CACHE + ".tmp"
+                with open(tmp, "w") as fo:
+                    json.dump(cache, fo)
+                os.replace(tmp, CACHE)
 
     def res(lev, e, g):
         return cache[" ".join(["--jours", o.jours, "--graine", g, "--effet", e, "--court"] + o.extra.split() + leviers(lev))]
