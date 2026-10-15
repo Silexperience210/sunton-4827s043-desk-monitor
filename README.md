@@ -352,7 +352,7 @@ make sim test_core bench_prevision dump_sim
 python3 ../tools/bench_balayage.py --var "inertie={}" --valeurs 2,3,4   # courbe d'un réglage de l'alerte « inhabituel »
 python3 ../tools/bench_grille.py --config "N12=profil_n=12" --config "N24=" --ref N24 --absorption   # grille de réglages appariés
 ../.venv/bin/python ../tools/test_carte_dump.py   # liaison « dump » simulée sur un pseudo-terminal (36 vérifications)
-python3 ../tools/test_bench_reel.py              # banc --reel sur 9 semaines d'une « carte simulée » (26 vérifications, ~1 min)
+python3 ../tools/test_bench_reel.py              # banc --reel sur 9 semaines d'une « carte simulée » (28 vérifications, ~1 min)
 ```
 
 ### Données réelles de la carte : vidage série et banc `--reel`

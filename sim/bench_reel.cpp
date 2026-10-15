@@ -702,8 +702,11 @@ int run(int argc, char ** argv) {
     for (auto & h : hs) { std::string c = dirOf(h) + "/vn_stations.csv"; if (access(c.c_str(), R_OK) == 0) cs.push_back(c); }
     for (auto & c : cs) loadStationsCsv(c, D);
     csvN = (int)cs.size();
-    if (!csvN) loadStationsJson("../docs/donnees/station_information.json", D);
   }
+  // capacités encore inconnues (vidage pris juste après un démarrage, avant station_information : capacité 0)
+  int capMissing = 0;
+  for (auto & s : D.st) capMissing += !s.capKnown;
+  if (capMissing) loadStationsJson("../docs/donnees/station_information.json", D);
   for (auto & s : D.st) std::sort(s.caps.begin(), s.caps.end());
   int capGuess = 0;
   for (auto & s : D.st) if (!s.capKnown) { s.cap = std::max(1, s.maxSeen); capGuess++; }
@@ -741,7 +744,8 @@ int run(int argc, char ** argv) {
   printf("## 0. Ce qui a été lu\n\n");
   printf("- %d historique(s) lu(s), %d refusé(s) ; %d tranches de 5 min, du %s au %s (%.1f jours, %.0f %% des tranches présentes)\n",
          D.files, D.rejected, NT, fmtT(D.t.front()).c_str(), fmtT(D.t.back()).c_str(), span, 100.0 * NT / expected);
-  printf("- %d stations ; capacités : %s%s\n", S, csvN ? "listes des stations du vidage" : "docs/donnees (instantané du 13/10/2026)",
+  printf("- %d stations ; capacités : %s%s%s\n", S, csvN ? "listes des stations du vidage" : "docs/donnees (instantané du 13/10/2026)",
+         csvN && capMissing ? (" (" + std::to_string(capMissing) + " sans capacité : complétées par docs/donnees)").c_str() : "",
          capGuess ? (" — " + std::to_string(capGuess) + " estimée(s) au maximum de vélos vus").c_str() : "");
   printf("- météo connue sur %.0f %% des tranches%s\n", 100.0 * wxKnown / NT, wxKnown == 0 ? " (historique d'avant le format v2, ou météo absente) : prévision sans terme météo" : "");
   if (D.conflicts) printf("- %d valeurs différentes pour une même tranche entre deux vidages (la dernière lue est gardée)\n", D.conflicts);

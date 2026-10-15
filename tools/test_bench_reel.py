@@ -133,6 +133,22 @@ def main():
     code, txt7 = run(["--reel", arch, first_prof, "--levier", "profil_n=12"])
     check(code == 0 and "Variante « profil_n=12 »" in txt7 and "fausses alertes / jour" in txt7, "variante appariée : section présente")
 
+    # 7. Toute la chaîne avec les VRAIES stations (docs/donnees) : émetteur simulé → outil PC → banc
+    dsim = os.path.join(SIM, "dump_sim")
+    if os.path.exists(dsim):
+        p = subprocess.run([dsim], cwd=SIM, input=b"dump\n", capture_output=True, timeout=60)
+        cap = os.path.join(tmp, "capture.txt")
+        open(cap, "wb").write(p.stdout)
+        out = os.path.join(tmp, "donnees-carte")
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "carte_dump.py"), "--depuis", cap, "--sortie", out, "-q"],
+                           capture_output=True, text=True)
+        check(r.returncode == 0, "chaîne complète : vidage relu (%s)" % (r.stdout + r.stderr).strip())
+        code, txt8 = run(["--reel", os.path.join(out, "archive"), os.path.join(out, "vn_prof.bin")])
+        check(code == 0 and "listes des stations du vidage" in txt8 and "Historique trop court pour conclure" in txt8
+              and re.search(r"- 14\d stations", txt8) is not None, "chaîne complète : banc sur les vraies stations, « trop court » (%d)" % code)
+    else:
+        print("(sim/dump_sim absent : chaîne complète non vérifiée)")
+
     print("\n%d vérifications réussies, %d échec(s)" % (ok, fail))
     shutil.rmtree(tmp, ignore_errors=True)
     return 1 if fail else 0
