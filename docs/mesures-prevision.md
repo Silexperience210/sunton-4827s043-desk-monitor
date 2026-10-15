@@ -1032,3 +1032,104 @@ relevés est bruité et peu sûr, alors que l'ancien profil, trop bas mais lisse
 avant tout autre réglage de la mémoire : **remettre à l'échelle** le profil (× nouvelle capacité / ancienne)
 au lieu de le rajeunir, en gardant n — mais le monde simulé remplit la station agrandie à proportion, ce qui
 ferait gagner cette variante **par construction** : à juger sur un vrai agrandissement.
+
+## Banc sur données réelles (branche `feat/bench-reel`) — la chaîne est prête, **aucune donnée réelle mesurée**
+
+Tout ce qui précède vient du monde simulé. Deux conclusions sont **à confirmer sur le parc réel** avant d'y
+toucher : « le terme de tendance n'aide pas » (étape 0, point 5) et « les jours fériés sont le pire cas »
+(étape 0, point 4). Cette branche construit ce qu'il faut pour les re-tester : sortir les données de la carte
+(commande série `dump`, `tools/carte_dump.py`) et les rejouer (`bench_prevision --reel`). **La carte n'a pas été
+flashée** : aucun chiffre de cette section ne vient du parc réel. Ils viennent d'une « carte simulée » — le
+monde du banc, vidé chaque jour à 6 h avec le même instantané que `dump` (`bench_prevision --exporter`) — et
+servent à prouver que la chaîne mesure juste **avant** d'aller sur la carte.
+
+### Ce que la carte peut donner, exactement
+
+| fichier | contenu | mémoire | ce que le banc en fait |
+|---|---|---|---|
+| `/vn_hist.bin` | vélos de chaque station, toutes les 5 min, + météo du moment (v2) | **24 h** (anneau) | le rejeu : le passé à donner au modèle, le futur pour le noter |
+| `/vn_prof.bin` | profils appris (jour × quart d'heure), dispersion, statistiques météo | ~8 semaines (constante de temps) | point de départ du modèle ; vérification de forme |
+| `/vn_days.bin` | résumés par jour (vue Service) | 60 jours | vidé, pas encore exploité par le banc |
+| `/vn_stations.csv` | sid, capacité, coordonnées, nom (fabriqué au vidage, jamais en flash) | — | capacités (l'historique ne garde que les vélos), agrandissements |
+
+**Objection de fond.** L'historique 5 min ne fait que 24 h : un vidage unique ne permet **aucune** comparaison
+qui ait un sens (une journée, une météo, aucun férié). Des semaines s'obtiennent en **vidant chaque jour** et en
+fusionnant l'archive (le banc le fait, tranche par tranche, doublons comparés). Les profils, eux, résument des
+semaines — mais une moyenne ne se rejoue pas : ils servent de point de départ et de matière à la vérification de
+forme, pas de vérité.
+
+### La méthode du rejeu
+
+- **Marche avant** : chaque tranche de 5 min de l'historique est donnée au vrai modèle (`applyStatus`), dans
+  l'ordre ; toutes les 15 min de 6 h à 22 h, la prévision affichée (arrondie) est notée contre le relevé **réel**
+  à +15 / +30 / +60 / +120 / +240 min, en regard de la persistance et du profil seul (sans tendance). Les bornes
+  libres sont reconstituées (capacité − vélos : l'historique ne garde pas les bornes HS) ; la météo vient de
+  l'échantillon (actuelle seulement : au-delà de 2 h, aucune correction météo — la prévision horaire n'est pas
+  dans l'historique).
+- **Fuite** : un profil vidé à l'instant T a déjà appris toutes les tranches ≤ T. Les tranches antérieures au
+  profil de départ sont donc écartées ; si aucune ne reste (un seul vidage), elles sont rejouées et le rapport
+  l'écrit en tête. **Mesuré** sur la carte simulée, même journée (15/04, profil de 6 semaines) :
+
+  | profil de départ | MAE +60 modèle | MAE +60 profil seul | tendance − profil seul |
+  |---|---|---|---|
+  | du **même** vidage (fuite) | **0,921** | 0,916 | +0,005 |
+  | du vidage **précédent** (propre) | **1,026** | 1,047 | **−0,021** |
+
+  La fuite flatte la MAE de **10 %** et **renverse le signe** de la comparaison qui nous intéresse : un vidage
+  unique ne dit rien du terme de tendance. Règle : le profil d'un vidage, l'historique des vidages suivants.
+- **Comparaisons appariées** : la variante (`--levier`, mêmes noms qu'au banc simulé) est rejouée sur les mêmes
+  tranches ; l'écart est calculé **par jour**, avec son erreur-type entre jours (les stations d'un même jour
+  partagent la météo et les évènements : elles ne sont pas indépendantes). Moins de 7 jours évaluables (≥ 12 h
+  relevées) : « **trop court pour conclure** » ; moins de 14 : « indicatif seulement » ; sinon « significatif »
+  au-delà de 2 erreurs-types.
+- **Vérité des incidents** (le modèle évalué n'y entre jamais) : un **saut franc et durable** — |Δ15 min observé
+  − Δ15 min de référence| ≥ 5 vélos, encore décalé d'au moins la moitié 30 min plus tard — par rapport à une
+  référence a posteriori (moyenne des **autres** jours rejoués de même type, même station, même quart d'heure,
+  ≥ 3 jours ; sinon le profil de départ), **hors sortie de rupture** (station vide ou pleine juste avant : le
+  camion). Fenêtre de vérité 3 h, jours fériés exclus. Un premier critère sur le *niveau* (écart > 4 × l'écart
+  médian pendant 15 min) ne retrouvait que **29 %** des incidents injectés : abandonné ; le critère de saut est
+  celui de la sonde de l'alerte calme (100 % de rappel au banc).
+- **Forme des profils** : courbe ouvrée et de week-end de chaque station (fraction de la capacité, semaine de
+  référence sans férié) ; « résidentiel » si elle se vide le matin (9 h 30 − 6 h 30 ≤ −0,10) et se remplit le
+  soir (19 h 30 − 15 h 30 ≥ +0,06), « bureaux / école » l'inverse, « loisirs » si l'amplitude du week-end
+  dépasse 1,5 fois celle de la semaine, « peu marqué » sous 0,20 d'amplitude. Signalées : contradiction avec le
+  type attendu **d'après le nom** (parc, stade, piscine, tennis → loisirs ; campus, lycée, Schoul, BNP, PwC,
+  Europaparlament, Cloche d'Or → bureaux / école ; les gares ne sont pas jugées : on y prend et on y rend le
+  vélo le matin), anti-corrélation avec les voisines (≤ 700 m, qui se ressemblent entre elles), profil toujours
+  vide, toujours plein ou immobile.
+
+### La chaîne contre la vérité connue (carte simulée, 9 semaines, graine 1, effet météo moyen)
+
+| contrôle | résultat |
+|---|---|
+| 63 vidages quotidiens fusionnés | 17 917 tranches, 100 % présentes, aucun conflit entre vidages |
+| **le rejeu reproduit le banc** (même modèle, mêmes données, jours ≥ 32) | MAE +60 **1,097** contre **1,093** au banc ; profil seul 1,078 contre 1,074 ; persistance 1,230 contre 1,222 (le rejeu s'arrête au dernier vidage, 18 h avant la fin du banc) |
+| tendance − profil seul, +60 min, jours non fériés | **+0,0235 ± 0,0026** vélo (60 jours) : la tendance coûte, comme au banc |
+| variante `profil_n=12` (appariée) | MAE +60 +0,0115 ± 0,0018 ; fausses alertes −3,3 ± 0,6 / jour — le compromis de l'étape 5b, retrouvé |
+| vérité construite contre incidents injectés | **94 %** des incidents retrouvés ; 22 % des sauts construits sont un incident injecté, les autres des sauts nés du hasard des trajets (1 461 sorties de rupture écartées) |
+| forme des profils contre type vrai (143 stations) | **97 %** conformes (gares : « résidentiel » ; écoles : « bureaux / école » ; mixtes : « peu marqué » 28 sur 33) |
+| station piège (résidentielle nommée « Parc ») | **signalée** « contredit son type » |
+| agrandissement 20 → 30 bornes | repéré dans les listes des stations des vidages, écart relevé − profil suivi par semaine |
+| deux vidages oubliés, un historique tronqué, un faux | deux trous de 48 h chiffrés, deux fichiers refusés et nommés, rejeu poursuivi |
+| une journée | « trop court pour conclure » sur toutes les comparaisons, fuite signalée |
+
+Le voisinage n'est **pas** validé : le monde simulé place ses stations au hasard (10 stations y sont « en
+contradiction avec leurs voisines », sans signification). Sur le parc réel, c'est un indice, pas une preuve.
+Les fausses alertes « inhabituel » se comptent ici contre la vérité construite (125 par jour), pas contre les
+incidents injectés comme au banc (153) : les sauts du hasard comptent pour vrais — ordres de grandeur à ne pas
+mélanger.
+
+### Ce qu'il faut collecter pour conclure
+
+- **Tendance** (« n'aide pas ») : au moins **3 semaines** de vidages quotidiens après le premier (14 jours
+  évaluables, dont 2 week-ends), avec le profil du **premier** vidage en départ. La carte simulée tranche à
+  ± 0,003 vélo en 60 jours ; sur le parc réel, plus dispersé, compter le double.
+  **Réserve** : sur la carte, la tendance se calcule sur des relevés d'**une minute** (anneau de 60 min, jamais
+  sauvegardé) ; l'historique n'en garde qu'un toutes les 5 min. Le rejeu — comme le banc simulé — juge donc la
+  tendance telle qu'elle serait calculée sur 5 min. Pour la juger exactement comme la carte, il faut des relevés
+  à la minute : un collecteur PC qui interroge lui-même le flux GBFS public (non construit).
+- **Jours fériés** (« pire cas ») : aucun férié de semaine avant Noël — le 1er novembre 2026 est un dimanche.
+  Les prochains : **vendredi 25 décembre**, **vendredi 1er janvier 2027**, puis lundi de Pâques (29 mars 2027).
+  Trois jours, et deux d'entre eux en pleines vacances : l'ampleur de l'effet ne sera mesurable qu'**au
+  printemps 2027** (Pâques, 1er mai — un samedi —, Ascension, Pentecôte). Collecter sans interruption jusque-là.
+- **Absorption** : seulement si un agrandissement réel survient (repéré dans les listes de stations des vidages).

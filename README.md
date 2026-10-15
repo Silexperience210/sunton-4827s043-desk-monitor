@@ -327,8 +327,8 @@ Le dossier `sim/` compile **la même UI et le même cœur** que l'ESP32 avec LVG
 git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
-make sim test_core bench_prevision
-./test_core ../docs/donnees     # 855 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+make sim test_core bench_prevision dump_sim
+./test_core ../docs/donnees     # 918 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2 → v3),
                                  # alerte calme (dispersion apprise, inertie, textes de l'écart),
@@ -336,7 +336,8 @@ make sim test_core bench_prevision
                                  # mémoire du profil (décroissance exacte, relecture d'un profil d'une autre mémoire),
                                  # liste Wi-Fi (tri, dédoublonnage, masqués, réessais),
                                  # vue Service (résumés par jour, disponibilité, détecteur de récurrent sur un monde
-                                 # à vérité connue, /vn_days.bin : migration et fichiers abîmés)
+                                 # à vérité connue, /vn_days.bin : migration et fichiers abîmés),
+                                 # vidage série « dump » (CRC32, base64, émetteur, lecteur de commandes)
 ./sim ../docs/donnees /tmp/captures   # scénario tactile, captures, audit des zones tactiles, étalonnage
 ./sim ../docs/donnees /tmp/boot boot              # premier démarrage : sans heure, sans Wi-Fi, sans données
 ./sim ../docs/donnees /tmp/boot2 boot-wifi-ko     # réseau enregistré mais injoignable
@@ -350,7 +351,55 @@ make sim test_core bench_prevision
                                  # (méthode et chiffres : docs/mesures-prevision.md)
 python3 ../tools/bench_balayage.py --var "inertie={}" --valeurs 2,3,4   # courbe d'un réglage de l'alerte « inhabituel »
 python3 ../tools/bench_grille.py --config "N12=profil_n=12" --config "N24=" --ref N24 --absorption   # grille de réglages appariés
+../.venv/bin/python ../tools/test_carte_dump.py   # liaison « dump » simulée sur un pseudo-terminal (36 vérifications)
+python3 ../tools/test_bench_reel.py              # banc --reel sur 9 semaines d'une « carte simulée » (26 vérifications, ~1 min)
 ```
+
+### Données réelles de la carte : vidage série et banc `--reel`
+
+La carte garde ce qu'elle apprend en flash : l'historique 5 min des **24 dernières heures**
+(`/vn_hist.bin`), les **profils appris** (`/vn_prof.bin`, plusieurs semaines de mémoire) et les
+résumés par jour (`/vn_days.bin`). La commande série **`dump`** les recopie vers le PC pour que le
+banc les rejoue ; c'est ce qui permet de **re-tester sur le parc réel** les conclusions tirées du
+monde simulé (`docs/mesures-prevision.md`, « Banc sur données réelles »).
+
+```bash
+# 1. sur le PC relié à la carte en USB (115 200 bauds) — pyserial vient avec PlatformIO
+.venv/bin/python tools/carte_dump.py                    # /dev/ttyUSB0 ; --port, --baud, --sortie
+# → ~/.hermes/cache/scratch/donnees-carte/archive/AAAAMMJJ-HHMMSS/{vn_hist.bin,vn_prof.bin,vn_days.bin,vn_stations.csv}
+#   et une copie du dernier vidage à la racine de donnees-carte/
+# 2. rejouer
+cd sim && make bench_prevision
+./bench_prevision --reel ~/.hermes/cache/scratch/donnees-carte/archive \
+                         ~/.hermes/cache/scratch/donnees-carte/archive/<le plus ancien>/vn_prof.bin
+./bench_prevision --reel <…>/archive <…>/vn_prof.bin --levier profil_n=12   # variante, appariée
+```
+
+- **Lecture seule, sans déranger la carte** : `dump` prend un instantané du modèle en mémoire sous
+  le verrou (`Model::serialize`, les octets exacts de la prochaine sauvegarde, quelques ms), puis
+  l'émet depuis une tâche de priorité 1, sous la tâche réseau ; **rien n'est lu ni écrit en flash**,
+  rien n'est effacé, la carte ne redémarre pas. `stop` interrompt, `ping` répond `VNDUMP PRET`,
+  `aide` liste les commandes. Environ **1 min** pour ~460 Ko (base64, blocs de 96 octets).
+- **Protocole** (`src/core/dump.h`) : en-tête par fichier (nom, taille, nombre de blocs, CRC32),
+  CRC32 par bloc, fin explicite par fichier et pour le tout. L'outil vérifie l'ordre des blocs, chaque
+  somme, les tailles et la fin, réessaie une fois, et **n'écrit rien** si quoi que ce soit est faux (la
+  capture de l'échec est gardée dans `donnees-carte/echecs/`). `--depuis capture.txt` relit une
+  capture faite autrement (`pio device monitor`…).
+- **Vidage chaque jour** : l'anneau ne garde que 24 h ; c'est l'**archive** des vidages successifs
+  (fusionnés tranche par tranche par le banc) qui fait des semaines. Deux vidages par jour laissent
+  de la marge (`0 6,18 * * *` en cron, une fois la première liaison vérifiée à la main).
+- **Banc `--reel`** : rejoue en marche avant — le modèle ne voit que le passé, sa prévision est notée
+  contre le relevé réel qui suit. Mêmes indicateurs qu'en simulation (MAE +15…+240 min, persistance,
+  profil seul, fausses alertes / jour, rappel, maturation, absorption), comparaisons **appariées par
+  jour** avec leur erreur-type, verdict « **trop court pour conclure** » sous 7 jours évaluables.
+  Les tranches que le profil de départ a déjà apprises sont écartées (**fuite**) ; un vidage unique est
+  rejoué quand même et le rapport le dit. La forme des profils appris est vérifiée (résidentiel qui se
+  vide le matin, bureaux et écoles qui se remplissent, loisirs le week-end) et les stations qui
+  contredisent leur nom, leur voisinage, ou dont le profil est toujours vide / plein / immobile sont listées.
+- **Non vérifié** : la liaison série réelle (câble, CH340, circuit de réarmement de l'ESP32 : l'outil
+  ouvre le port sans toucher à DTR/RTS et signale tout redémarrage vu), le débit réel, la tenue de la
+  tâche sur la carte. Tout le reste est vérifié sans la carte : émetteur simulé sur pseudo-terminal
+  (`sim/dump_sim`), et « carte simulée » vidée chaque jour (`bench_prevision --exporter <dossier>`).
 
 `./sim <dossier-json> <sortie> totaux` imprime les totaux calculés par le **code du firmware**
 (stations, vélos, bornes, HS, remplissage, parc, en-trajet, variation) avec les indicateurs de
@@ -399,6 +448,7 @@ rétroéclairage PWM) : **ne pas le flasher sur la carte**.
 ```
 src/
   main.cpp                 boucle LVGL (cœur 1) + démarrage
+  serial_cmd.cpp           commandes série (« dump » : données apprises vers le PC, lecture seule)
   boot.cpp                 écran de démarrage, cause du dernier redémarrage, mode sans échec
   config.h                 URLs, périodes, tailles d'historique
   core/                    modèle : GBFS, météo, historique, profils, prévisions, alertes, transferts
@@ -410,6 +460,7 @@ src/
   platform/                abstraction ESP32 / simulateur
 sim/                       simulateur headless + tests
 tools/                     générateurs (polices, icônes, tracé du tram, planche d'aperçu), test QEMU,
+                           vidage de la carte (carte_dump.py) et ses tests (test_carte_dump.py, test_bench_reel.py),
                            fusion des images dist/ (merge_dist.py) et contrôle de leur en-tête (check_dist_bin.py)
 dist/                      binaires fusionnés prêts à flasher (adresse 0x0)
 stl/, openscad/            boîtier imprimé 3D (STL prêts à imprimer + source paramétrable)
