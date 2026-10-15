@@ -6,7 +6,7 @@ défendables en réunion (numérateur, dénominateur, règle nommée). La tourn�
 Alertes.
 
 Code : `src/core/days.{h,cpp}` (résumés par jour), `src/core/service.{h,cpp}` (règles, phrases),
-`src/ui/scr_service.cpp` (écran, 5e onglet du rail). Tests : `sim/test_core.cpp`
+`src/ui/scr_service.cpp` (écran, 5e des 6 onglets du rail). Tests : `sim/test_core.cpp`
 (`testDayCounts`, `testRecurRules`, `testRecurWorld`). Monde à vérité connue : `sim/service_world.h`.
 Captures : `docs/captures/48_…58_`.
 
@@ -207,7 +207,7 @@ Coût : `svcRecurrent` ≈ 0,8 ms pour 200 stations × 28 jours sur PC (x86-64, 
 
 ## Note de version — `feat/vue-service`
 
-- **Nouveau : écran Service** (6e onglet) — disponibilité du jour et sur 30 jours avec numérateur et
+- **Nouveau : écran Service** (nouvel onglet, le rail en compte 6) — disponibilité du jour et sur 30 jours avec numérateur et
   dénominateur, parts vide / pleine / hors service nommées, ruptures et saturations par jour sur 30 jours,
   comparaisons d'une semaine à l'autre et au même jour de la semaine précédente, problèmes récurrents
   avec leur règle affichée, 5 pires et 5 meilleures stations, état de la carte (fraîcheur, Wi-Fi, mémoire,
