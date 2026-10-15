@@ -1115,7 +1115,10 @@ static int realMain(int argc, char ** argv) {
     if (strcmp(argv[3], "totaux") == 0) return totauxScenario(in);
     if (strcmp(argv[3], "service") == 0) return serviceScenario(in);
     if (strcmp(argv[3], "hors-ligne") == 0) return horsLigneScenario(in);
-    return bootScenario(in, argv[3]);
+    if (strcmp(argv[3], "boot") == 0 || strcmp(argv[3], "boot-wifi-ko") == 0) return bootScenario(in, argv[3]);
+    // un nom mal tapé ne doit pas « passer » en jouant le démarrage (code 0) : la CI le verrait vert
+    fprintf(stderr, "sc\xC3\xA9nario inconnu : %s (ops, service, hors-ligne, totaux, boot, boot-wifi-ko)\n", argv[3]);
+    return 64;
   }
 
   auto info = readFile(in + "/station_information.json");

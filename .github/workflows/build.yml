@@ -79,12 +79,28 @@ jobs:
         run: |
           git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
           git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - name: Tests du cœur + audit tactile + premiers démarrages
         run: |
           cd sim
-          make -j4 sim test_core
+          make -j4 sim test_core bench_prevision dump_sim
           ./test_core ../docs/donnees
           ./sim ../docs/donnees /tmp/captures
           ./sim ../docs/donnees /tmp/boot boot
           ./sim ../docs/donnees /tmp/boot_wifi_ko boot-wifi-ko
           ./sim ../docs/donnees /tmp/hors_ligne hors-ligne
+      # Scénarios annoncés par les rapports (code ≠ 0 au premier écart), et un nom inconnu doit échouer
+      - name: Scénarios ops et service
+        run: |
+          cd sim
+          ./sim ../docs/donnees /tmp/ops ops
+          ./sim ../docs/donnees /tmp/service service
+          if ./sim ../docs/donnees /tmp/inconnu nimporte-quoi; then echo "un scénario inconnu passe" && exit 1; fi
+      - name: Vidage série simulé, banc réel, sauvegarde LittleFS
+        run: |
+          pip install pyserial
+          python3 tools/test_carte_dump.py
+          python3 tools/test_bench_reel.py
+          python3 tools/test_sauvegarde_littlefs.py
