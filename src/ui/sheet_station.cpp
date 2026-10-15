@@ -174,10 +174,10 @@ static void fill() {
   uint32_t ac = HX_TEXT3;
   char ab[288];
   vn::anomLineText(s, ab, sizeof(ab));
-  if (s.anom == vn::AN_HIGH || s.anom == vn::AN_LOW || s.anom == vn::AN_PENDING) ac = HX_WARN;
+  if (s.anom == vn::AN_HIGH || s.anom == vn::AN_LOW) ac = HX_WARN;
   else if (s.anom == vn::AN_NORMAL) ac = HX_TEXT2;
   // Un jour férié est attendu comme un dimanche (le profil le dit, pas seulement la règle)
-  if ((s.anom == vn::AN_HIGH || s.anom == vn::AN_LOW || s.anom == vn::AN_NORMAL || s.anom == vn::AN_PENDING) && g_model.holidayProfile(t)) {
+  if ((s.anom == vn::AN_HIGH || s.anom == vn::AN_LOW || s.anom == vn::AN_NORMAL) && g_model.holidayProfile(t)) {
     size_t l = strlen(ab);
     const char * hn = vn::holidayNameAt(t);
     snprintf(ab + l, sizeof(ab) - l, " \xC2\xB7 jour f\xC3\xA9ri\xC3\xA9 (%s) : profil du dimanche", hn ? hn : "?");

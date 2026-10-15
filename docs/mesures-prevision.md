@@ -570,8 +570,15 @@ moyenne sur 3 graines × 3 mondes (nul, moyen, fort). Référence (branche prév
 88,4 %**. Le rappel « historique » du banc (toute la période, y compris les 8 premiers jours où l'alerte ne
 peut pas sonner) est donné en plus : 83,5 %.
 
-Rejouable : `python3 tools/bench_balayage.py --var "alerte_disp=1 alerte_k={}" --valeurs 1,1.5,2,3` (et
-`--var "inertie={}"`, `--var "alerte_echelle={}"`) ; `python3 tools/bench_campagne.py` pour la référence.
+Rejouable **au commit `ddd2d35`** : `python3 tools/bench_balayage.py --var "alerte_disp=1 alerte_k={}" --valeurs 1,1.5,2,3`
+(et `--var "inertie={}"`, `--var "alerte_echelle={}"`) ; `python3 tools/bench_campagne.py` pour la référence.
+
+> **Retiré du code (feat/final, resserrage — `docs/bilan-final.md`).** Aucun de ces leviers n'a atteint le
+> critère et aucun n'était actif sur la carte : la tolérance tirée de la dispersion (1a, `alerte_disp`,
+> `alerte_k`), l'inertie (1b, `inertie`), le témoin (`alerte_echelle`) et la détente un jour férié ((c),
+> `ferie_alerte`) ont quitté le firmware, le banc et `tools/bench_balayage.py`. Reste ce qui se voit à
+> l'écran : la dispersion apprise par créneau, affichée « pour information » sur la fiche. Les mesures
+> ci-dessous sont l'historique de la décision ; pour les rejouer, repartir du commit `ddd2d35`.
 
 ### Ce que le banc mesure en plus (étendu, pas remplacé)
 
@@ -707,7 +714,7 @@ Ce qui est livré quand même, et pourquoi :
   de la règle actuelle (« · écart habituel à cette heure ± 2,6, mesuré sur 34 jours (pour information) ») :
   elle ne décide de rien, mais elle dit à l'exploitant si un écart de 6 vélos est banal ici, et c'est la donnée
   qu'il faudra pour rejuger 1a sur le **vrai** parc, plus dispersé que le parc simulé ;
-- les deux leviers restent derrière leurs interrupteurs, testés et affichables (captures 44 à 47).
+- les deux leviers restaient derrière leurs interrupteurs, testés et affichables (captures 44 à 47) ; retirés depuis du code et des captures (feat/final, `docs/bilan-final.md`).
 
 Coût mémoire (non vérifié sur la carte) : PSRAM **+134 400 octets** pour les cellules (l'allocation est faite
 pour `VN_MAX_ST` = 200 stations, pas 143 : 200 × 672 cellules × 1 octet) **+ 2 800 octets** (date de

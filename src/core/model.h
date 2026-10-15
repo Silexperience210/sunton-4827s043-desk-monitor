@@ -28,15 +28,7 @@ enum AnomState : uint8_t {
   AN_NO_PROFILE,               // aucun profil pour ce créneau
   AN_YOUNG,                    // profil trop jeune (confiance insuffisante)
   AN_NORMAL,                   // dans la tolérance
-  AN_HIGH, AN_LOW,             // inhabituel : au-dessus / en dessous de l'attendu
-  AN_PENDING                   // hors tolérance, mais pas encore assez longtemps pour alerter (levier 1b)
-};
-
-// Origine de la tolérance de l'écart au profil (affichée : la carte dit d'où vient le « ± »)
-enum AnomTolSrc : uint8_t {
-  ATS_FORMULA,                 // formule fixe max(4 vélos, 20 % de la capacité) × (2 − confiance)
-  ATS_FORMULA_YOUNG,           // formule fixe, parce que la dispersion du créneau n'est pas encore mesurée
-  ATS_DISP                     // k × dispersion apprise du créneau et de la station (levier 1a)
+  AN_HIGH, AN_LOW              // inhabituel : au-dessus / en dessous de l'attendu
 };
 
 // ── Leviers de prévision ─────────────────────────────────────────────
@@ -71,16 +63,8 @@ extern PredictOpts g_pred;
 float profWeight(int n, int N);
 int   profCountMax(int N);         // plafond de n : min(N, 31)
 
-// ── Leviers de l'alerte « inhabituel » (docs/mesures-prevision.md, « alerte calme ») ──
-// Mesurés séparément par le banc ; les valeurs par défaut sont celles de la carte.
-struct AlertOpts {
-  bool  disp = false;          // 1a : tolérance = k × dispersion apprise (sinon la formule fixe)
-  float k = 3.f;               // 1a : multiple de la dispersion (écart absolu moyen)
-  int   persist = 1;           // 1b : relevés de 5 min consécutifs hors tolérance avant d'alerter (1 = aussitôt)
-  float scale = 1.f;           // témoin du banc : formule fixe × scale (élargissement uniforme, sans information)
-  float holidayScale = 1.f;    // levier « fériés » (c) : tolérance × holidayScale un jour férié (1 = inchangée)
-};
-extern AlertOpts g_alertOpt;
+// (Alerte « inhabituel » : leviers 1a — tolérance tirée de la dispersion —, 1b — inertie —, témoin et
+// fériés (c) mesurés sans gagnant puis retirés du code : docs/mesures-prevision.md, « alerte calme ».)
 
 // Disponibilité de la météo pour le modèle (affichée : la carte dit quand elle s'en passe)
 enum WxUse : uint8_t {
@@ -142,10 +126,7 @@ struct Station {
   uint8_t  anomConf;         // 0…100
   int16_t  anomExp;          // vélos attendus (profil arrondi), ‑1 = inconnu
   int16_t  anomTol;          // tolérance en vélos, 0 = non évaluée
-  uint8_t  anomSrc;          // AnomTolSrc : d'où vient la tolérance
-  uint8_t  anomRun;          // relevés de 5 min consécutifs hors tolérance, du même côté (levier 1b)
-  int8_t   anomRunSide;      // côté de la série en cours (+1 au-dessus, −1 en dessous)
-  int64_t  anomRunSlot;      // tranche de 5 min du dernier relevé compté dans la série
+  // Écart habituel du créneau (dispersion apprise), affiché pour information : il ne décide de rien
   bool     anomDispOk;       // dispersion du créneau connue (assez de relevés)
   uint8_t  anomDisp10;       // dispersion habituelle du créneau, dixièmes de vélo
   uint16_t anomDispDays;     // jours de relevés sur lesquels la dispersion a été mesurée
@@ -231,7 +212,6 @@ struct Model {
   // le relevé soit toujours jugé contre une dispersion qui ne le contient pas (un incident ne se masque pas)
   float *   dispPendDev = nullptr;         // [VN_MAX_ST]
   int16_t * dispPendCell = nullptr;        // [VN_MAX_ST] cellule + 1 (0 = rien en attente)
-  bool      freshReading = false;          // recompute() appelé par applyStatus (un relevé neuf)
   int64_t   learnSince = 0;
   uint32_t  learnSamples = 0;
   // Résumés par jour (vue Service) : alimentés à chaque tranche de 5 min relevée

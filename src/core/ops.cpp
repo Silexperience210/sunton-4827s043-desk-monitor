@@ -353,35 +353,11 @@ void wxPartText(const Model & m, float part, bool forecast, int64_t at, char * o
 // ── Écart au profil (« inhabituel ») ─────────────────────────────────
 static const char * plural(int v) { return abs(v) > 1 ? "s" : ""; }
 
-// « écart habituel à cette heure ± 2,1 (mesuré sur 34 jours) → seuil ± 6 (3 × l'écart habituel) »
-static void tolWhy(const Station & s, char * out, size_t n) {
-  if (s.anomSrc == ATS_FORMULA_YOUNG) {
-    snprintf(out, n, "\xC2\xB1 %d par d\xC3\xA9" "faut : \xC3\xA9" "cart habituel de ce cr\xC3\xA9neau pas encore mesur\xC3\xA9", s.anomTol);
-    return;
-  }
-  if (s.anomSrc != ATS_DISP) { snprintf(out, n, "\xC2\xB1 %d", s.anomTol); return; }
-  char days[40], k[16];
-  if (s.anomDispDays >= 56) snprintf(days, sizeof(days), "sur plus de 8 semaines");
-  else if (s.anomDispDays >= 1) snprintf(days, sizeof(days), "sur %d jour%s", s.anomDispDays, s.anomDispDays > 1 ? "s" : "");
-  else snprintf(days, sizeof(days), "depuis moins d'un jour");
-  float d = s.anomDisp10 / 10.f;
-  snprintf(k, sizeof(k), "%g", (double)g_alertOpt.k);
-  commaDec(k);
-  // le plancher de 4 vélos l'emporte quand le créneau est très calme : on le dit plutôt que d'afficher « 3 × 0,5 »
-  bool floorWins = g_alertOpt.k * d < 3.5f;
-  char why[64];
-  if (floorWins) snprintf(why, sizeof(why), "plancher de 4 v\xC3\xA9los");
-  else snprintf(why, sizeof(why), "%s \xC3\x97 l'\xC3\xA9" "cart habituel", k);
-  snprintf(out, n, "\xC3\xA9" "cart habituel \xC3\xA0 cette heure \xC2\xB1 %.1f (mesur\xC3\xA9 %s) \xE2\x86\x92 seuil \xC2\xB1 %d (%s)",
-           (double)d, days, s.anomTol, why);
-  commaDec(out);
-}
-
-// Avec la formule fixe, l'écart habituel mesuré est donné pour information (il ne décide de rien) :
+// L'écart habituel mesuré est donné pour information (il ne décide de rien) :
 // « · écart habituel à cette heure ± 2,1, mesuré sur 34 jours (pour information) »
 static void dispInfo(const Station & s, char * out, size_t n) {
   out[0] = 0;
-  if (s.anomSrc != ATS_FORMULA || !s.anomDispOk) return;
+  if (!s.anomDispOk) return;
   char days[40];
   if (s.anomDispDays >= 56) snprintf(days, sizeof(days), "sur plus de 8 semaines");
   else if (s.anomDispDays >= 1) snprintf(days, sizeof(days), "sur %d jour%s", s.anomDispDays, s.anomDispDays > 1 ? "s" : "");
@@ -392,37 +368,16 @@ static void dispInfo(const Station & s, char * out, size_t n) {
 }
 
 void anomLineText(const Station & s, char * out, size_t n) {
-  char tw[200], info[112];
-  int dev = s.bikes - s.anomExp;
+  char info[112];
   dispInfo(s, info, sizeof(info));
   switch (s.anom) {
-    case AN_HIGH: case AN_LOW:
-      if (s.anomSrc == ATS_FORMULA)              // la règle de la v1.0.8 (+ l'écart habituel, pour information)
-        snprintf(out, n, "Inhabituel : %d v\xC3\xA9lo%s contre %d attendu%s (\xC2\xB1 %d) \xC2\xB7 confiance du profil %d %%%s",
-                 s.bikes, plural(s.bikes), s.anomExp, plural(s.anomExp), s.anomTol, s.anomConf, info);
-      else {
-        tolWhy(s, tw, sizeof(tw));
-        char run[48] = "";
-        if (g_alertOpt.persist > 1 && s.anomRun > 1) snprintf(run, sizeof(run), " \xC2\xB7 sur %d relev\xC3\xA9s de suite", s.anomRun);
-        snprintf(out, n, "Inhabituel : %d v\xC3\xA9lo%s contre %d attendu%s, \xC3\xA9" "cart de %+d \xC2\xB7 %s%s",
-                 s.bikes, plural(s.bikes), s.anomExp, plural(s.anomExp), dev, tw, run);
-      }
-      break;
-    case AN_PENDING:
-      tolWhy(s, tw, sizeof(tw));
-      snprintf(out, n, "\xC3\x80 confirmer : %d v\xC3\xA9lo%s contre %d attendu%s, \xC3\xA9" "cart de %+d (%d relev\xC3\xA9%s sur %d de suite avant l'alerte) \xC2\xB7 %s",
-               s.bikes, plural(s.bikes), s.anomExp, plural(s.anomExp), dev, s.anomRun, s.anomRun > 1 ? "s" : "",
-               g_alertOpt.persist, tw);
+    case AN_HIGH: case AN_LOW:                   // la règle de la v1.0.8 (+ l'écart habituel, pour information)
+      snprintf(out, n, "Inhabituel : %d v\xC3\xA9lo%s contre %d attendu%s (\xC2\xB1 %d) \xC2\xB7 confiance du profil %d %%%s",
+               s.bikes, plural(s.bikes), s.anomExp, plural(s.anomExp), s.anomTol, s.anomConf, info);
       break;
     case AN_NORMAL:
-      if (s.anomSrc == ATS_FORMULA)
-        snprintf(out, n, "Habituel : %d v\xC3\xA9lo%s contre %d attendu%s (\xC2\xB1 %d) \xC2\xB7 confiance du profil %d %%%s",
-                 s.bikes, plural(s.bikes), s.anomExp, plural(s.anomExp), s.anomTol, s.anomConf, info);
-      else {
-        tolWhy(s, tw, sizeof(tw));
-        snprintf(out, n, "Habituel : %d v\xC3\xA9lo%s contre %d attendu%s \xC2\xB7 %s",
-                 s.bikes, plural(s.bikes), s.anomExp, plural(s.anomExp), tw);
-      }
+      snprintf(out, n, "Habituel : %d v\xC3\xA9lo%s contre %d attendu%s (\xC2\xB1 %d) \xC2\xB7 confiance du profil %d %%%s",
+               s.bikes, plural(s.bikes), s.anomExp, plural(s.anomExp), s.anomTol, s.anomConf, info);
       break;
     case AN_YOUNG:
       snprintf(out, n, "\xC3\x89" "cart au profil non \xC3\xA9valu\xC3\xA9 : profil trop jeune (confiance %d %%, 50 %% requis)", s.anomConf);
@@ -439,15 +394,8 @@ void anomLineText(const Station & s, char * out, size_t n) {
 }
 
 void anomAlertText(const Station & s, char * out, size_t n) {
-  if (s.anomSrc == ATS_DISP) {
-    char d[16];
-    snprintf(d, sizeof(d), "%.1f", s.anomDisp10 / 10.0);
-    commaDec(d);
-    snprintf(out, n, "Inhabituel : %d contre %d \xC2\xB7 \xC2\xB1 %d (habituel \xC2\xB1 %s)", s.bikes, s.anomExp, s.anomTol, d);
-  } else
-    snprintf(out, n, "Inhabituel : %d v\xC3\xA9lo%s contre %d attendu%s (\xC2\xB1 %d%s)",
-             s.bikes, plural(s.bikes), s.anomExp, plural(s.anomExp), s.anomTol,
-             s.anomSrc == ATS_FORMULA_YOUNG ? " par d\xC3\xA9" "faut" : "");
+  snprintf(out, n, "Inhabituel : %d v\xC3\xA9lo%s contre %d attendu%s (\xC2\xB1 %d)",
+           s.bikes, plural(s.bikes), s.anomExp, plural(s.anomExp), s.anomTol);
 }
 
 } // namespace vn

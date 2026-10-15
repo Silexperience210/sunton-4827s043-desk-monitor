@@ -644,8 +644,6 @@ static bool sameMeans(const Model & a, const Model & b, int nSt, bool dispZero =
 // ── Écart au profil (« inhabituel ») ─────────────────────────────────
 static void testAnomaly() {
   settingsDefaults(g_set);
-  g_alertOpt = AlertOpts();                        // la formule fixe, aussitôt (la règle de la v1.0.8)
-  g_alertOpt.disp = false; g_alertOpt.persist = 1;
   static Model m;
   CHECK(m.init(), "init écart");
   InfoRec ir[NS];
@@ -707,10 +705,10 @@ static void testAnomaly() {
   z.applyStatus(sz, 1, tw);
   CHECK(countAlerts(z, AL_UNUSUAL, -1) == 0 && (z.st[0].anom == AN_NO_PROFILE || z.st[0].anom == AN_YOUNG),
         "premier relevé : pas d'alerte (état %d)", z.st[0].anom);
-  g_alertOpt = AlertOpts();
 }
 
-// ── Alerte calme : dispersion apprise (1a), inertie (1b), migration de /vn_prof.bin v3 ──
+// ── Écart habituel (dispersion apprise, affichée pour information), migration de /vn_prof.bin v3 ──
+// (Les leviers 1a — tolérance tirée de la dispersion — et 1b — inertie — ont été retirés : non gagnants.)
 // Trois stations de 20 places, toutes à 10 vélos en moyenne : « calme » (bruit −1…+1),
 // « agitée » (bruit −4…+4, uniforme), « fixe » (aucun bruit).
 static const int64_t AC_T0 = 1791842400 - 86400 * 7;          // mardi 06/10 00:00
@@ -736,14 +734,10 @@ static void acLearn(Model & m, int days) {
   for (int64_t t = AC_T0; t < AC_T0 + (int64_t)days * 86400; t += 300) acSet(m, t);
 }
 
-static void testAlertCalm() {
-  { AlertOpts d;                                   // réglage livré (revue, mutation AC4) : la règle de la v1.0.8
-    CHECK(!d.disp && d.persist == 1 && d.scale == 1.f && d.holidayScale == 1.f,
-          "alerte livrée : formule fixe, aussitôt, sans élargissement (1a et 1b éteints)"); }
+static void testDispersionInfo() {
   settingsDefaults(g_set);
-  g_alertOpt = AlertOpts();
   static Model m;
-  CHECK(m.init(), "init alerte calme");
+  CHECK(m.init(), "init écart habituel");
   acLearn(m, 21);
   const int64_t tq = AC_T0 + 22 * 86400 + 10 * 3600;          // mercredi 28/10, en journée
   const Station & calm = m.st[0], & agit = m.st[1], & fixe = m.st[2];
@@ -754,44 +748,20 @@ static void testAlertCalm() {
   CHECK(fabsf(d0 - 0.5f) < 0.25f && fabsf(d1 - 2.22f) < 0.6f && d2 < 0.15f && c0 >= 4 && c1 >= 4,
         "dispersion apprise : calme %.2f (0,5), agitée %.2f (2,2), fixe %.2f (0) ; relevés %.0f / %.0f", d0, d1, d2, c0, c1);
 
-  // 2. Levier 1a : la même valeur jugée selon la variabilité de SA station
-  g_alertOpt.disp = true; g_alertOpt.k = 3; g_alertOpt.persist = 1;
+  // 2. Elle ne décide de rien : la formule fixe (± 4 sur 20 places) juge, quelle que soit l'agitation
   acSet(m, tq, 10, 16, 10);
-  CHECK(agit.anomSrc == ATS_DISP && agit.anom == AN_NORMAL && agit.anomTol == (int)lroundf(fmaxf(4, 3 * agit.anomDisp10 / 10.f)) && agit.anomTol >= 6,
-        "agitée : 16 contre 10, variation habituelle ± %.1f → seuil ± %d, silence (état %d)", d1, agit.anomTol, agit.anom);
+  CHECK(agit.anom == AN_HIGH && agit.anomTol == 4 && countAlerts(m, AL_UNUSUAL, 1) == 1,
+        "agitée : 16 contre 10, formule fixe ± %d → alerte (état %d)", agit.anomTol, agit.anom);
   CHECK(agit.anomDisp10 >= 15 && agit.anomDisp10 <= 30 && agit.anomDispDays >= 17 && agit.anomDispDays <= 22,
         "agitée : dispersion affichable %d dixièmes, mesurée sur %d jours", agit.anomDisp10, agit.anomDispDays);
-  g_alertOpt.disp = false;
-  m.recompute(tq);
-  CHECK(agit.anom == AN_HIGH && agit.anomSrc == ATS_FORMULA, "même relevé, formule fixe (± 4) : l'agitée sonnait (état %d)", agit.anom);
-  g_alertOpt.disp = true;
-  acSet(m, tq + 60, 15, -1, -1);
-  CHECK(calm.anomSrc == ATS_DISP && calm.anomTol == 4 && calm.anom == AN_HIGH && countAlerts(m, AL_UNUSUAL, 0) == 1,
-        "vrai écart sur la station calme (15 contre 10, plancher ± 4) : alerte quand même (état %d, ± %d)", calm.anom, calm.anomTol);
-  acSet(m, tq + 90, -1, -1, 15);
-  CHECK(fixe.anomSrc == ATS_DISP && fixe.anomTol == 4 && fixe.anom == AN_HIGH, "dispersion nulle : le plancher de 4 vélos tient (± %d)", fixe.anomTol);
-  acSet(m, tq + 120, 10, 2, 10);
-  CHECK(agit.anom == AN_LOW && countAlerts(m, AL_UNUSUAL, 1) == 1, "agitée : 2 contre 10 (écart 8 > ± %d) : alerte « en dessous »", agit.anomTol);
 
-  // 2b. Ce que l'écran en dit : chaque chiffre est celui du calcul, l'origine est nommée
+  // 3. Ce que l'écran en dit : la phrase de la v1.0.8, l'écart habituel en information
   {
-    char t1[256], t2[128], want[96];
-    anomLineText(agit, t1, sizeof(t1));
+    char t1[256], t2[128], want2[200];
     anomAlertText(agit, t2, sizeof(t2));
-    snprintf(want, sizeof(want), "\xC2\xB1 %d,%d (mesur\xC3\xA9 sur %d jours) \xE2\x86\x92 seuil \xC2\xB1 %d (3 \xC3\x97 l'\xC3\xA9" "cart habituel)",
-             agit.anomDisp10 / 10, agit.anomDisp10 % 10, agit.anomDispDays, agit.anomTol);
-    CHECK(strstr(t1, "Inhabituel : 2 v\xC3\xA9los contre 10 attendus, \xC3\xA9" "cart de -8") && strstr(t1, want),
-          "fiche (1a) : « %s »", t1);
-    snprintf(want, sizeof(want), "Inhabituel : 2 contre 10 \xC2\xB7 \xC2\xB1 %d (habituel \xC2\xB1 %d,%d)", agit.anomTol, agit.anomDisp10 / 10, agit.anomDisp10 % 10);
-    CHECK(!strcmp(t2, want), "liste (1a) : « %s »", t2);
+    CHECK(!strcmp(t2, "Inhabituel : 16 v\xC3\xA9los contre 10 attendus (\xC2\xB1 4)"), "liste : « %s »", t2);
     acSet(m, tq + 150, 10, 10, 10);
-    anomLineText(calm, t1, sizeof(t1));
-    CHECK(strstr(t1, "Habituel : 10 v\xC3\xA9los contre 10 attendus") && strstr(t1, "seuil \xC2\xB1 4 (plancher de 4 v\xC3\xA9los)"),
-          "créneau très calme : le plancher est nommé (« %s »)", t1);
-    g_alertOpt.disp = false;
-    m.recompute(tq + 150);
     anomLineText(agit, t1, sizeof(t1));
-    char want2[200];
     snprintf(want2, sizeof(want2), "Habituel : 10 v\xC3\xA9los contre 10 attendus (\xC2\xB1 4) \xC2\xB7 confiance du profil 100 %% \xC2\xB7 "
              "\xC3\xA9" "cart habituel \xC3\xA0 cette heure \xC2\xB1 %d,%d, mesur\xC3\xA9 sur %d jours (pour information)",
              agit.anomDisp10 / 10, agit.anomDisp10 % 10, agit.anomDispDays);
@@ -801,55 +771,11 @@ static void testAlertCalm() {
     Station u = agit; u.anomDispOk = false;
     anomLineText(u, t1, sizeof(t1));
     CHECK(!strcmp(t1, "Habituel : 10 v\xC3\xA9los contre 10 attendus (\xC2\xB1 4) \xC2\xB7 confiance du profil 100 %"),
-          "formule fixe sans dispersion connue : phrase de la v1.0.8 à l'identique (« %s »)", t1);
-    g_alertOpt.disp = true;
-    acSet(m, tq + 120 + 60, 10, 2, 10);
+          "sans dispersion connue : phrase de la v1.0.8 à l'identique (« %s »)", t1);
+    acSet(m, tq + 180, 15, -1, -1);
+    CHECK(calm.anom == AN_HIGH && countAlerts(m, AL_UNUSUAL, 0) == 1, "vrai écart sur la station calme (15 contre 10 ± 4) : alerte");
   }
-
-  // 3. L'alerte ne touche pas la prévision : fc identique quel que soit le réglage de l'alerte
-  float fcA[VN_FC_STEPS], fcB[VN_FC_STEPS];
-  g_alertOpt.disp = false; g_alertOpt.persist = 1; m.recompute(tq + 120); memcpy(fcA, agit.fc, sizeof(fcA));
-  g_alertOpt.disp = true; g_alertOpt.persist = 3; m.recompute(tq + 120); memcpy(fcB, agit.fc, sizeof(fcB));
-  CHECK(memcmp(fcA, fcB, sizeof(fcA)) == 0 && agit.conf > 0, "prévision 2 h identique, alerte calme ou non");
-
-  // 4. Levier 1b : n'alerter que si l'écart tient 3 relevés de 5 min consécutifs
-  g_alertOpt.persist = 3;
-  const int64_t ti = tq + 3600 - (tq + 3600) % 300;           // début de tranche
-  acSet(m, ti, 0);
-  CHECK(calm.anom == AN_PENDING && calm.anomRun == 1 && countAlerts(m, AL_UNUSUAL, 0) == 0,
-        "inertie : 1er relevé hors tolérance → en attente, pas d'alerte (état %d, %d/3)", calm.anom, calm.anomRun);
-  acSet(m, ti + 300, 0);
-  CHECK(calm.anom == AN_PENDING && calm.anomRun == 2 && countAlerts(m, AL_UNUSUAL, 0) == 0, "2e relevé : toujours en attente (%d/3)", calm.anomRun);
-  {
-    char t1[256];
-    anomLineText(calm, t1, sizeof(t1));
-    char want[160];
-    snprintf(want, sizeof(want), "\xC3\x80 confirmer : 0 v\xC3\xA9lo contre %d attendus, \xC3\xA9" "cart de %+d (2 relev\xC3\xA9s sur 3 de suite avant l'alerte)",
-             calm.anomExp, -calm.anomExp);
-    CHECK(strstr(t1, want) != nullptr,
-          "fiche (1b) : l'attente est dite (« %s »)", t1);
-  }
-  acSet(m, ti + 600, 1);
-  CHECK(calm.anom == AN_LOW && calm.anomRun == 3 && countAlerts(m, AL_UNUSUAL, 0) == 1,
-        "vrai incident (station vidée) : alerte au 3e relevé, 10 min après (état %d)", calm.anom);
-  acSet(m, ti + 660, 0);
-  CHECK(calm.anom == AN_LOW, "relevé de la même tranche : l'alerte tient");
-  acSet(m, ti + 900);
-  CHECK(calm.anom == AN_NORMAL && calm.anomRun == 0, "retour dans la tolérance : silence (état %d)", calm.anom);
-  acSet(m, ti + 1200, 16); acSet(m, ti + 1500, 4); acSet(m, ti + 1800, 16);
-  CHECK(calm.anom == AN_PENDING && calm.anomRun == 1 && countAlerts(m, AL_UNUSUAL, 0) == 0,
-        "écarts alternés (+6, −6, +6) : jamais confirmés (%d/3)", calm.anomRun);
-  // une tranche manquante interrompt la série
-  acSet(m, ti + 2100, 0);
-  acSet(m, ti + 2700, 0);                                      // pas de relevé à ti + 2400
-  CHECK(calm.anom == AN_PENDING && calm.anomRun == 1, "trou dans l'historique : la série repart de 1 (%d/3)", calm.anomRun);
-  acSet(m, ti + 3000, 0); acSet(m, ti + 3300, 0);
-  CHECK(calm.anom == AN_LOW && countAlerts(m, AL_UNUSUAL, 0) == 1, "puis 3 relevés consécutifs : alerte");
-  // inertie et dispersion ensemble : l'agitée, vidée, sonne quand même
-  acSet(m, ti + 3600, 10, 0); acSet(m, ti + 3900, 10, 0); acSet(m, ti + 4200, 10, 1);
-  CHECK(agit.anom == AN_LOW && agit.anomSrc == ATS_DISP && countAlerts(m, AL_UNUSUAL, 1) == 1,
-        "agitée vidée 15 min (1a + 1b) : alerte (état %d, ± %d)", agit.anom, agit.anomTol);
-  g_alertOpt.persist = 1;
+  const int64_t ti = tq + 3600 - (tq + 3600) % 300;
 
   // 5. Persistance v3 : aller-retour exact (moyenne, n, dispersion, compte, date de début)
   sim::g_fsDir = "/tmp/vn_test_calm";
@@ -878,20 +804,18 @@ static void testAlertCalm() {
     CHECK(lv == 1 ? o.wxG.sn == 0 : memcmp(&o.wxG, &m.wxG, sizeof(WxStats)) == 0, "v%d : apprentissage météo %s", lv, lv == 1 ? "à zéro" : "gardé");
     InfoRec io[3] = { mkInfo("21", 49.60f, 6.13f, 20), mkInfo("22", 49.61f, 6.14f, 20), mkInfo("23", 49.62f, 6.15f, 20) };
     o.applyInfo(io, 3, tl);
-    g_alertOpt.disp = true;
     acSet(o, tl, -1, 16);
-    CHECK(o.st[1].anomSrc == ATS_FORMULA_YOUNG && o.st[1].anomTol == 4 && o.st[1].anom == AN_HIGH && !o.st[1].anomDispOk,
-          "v%d migré : dispersion pas encore mesurée → formule fixe (± %d), et l'écran le sait (origine %d)", lv, o.st[1].anomTol, o.st[1].anomSrc);
-    char t1[256], t2[128];
+    CHECK(o.st[1].anomTol == 4 && o.st[1].anom == AN_HIGH && !o.st[1].anomDispOk,
+          "v%d migré : formule fixe (± %d), écart habituel pas encore mesuré", lv, o.st[1].anomTol);
+    char t1[256];
     anomLineText(o.st[1], t1, sizeof(t1));
-    anomAlertText(o.st[1], t2, sizeof(t2));
-    CHECK(strstr(t1, "\xC2\xB1 4 par d\xC3\xA9" "faut : \xC3\xA9" "cart habituel de ce cr\xC3\xA9neau pas encore mesur\xC3\xA9") && strstr(t2, "(\xC2\xB1 4 par d\xC3\xA9" "faut)"),
-          "v%d migré : « %s » / « %s »", lv, t1, t2);
-    if (lv == 2) {                                          // la dispersion se réapprend : une semaine plus tard, elle sert
+    CHECK(!strncmp(t1, "Inhabituel : 16 v\xC3\xA9los contre ", 23) && strstr(t1, "attendus (\xC2\xB1 4) \xC2\xB7 confiance du profil") && !strstr(t1, "pour information"),
+          "v%d migré : « %s » (rien sur l'écart habituel)", lv, t1);
+    if (lv == 2) {                                          // la dispersion se réapprend : une semaine plus tard, elle s'affiche
       for (int64_t t = tl + 300; t < tl + 8 * 86400; t += 300) acSet(o, t);
       acSet(o, tl + 8 * 86400 + 600, -1, 16);
-      CHECK(o.st[1].anomSrc == ATS_DISP && o.st[1].anom == AN_NORMAL && o.st[1].anomDispDays >= 7,
-            "v2 migré + 8 jours : dispersion réapprise (± %d, %d jours), l'agitée ne sonne plus pour 6 vélos", o.st[1].anomTol, o.st[1].anomDispDays);
+      CHECK(o.st[1].anomDispOk && o.st[1].anomDispDays >= 7 && o.st[1].anomTol == 4,
+            "v2 migré + 8 jours : écart habituel réappris (%d jours), la formule fixe juge toujours (± %d)", o.st[1].anomDispDays, o.st[1].anomTol);
     }
   }
   // 7. Fichiers corrompus : ignorés sans plantage, jamais lus de travers
@@ -926,7 +850,6 @@ static void testAlertCalm() {
     static Model q3; q3.init(); q3.load(tl);
     CHECK(q3.dispSince[0] == 0 && q3.dispSince[1] == m.dispSince[1], "date de dispersion dans le futur : oubliée (les autres gardées)");
   }
-  g_alertOpt = AlertOpts();
 }
 
 // ── Météo dans l'historique 5 min + format versionné de /vn_hist.bin ──
@@ -1411,12 +1334,11 @@ static void testHolidayLearn() {
   CHECK(g_pred.holidayLearn == HL_SUNDAY && g_pred.holidaySunday, "réglage livré : férié appris et prévu comme un dimanche");
 }
 
-// Levier « fériés » (c) : tolérance élargie un jour férié, et seulement ce jour-là
+// Un jour férié, l'écart est jugé contre le profil du dimanche, avec la tolérance ordinaire
+// (le levier (c), tolérance élargie ce jour-là, a été mesuré sans gagnant puis retiré)
 static void testHolidayAlert() {
   settingsDefaults(g_set);
   g_pred = PredictOpts();
-  g_alertOpt = AlertOpts();
-  CHECK(g_alertOpt.holidayScale == 1.f, "réglage livré : alerte inchangée un jour férié");
   static Model q;
   q = Model(); q.init();
   InfoRec ir[1] = { mkInfo("1", 49.6f, 6.13f, 20) };
@@ -1427,18 +1349,13 @@ static void testHolidayAlert() {
   for (int64_t t = T0; t < sun; t += 300) { sr[0] = mkStat("1", holTruth(t), 20); q.applyStatus(sr, 1, t); }
   // 3 vélos attendus (profil du dimanche), 8 relevés : écart 5 > ± 4
   sr[0] = mkStat("1", 8, 20);
-  g_alertOpt.holidayScale = 1.5f;
   q.applyStatus(sr, 1, sun + 60);
-  CHECK(q.st[0].anom == AN_HIGH && q.st[0].anomTol == 4, "dimanche ordinaire, tolérance des fériés × 1,5 : ± %d inchangé, alerte (état %d)", q.st[0].anomTol, q.st[0].anom);
+  CHECK(q.st[0].anom == AN_HIGH && q.st[0].anomTol == 4, "dimanche ordinaire 10:00, 8 vélos contre 3 ± %d : alerte (état %d)", q.st[0].anomTol, q.st[0].anom);
   for (int64_t t = sun + 300; t < hol; t += 300) { sr[0] = mkStat("1", holTruth(t), 20); q.applyStatus(sr, 1, t); }
   sr[0] = mkStat("1", 8, 20);
-  g_alertOpt.holidayScale = 1.f;
   q.applyStatus(sr, 1, hol + 60);
-  CHECK(q.st[0].anom == AN_HIGH && countAlerts(q, AL_UNUSUAL, -1) == 1, "Noël 10:00, 8 vélos contre 3 : alerte sans détente (état %d)", q.st[0].anom);
-  g_alertOpt.holidayScale = 1.5f;
-  q.recompute(hol + 60);
-  CHECK(q.st[0].anom == AN_NORMAL && q.st[0].anomTol == 6 && countAlerts(q, AL_UNUSUAL, -1) == 0, "Noël, tolérance × 1,5 : ± %d, pas d'alerte (état %d)", q.st[0].anomTol, q.st[0].anom);
-  g_alertOpt = AlertOpts();
+  CHECK(q.st[0].anom == AN_HIGH && q.st[0].anomTol == 4 && countAlerts(q, AL_UNUSUAL, -1) == 1,
+        "Noël 10:00, 8 vélos contre 3 (profil du dimanche) ± %d : alerte (état %d)", q.st[0].anomTol, q.st[0].anom);
 }
 
 // Levier « récence » : poids exacts, valeur exacte après k relevés, cas limites, fichiers d'une autre mémoire
@@ -2316,7 +2233,7 @@ int main(int argc, char ** argv) {
   testProvenance(argc > 1 ? argv[1] : "");
   testProjection24();
   testAnomaly();
-  testAlertCalm();
+  testDispersionInfo();
   testHistWeather();
   testWxLearn();
   testHolidays();

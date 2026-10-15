@@ -116,9 +116,8 @@ void wxOriginText(const Model & m, char * out, size_t n);
 void wxPartText(const Model & m, float part, bool forecast, int64_t at, char * out, size_t n);
 
 // ── Écart au profil (« inhabituel ») ─────────────────────────────────
-// Ligne de la fiche station : état, attendu, tolérance ET d'où elle vient — l'écart habituel mesuré
-// pour ce créneau et cette station (levier 1a : « ± 2,1, mesuré sur 34 jours »), ou la règle par
-// défaut et pourquoi ; la série en cours si l'alerte attend confirmation (levier 1b).
+// Ligne de la fiche station : état, attendu, tolérance (formule fixe), confiance du profil et, pour
+// information, l'écart habituel mesuré pour ce créneau et cette station (« ± 2,1, mesuré sur 34 jours »).
 void anomLineText(const Station & s, char * out, size_t n);
 // Ligne courte de la liste d'alertes (AL_UNUSUAL)
 void anomAlertText(const Station & s, char * out, size_t n);

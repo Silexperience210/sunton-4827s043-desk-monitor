@@ -380,14 +380,9 @@ struct Opts {
 };
 static bool applyLever(const std::string & k, double num, bool v) {
   if (k == "flux_meteo") g_pred.wxFlow = v;
-  else if (k == "alerte_disp") g_alertOpt.disp = v;
-  else if (k == "alerte_k") g_alertOpt.k = (float)num;
-  else if (k == "inertie") g_alertOpt.persist = (int)num;
-  else if (k == "alerte_echelle") g_alertOpt.scale = (float)num;
   else if (k == "prevue_meteo") g_pred.wxForecast = v;
   else if (k == "ferie_dimanche") g_pred.holidaySunday = v;
   else if (k == "ferie_appris") g_pred.holidayLearn = (uint8_t)num;
-  else if (k == "ferie_alerte") g_alertOpt.holidayScale = (float)num;
   else if (k == "profil_n") g_pred.profDecayN = (int)num;
   else if (k == "rajeunir") g_pred.rejuvN = (int)num;
   else return false;
@@ -665,7 +660,7 @@ int run(int argc, char ** argv) {
   }
   sim::g_fsDir = TMP_FS;
   settingsDefaults(g_set);
-  const PredictOpts pred0 = g_pred; const AlertOpts alert0 = g_alertOpt;
+  const PredictOpts pred0 = g_pred;
 
   // 1. historiques
   Data D;
@@ -802,7 +797,7 @@ int run(int argc, char ** argv) {
     }
     if (hasProf && o.fromProf) loadProfInto(mRef, o.prof);   // (le profil relu dépend de profil_n : relecture)
     replay(D, o, T, firstK, R1);
-    g_pred = pred0; g_alertOpt = alert0;
+    g_pred = pred0;
   }
   // jours évaluables : au moins la moitié de la journée relevée et des prévisions notées à +60
   auto evalDays = [&](const RunOut & R, auto pred) { std::vector<int> v; for (size_t d = 0; d < R.days.size(); d++) if (R.days[d].slots >= 144 && R.days[d].fc[2].n >= 50 && pred(R.days[d])) v.push_back((int)d); return v; };

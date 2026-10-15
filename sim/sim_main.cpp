@@ -694,7 +694,7 @@ static int opsScenario(const std::string & in, StatusRec * recs, int ns) {
     shot("09b_fiche_ferie");
     ui::sheetClose(); run(300);
   }
-  // 10. Alerte calme (docs/mesures-prevision.md) : dispersion apprise INJECTÉE (le jeu de données réel
+  // 10. Écart habituel (docs/mesures-prevision.md, « alerte calme ») : dispersion apprise INJECTÉE (le jeu de données réel
   // n'a pas d'historique) — écart habituel ≈ 12 % de la capacité, mesuré depuis 34 jours —, lundi 28/12 14:30.
   {
     sim::g_epoch0 += 3 * 86400;
@@ -709,63 +709,18 @@ static int opsScenario(const std::string & in, StatusRec * recs, int ns) {
   }
   simFeeds(in, plat::now());
   run(600);
-  auto anomStation = [&](bool alerting) {
-    for (int k = 0; k < g_model.nAlerts; k++) if (alerting && g_model.alerts[k].type == AL_UNUSUAL) return (int)g_model.alerts[k].st;
-    for (int i = 0; i < g_model.n; i++) if (!alerting && g_model.st[i].anom == AN_NORMAL && g_model.st[i].capEff() >= 15) return i;
-    return -1;
-  };
-  auto ficheEcart = [&](int st, const char * sub, const char * what, const char * name) {
-    if (st < 0) { expect(false, what); return; }
-    ui::openStation(st); run(500);
+  // Réglage livré (formule fixe) : l'écart habituel mesuré est donné pour information
+  int ca = -1;
+  for (int k = 0; k < g_model.nAlerts && ca < 0; k++) if (g_model.alerts[k].type == AL_UNUSUAL) ca = g_model.alerts[k].st;
+  expect(ca >= 0, "une alerte « inhabituel » à ouvrir");
+  if (ca >= 0) {
+    ui::openStation(ca); run(500);
     drag(300, 240, 300, 40, 10);
-    expect(textAny(lv_layer_top(), sub, textAny), what);
-    shot(name);
+    expect(textAny(lv_layer_top(), "(pour information)", textAny),
+           "fiche (formule fixe) : « · écart habituel à cette heure ± X, mesuré sur 34 jours (pour information) »");
+    shot("10_fiche_ecart_info");
     ui::sheetClose(); run(300);
-  };
-  // 10a. Réglage livré (formule fixe) : l'écart habituel mesuré est donné pour information
-  int ca = anomStation(true);
-  ficheEcart(ca, "(pour information)", "fiche (formule fixe) : « · écart habituel à cette heure ± X, mesuré sur 34 jours (pour information) »",
-             "10_fiche_ecart_info");
-  // 10b–c. Levier 1a activé (k = 2) : la tolérance sort de la dispersion, et l'écran le dit
-  { plat::LockGuard g; g_alertOpt.disp = true; g_alertOpt.k = 2; g_model.recompute(plat::now()); }
-  run(300);
-  tap(30, tabY(ui::TAB_ALERTS));
-  run(500);
-  {
-    char b[24];
-    snprintf(b, sizeof(b), "Inhabituel %d", g_model.alertCount[AL_UNUSUAL]);
-    tapObj(clickableText(b));
   }
-  run(500);
-  expect(g_model.alertCount[AL_UNUSUAL] > 0 && textAny(lv_scr_act(), "(habituel \xC2\xB1 ", textAny),
-         "liste (1a) : « Inhabituel : N contre P · ± T (habituel ± D) »");
-  shot("10b_alertes_dispersion");
-  int cb = anomStation(true);
-  ficheEcart(cb, "mesur\xC3\xA9 sur 34 jours) \xE2\x86\x92 seuil", "fiche (1a) : « écart habituel à cette heure ± D (mesuré sur 34 jours) → seuil ± T »",
-             "10c_fiche_ecart_dispersion");
-  // 10d. Dispersion pas encore mesurée sur cette station (profil migré, station neuve) : formule fixe, dite
-  if (cb >= 0) {
-    { plat::LockGuard g;
-      for (int c = 0; c < 7 * 96; c++) { ProfCell & pc = g_model.prof[(size_t)cb * 7 * 96 + c]; pc.dn = 0; pc.d = 0; }
-      g_model.recompute(plat::now()); }
-    ficheEcart(cb, "par d\xC3\xA9" "faut : \xC3\xA9" "cart habituel de ce cr\xC3\xA9neau pas encore mesur\xC3\xA9",
-               "fiche (1a, dispersion inconnue) : « ± T par défaut : écart habituel de ce créneau pas encore mesuré »", "10d_fiche_ecart_par_defaut");
-  }
-  // 10e. Levier 1b activé (3 relevés) : une station vidée d'un coup attend confirmation
-  int ce = anomStation(false);
-  if (ce >= 0) {
-    plat::LockGuard g;
-    g_alertOpt.persist = 3;
-    for (int k = 0; k < ns; k++) if (!strcmp(recs[k].sid, g_model.st[ce].sid)) {
-      bool down = g_model.st[ce].anomExp >= g_model.st[ce].capEff() / 2;
-      recs[k].bikes = down ? 0 : g_model.st[ce].capEff(); recs[k].docks = down ? g_model.st[ce].capEff() : 0;
-    }
-    sim::g_epoch0 += 300;
-    g_model.applyStatus(recs, ns, plat::now()); g_model.feedUpdated = plat::now() - 20;
-  }
-  expect(ce >= 0 && g_model.st[ce].anom == AN_PENDING && g_model.st[ce].anomRun == 1, "1b : 1er relevé hors tolérance → « à confirmer », pas d'alerte");
-  ficheEcart(ce, "\xC3\x80 confirmer : ", "fiche (1b) : « À confirmer : … (1 relevé sur 3 de suite avant l'alerte) »", "10e_fiche_a_confirmer");
-  { plat::LockGuard g; g_alertOpt = AlertOpts(); g_model.recompute(plat::now()); }
 
   printf("Scénario ops : %d échec(s)\n", fails);
   return fails ? 4 : 0;

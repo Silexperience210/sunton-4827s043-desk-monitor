@@ -344,10 +344,10 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision dump_sim
-./test_core ../docs/donnees     # 918 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 949 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2 → v3),
-                                 # alerte calme (dispersion apprise, inertie, textes de l'écart),
+                                 # écart habituel (dispersion apprise, affichée pour information, textes de l'écart),
                                  # jours fériés (calendrier sourcé, Pâques sur 12 années, profil du dimanche),
                                  # mémoire du profil (décroissance exacte, relecture d'un profil d'une autre mémoire),
                                  # liste Wi-Fi (tri, dédoublonnage, masqués, réessais),
@@ -359,15 +359,14 @@ make sim test_core bench_prevision dump_sim
 ./sim ../docs/donnees /tmp/boot2 boot-wifi-ko     # réseau enregistré mais injoignable
 ./sim ../docs/donnees /tmp/totaux totaux          # totaux du tableau de bord, sans historique (audit des chiffres)
 ./sim ../docs/donnees /tmp/ops ops                # écrans d'exploitation : fraîcheur, provenance, ingestion, 24 h, « inhabituel »
-                                 # ces écrans sont archivés dans docs/captures/ (24_…47_)
+                                 # ces écrans sont archivés dans docs/captures/ (24_…43_)
 ./sim ../docs/donnees /tmp/svc service            # vue Service : 4 semaines d'un monde à vérité connue sur les vraies
                                  # stations ; imprime vrais trouvés / faux positifs ; captures 48_…58_
 ./bench_prevision                # banc de la prévision : 143 stations et une météo simulées sur 168 jours,
                                  # MAE à +15…+120 min, alertes par jour de pluie / sec, maturation du profil
                                  # (méthode et chiffres : docs/mesures-prevision.md)
-python3 ../tools/bench_balayage.py --var "inertie={}" --valeurs 2,3,4   # courbe d'un réglage de l'alerte « inhabituel »
 python3 ../tools/bench_grille.py --config "N12=profil_n=12" --config "N24=" --ref N24 --absorption   # grille de réglages appariés
-../.venv/bin/python ../tools/test_carte_dump.py   # liaison « dump » simulée sur un pseudo-terminal (36 vérifications)
+../.venv/bin/python ../tools/test_carte_dump.py   # liaison « dump » simulée sur un pseudo-terminal (38 vérifications)
 python3 ../tools/test_bench_reel.py              # banc --reel sur 9 semaines d'une « carte simulée » (28 vérifications, ~1 min)
 ```
 

@@ -10,7 +10,6 @@ namespace vn {
 
 Model g_model;
 PredictOpts g_pred;
-AlertOpts g_alertOpt;
 
 static const int DAYQ = 96;                         // quarts d'heure par jour
 static const int PROF_STRIDE = 7 * DAYQ;            // cellules par station
@@ -329,9 +328,7 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
 
   lastUpdate = now;
   dirty = true;
-  freshReading = true;
   recompute(now);
-  freshReading = false;
   // Résumé du jour : la tranche avec les états qu'elle vient de produire (statut, écart au profil)
   if (newSlot) days.addSlot(*this, slotT);
 }
@@ -774,25 +771,19 @@ void Model::updateWxCoef() {
 //      signification ;
 //    – profil absent, ou trop jeune : c < ANOM_MIN_CONF = 0,5 (moins de 4 relevés
 //      effectifs pour ce créneau) — sans recul, « inhabituel » ne veut rien dire.
-//  • Tolérance T (vélos), deux règles (g_alertOpt.disp, docs/mesures-prevision.md) :
-//    – formule fixe : max(ANOM_MIN_BIKES, ANOM_REL_CAP × capacité utile) × (2 − c) — à
-//      confiance pleine, max(4 vélos, 20 % de la capacité) ; à c = 0,5, 1,5 × plus large ;
-//    – dispersion apprise (levier 1a) : T = max(ANOM_MIN_BIKES, k × D), D = écart absolu moyen
-//      du relevé au profil, mesuré pour CE créneau et CETTE station ; tant que D repose sur
-//      moins de DISP_MIN_N relevés, retour à la formule fixe (dit à l'écran). Décision sur les
-//      nombres affichés (écart = N − P arrondi, T arrondie) : l'écran ne peut pas montrer
-//      « écart 6, tolérance ± 6 » à côté d'une alerte.
+//  • Tolérance T (vélos) : max(ANOM_MIN_BIKES, ANOM_REL_CAP × capacité utile) × (2 − c) — à
+//      confiance pleine, max(4 vélos, 20 % de la capacité) ; à c = 0,5, 1,5 × plus large.
+//      (Une tolérance tirée de la dispersion apprise et une inertie de N relevés ont été
+//      mesurées sans gagnant, puis retirées : docs/mesures-prevision.md, « alerte calme ».)
 //  • Écart minimal : ANOM_MIN_BIKES = 4 vélos, plancher de T — un retrait groupé de
 //      2–3 vélos est du bruit ordinaire, même sur une petite station.
 //  • Hors tolérance si |N − P| > T (strictement).
-//  • Inertie (levier 1b) : l'alerte ne sonne que si l'écart, de même sens, tient sur
-//      g_alertOpt.persist relevés de 5 min consécutifs (le relevé courant et les tranches
-//      précédentes de l'historique, chacune jugée contre le profil de SON instant) ; avant,
-//      l'état est AN_PENDING (affiché, sans alerte). Une tranche manquante interrompt la série.
+//  • Écart habituel D (écart absolu moyen du relevé au profil, CE créneau et CETTE station) :
+//      affiché pour information dès qu'il repose sur DISP_MIN_N relevés ; il ne décide de rien.
 // Limite connue : le relevé courant vient d'alimenter la cellule du profil (avec le poids
 // profWeight), ce qui rapproche P de N d'au plus ce poids : l'écart est
 // légèrement sous-estimé, jamais gonflé.
-struct AnomEval { float p, c, tol, disp, dcnt; uint8_t src; };
+struct AnomEval { float p, c, tol, disp, dcnt; };
 
 static bool anomEval(const Model & m, const Station & s, int i, int64_t t, AnomEval & e) {
   float nEff;
@@ -801,23 +792,13 @@ static bool anomEval(const Model & m, const Station & s, int i, int64_t t, AnomE
   e.disp = e.dcnt = 0;
   bool dk = m.dispersionAt(i, t, e.disp, e.dcnt) && e.dcnt >= DISP_MIN_N;
   if (!dk) e.disp = e.dcnt = 0;
-  // levier « fériés » (c) : tolérance élargie un jour férié (holidayScale = 1 : inchangée)
-  float hs = g_alertOpt.holidayScale != 1.f && holidayAt(t) ? g_alertOpt.holidayScale : 1.f;
-  float formula = fmaxf(ANOM_MIN_BIKES, ANOM_REL_CAP * s.capEff()) * (2.f - e.c) * g_alertOpt.scale * hs;
-  if (g_alertOpt.disp && dk) { e.tol = (float)lroundf(fmaxf(ANOM_MIN_BIKES, g_alertOpt.k * e.disp) * hs); e.src = ATS_DISP; }
-  else { e.tol = formula; e.src = g_alertOpt.disp ? ATS_FORMULA_YOUNG : ATS_FORMULA; }
+  e.tol = fmaxf(ANOM_MIN_BIKES, ANOM_REL_CAP * s.capEff()) * (2.f - e.c);
   return true;
-}
-// Écart signé hors tolérance (+1 au-dessus, −1 en dessous, 0 dans la tolérance)
-static int anomSide(const AnomEval & e, float bikes) {
-  float dev = e.src == ATS_DISP ? bikes - (float)lroundf(e.p) : bikes - e.p;
-  return fabsf(dev) > e.tol ? (dev > 0 ? 1 : -1) : 0;
 }
 
 static void anomalyStation(const Model & m, Station & s, int i, int64_t now, bool activeHours) {
-  s.anomExp = -1; s.anomTol = 0; s.anomConf = 0; s.anomSrc = ATS_FORMULA;
+  s.anomExp = -1; s.anomTol = 0; s.anomConf = 0;
   s.anomDispOk = false; s.anomDisp10 = 0; s.anomDispDays = 0;
-  int side = 0;
   AnomEval e;
   bool has = s.live && s.status != ST_CLOSED && anomEval(m, s, i, now, e);
   if (!s.live || s.status == ST_CLOSED) s.anom = AN_CLOSED;
@@ -836,27 +817,10 @@ static void anomalyStation(const Model & m, Station & s, int i, int64_t now, boo
     else if (e.c < ANOM_MIN_CONF) s.anom = AN_YOUNG;
     else {
       s.anomTol = (int16_t)lroundf(e.tol);
-      s.anomSrc = e.src;
-      side = anomSide(e, s.bikes);
-      s.anom = side ? AN_PENDING : AN_NORMAL;
+      float dev = s.bikes - e.p;
+      s.anom = fabsf(dev) <= e.tol ? AN_NORMAL : dev > 0 ? AN_HIGH : AN_LOW;
     }
   }
-  // Inertie : la série ne compte que des relevés NEUFS (un recalcul après la météo ou les réglages
-  // ne fait pas avancer le temps), chacun jugé une fois, à son instant ; une tranche de 5 min sans
-  // relevé, un retour dans la tolérance ou un changement de côté la remettent à zéro.
-  if (m.freshReading) {
-    int64_t slot = now - now % VN_RING_STEP_S;
-    if (!side) { s.anomRun = 0; s.anomRunSlot = 0; s.anomRunSide = 0; }
-    else if (s.anomRun && s.anomRunSide == side && s.anomRunSlot == slot) {}          // même tranche : déjà compté
-    else if (s.anomRun && s.anomRunSide == side && s.anomRunSlot == slot - VN_RING_STEP_S) {
-      if (s.anomRun < 255) s.anomRun++;
-      s.anomRunSlot = slot;
-    } else { s.anomRun = 1; s.anomRunSide = (int8_t)side; s.anomRunSlot = slot; }
-  }
-  if (!side) return;
-  int need = g_alertOpt.persist < 1 ? 1 : g_alertOpt.persist;
-  int run = s.anomRunSide == side ? s.anomRun : 0;
-  if (run >= need || need == 1) s.anom = side > 0 ? AN_HIGH : AN_LOW;
 }
 
 // ── Alertes ──────────────────────────────────────────────────────────
