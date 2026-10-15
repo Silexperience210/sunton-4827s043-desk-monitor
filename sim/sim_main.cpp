@@ -23,6 +23,7 @@
 #include <pthread.h>
 #include "../src/net/net.h"
 #include "../src/core/ops.h"
+#include "../src/core/service.h"
 #include <string>
 #include <time.h>
 
@@ -190,6 +191,8 @@ static void shot(const char * name) {
   fclose(fp);
   printf("capture %s\n", f);
 }
+// Centre vertical de l'onglet t du rail (six onglets de 39 px sous l'en-tête de 36 px)
+static int tabY(int t) { return 36 + t * (236 / ui::TAB_COUNT) + 236 / ui::TAB_COUNT / 2; }
 static void tap(int x, int y, int holdMs = 60) {
   s_px = x; s_py = y; s_pressed = true; run(holdMs);
   s_pressed = false; run(50);
@@ -448,7 +451,7 @@ static int bootScenario(const std::string & in, const char * variant) {
     bool stuck = lv_obj_get_child_cnt(lv_layer_top()) && !ui::sheetIsOpen();
     printf("Wi-Fi en échec : %s\n", stuck ? "BLOQUÉ sur l'écran d'accueil" : "écran d'accueil fermé ✓");
     // parcours des onglets sans aucune donnée ni heure
-    for (int t = 0; t < 5; t++) { ui::sheetClose(); run(300); tap(30, 36 + t * 47 + 20); run(600); char n[32]; snprintf(n, sizeof n, "boot_vide_onglet%d", t); shot(n); }
+    for (int t = 0; t < ui::TAB_COUNT; t++) { ui::sheetClose(); run(300); tap(30, tabY(t)); run(600); char n[32]; snprintf(n, sizeof n, "boot_vide_onglet%d", t); shot(n); }
     return stuck ? 3 : 0;
   }
   run(2000);
@@ -478,7 +481,7 @@ static int bootScenario(const std::string & in, const char * variant) {
   printf("Premières données : tableau de bord %s\n", dashOk ? "affiché ✓" : "ABSENT");
   { Weather w; if (wxParse(wx.data(), wx.size(), w)) { w.fetchedAt = now; plat::LockGuard g; g_model.wx = w; g_model.recompute(now); } }
   run(800);
-  for (int t = 0; t < 5; t++) { tap(30, 36 + t * 47 + 20); run(600); char n[32]; snprintf(n, sizeof n, "boot_onglet%d", t); shot(n); }
+  for (int t = 0; t < ui::TAB_COUNT; t++) { tap(30, tabY(t)); run(600); char n[32]; snprintf(n, sizeof n, "boot_onglet%d", t); shot(n); }
   ui::openStation(0); run(600); shot("boot_fiche"); ui::sheetClose(); run(300);
   // deuxième relevé une minute plus tard
   sim::g_ms += 60000;
@@ -537,7 +540,7 @@ static int opsScenario(const std::string & in, StatusRec * recs, int ns) {
   shot("02c_provenance_en_trajet");
   ui::sheetClose(); run(300);
   // 3. Tableau d'ingestion depuis Réglages
-  tap(30, 36 + 4 * 47 + 20);
+  tap(30, tabY(ui::TAB_SETTINGS));
   run(500);
   {
     lv_obj_t * ing = clickableText("Ingestion des flux");
@@ -576,7 +579,7 @@ static int opsScenario(const std::string & in, StatusRec * recs, int ns) {
   shot("04c_prevision_24h_profil_jeune");
   ui::sheetClose(); run(300);
   // 5. Alertes, filtre « Inhabituel » (le libellé porte le compteur)
-  tap(30, 36 + 3 * 47 + 20);
+  tap(30, tabY(ui::TAB_ALERTS));
   run(500);
   {
     char b[24];
@@ -725,7 +728,7 @@ static int opsScenario(const std::string & in, StatusRec * recs, int ns) {
   // 10b–c. Levier 1a activé (k = 2) : la tolérance sort de la dispersion, et l'écran le dit
   { plat::LockGuard g; g_alertOpt.disp = true; g_alertOpt.k = 2; g_model.recompute(plat::now()); }
   run(300);
-  tap(30, 36 + 3 * 47 + 20);
+  tap(30, tabY(ui::TAB_ALERTS));
   run(500);
   {
     char b[24];
@@ -767,6 +770,143 @@ static int opsScenario(const std::string & in, StatusRec * recs, int ns) {
   return fails ? 4 : 0;
 }
 
+// ── Scénario « service » : quatre semaines du monde à vérité connue (sim/service_world.h) sur les
+// vraies stations, puis la vue Service. Rôles : une station qui dérive (vide 8 h–9 h depuis le 08/12),
+// une saturée le week-end, un incident isolé, une quasi-seuil, une hors service ; le reste sain,
+// bruité ou « pendulaire au hasard ». La vérité est imprimée, les captures montrent ce que dit l'écran.
+#include "service_world.h"
+namespace ui { void servicePane(int i); lv_obj_t * servicePaneObj(int i); }
+static int64_t luxT(int y, int mo, int d, int h, int mi) {
+  struct tm lt0; plat::localTime(0, &lt0);                   // fixe TZ (Luxembourg)
+  struct tm t = {};
+  t.tm_year = y - 1900; t.tm_mon = mo - 1; t.tm_mday = d; t.tm_hour = h; t.tm_min = mi; t.tm_isdst = -1;
+  return (int64_t)mktime(&t);
+}
+static int serviceScenario(const std::string & in) {
+  s_namedShots = true;
+  auto info = readFile(in + "/station_information.json");
+  auto wx = readFile(in + "/weather.json");
+  static InfoRec irecs[VN_MAX_ST];
+  static StatusRec sr[VN_MAX_ST];
+  int ni = gbfsParseInfo(info.data(), info.size(), irecs, VN_MAX_ST);
+  settingsDefaults(g_set);
+  strcpy(g_set.ssid, "VELOH-OPS");
+  if (!g_model.init()) return 1;
+  lv_init();
+  static lv_disp_draw_buf_t db;
+  lv_disp_draw_buf_init(&db, s_buf, nullptr, 480 * 272);
+  static lv_disp_drv_t dd;
+  lv_disp_drv_init(&dd);
+  dd.hor_res = 480; dd.ver_res = 272; dd.flush_cb = flush; dd.draw_buf = &db;
+  lv_disp_t * disp = lv_disp_drv_register(&dd);
+  static lv_indev_drv_t id;
+  lv_indev_drv_init(&id);
+  id.type = LV_INDEV_TYPE_POINTER; id.read_cb = readTouch;
+  lv_indev_drv_register(&id);
+  ui::init(disp);
+
+  using namespace world;
+  static Role roles[VN_MAX_ST];
+  for (int i = 0; i < ni; i++) {
+    int k = i % 10;
+    roles[i] = k <= 5 ? W_HEALTHY : k == 8 ? W_COMMUTE : W_NOISE;
+  }
+  const int DRIFT = 5, WEEKEND = 17, ISOL = 33, NEAR = 41, CLOSED = 60;
+  roles[DRIFT] = W_DRIFT; roles[WEEKEND] = W_WEEKEND; roles[ISOL] = W_ISOLATED; roles[NEAR] = W_NEAR; roles[CLOSED] = W_CLOSED;
+  g_model.applyInfo(irecs, ni, luxT(2026, 11, 30, 0, 0));
+  auto play = [&](int fromDay, int toDay, int lastMin) {
+    for (int dw = fromDay; dw <= toDay; dw++) {
+      if (dw == OFF_DAY) continue;
+      const int64_t d0 = luxT(2026, monthOf(dw), dateOf(dw), 0, 0);
+      for (int mn = 6 * 60; mn <= 22 * 60 + 30 && (dw < toDay || mn <= lastMin); mn += 5) {
+        for (int i = 0; i < ni; i++) {
+          bool closed;
+          int v = bikes(roles[i], i, dw, mn, closed);
+          int cap = irecs[i].cap ? irecs[i].cap : CAP;
+          int b = v == 0 ? 0 : v >= CAP ? cap : (int)lroundf((float)v * cap / CAP);
+          if (v > 0 && v < CAP) b = b < 1 ? 1 : b > cap - 1 ? cap - 1 : b;
+          sr[i] = StatusRec(); memset(&sr[i], 0, sizeof(sr[i]));
+          strcpy(sr[i].sid, irecs[i].sid);
+          sr[i].bikes = sr[i].elec = (uint16_t)b; sr[i].docks = (uint16_t)(cap - b);
+          sr[i].installed = !closed; sr[i].renting = sr[i].returning = 1;
+          sr[i].lastReported = d0 + mn * 60 - 40;
+        }
+        g_model.applyStatus(sr, ni, d0 + mn * 60);
+      }
+    }
+  };
+  auto settle = [&](int64_t t) {
+    sim::g_epoch0 = t - sim::g_ms / 1000;
+    g_model.lastUpdate = t - 30; g_model.feedUpdated = t - 50;
+    g_model.wx.fetchedAt = t - 6 * 60;
+    wxParse(wx.data(), wx.size(), g_model.wx);
+    g_model.nEv = 0;                                          // pas de toast de rupture par-dessus les captures
+    g_model.version++;
+  };
+  // 1. Début : trois jours seulement — l'écran dit qu'il est trop tôt
+  play(0, 2, 22 * 60 + 30);
+  int64_t t = luxT(2026, 12, 3, 10, 2);
+  play(3, 3, 10 * 60);
+  settle(t);
+  run(600);
+  tap(30, tabY(ui::TAB_SERVICE)); run(600);
+  ui::servicePane(1); run(400);
+  shot("11_service_recurrents_debut");
+  ui::servicePane(0); run(300);
+  // 2. Quatre semaines : jusqu'au lundi 28/12 10:00
+  play(4, 28, 10 * 60);
+  t = luxT(2026, 12, 28, 10, 2);
+  settle(t);
+  run(800);
+  shot("12_service_synthese");
+  drag(260, 230, 260, 60, 10); run(300);
+  shot("12b_service_synthese_suite");
+  drag(260, 230, 260, 40, 10); run(300);
+  shot("12c_service_comparaisons");
+  ui::servicePane(1); run(400);
+  shot("13_service_recurrents");
+  drag(260, 230, 260, 80, 10); run(300);
+  shot("13b_service_recurrents_suite");
+  ui::servicePane(2); run(400);
+  shot("14_service_classement");
+  drag(260, 230, 260, 40, 10); run(300);
+  shot("14b_service_classement_suite");
+  ui::servicePane(3); run(400);
+  shot("15_service_la_carte");
+  drag(260, 230, 260, 60, 10); run(300);
+  shot("15b_service_la_carte_suite");
+  // Vérité contre écran : le détecteur doit trouver la dérive et la saturation du week-end, et se taire sur le reste
+  static Recur rec[64];
+  int n = svcRecurrent(g_model.days, g_model, localDay(t), rec, 64);
+  int found = 0, fpNamed = 0, fpNoise = 0, fpCommute = 0;
+  for (int k = 0; k < n; k++) {
+    int st = rec[k].st;
+    char x[160]; svcRecurText(rec[k], x, sizeof(x));
+    printf("  récurrent : [%s] %s — %s\n", roles[st] == W_DRIFT ? "dérive" : roles[st] == W_WEEKEND ? "week-end" : roles[st] == W_NOISE ? "bruit" :
+           roles[st] == W_COMMUTE ? "pendulaire" : roles[st] == W_HEALTHY ? "saine" : "autre", g_model.st[st].name, x);
+    if ((st == DRIFT && rec[k].kind == RK_EMPTY) || (st == WEEKEND && rec[k].kind == RK_FULL && rec[k].weekend)) found++;
+    else if (roles[st] == W_NOISE) fpNoise++;
+    else if (roles[st] == W_COMMUTE) fpCommute++;
+    else fpNamed++;
+  }
+  int nNoise = 0, nCommute = 0;
+  for (int i = 0; i < ni; i++) { nNoise += roles[i] == W_NOISE; nCommute += roles[i] == W_COMMUTE; }
+  printf("Scénario service : %d stations, %d problème(s) ; vrais trouvés %d/2 ; faux positifs : %d (rôles nommés et sains), "
+         "%d sur %d stations de bruit, %d sur %d pendulaires au hasard\n", ni, n, found, fpNamed, fpNoise, nNoise, fpCommute, nCommute);
+  // La ligne de la dérive ouvre la fiche de la station
+  ui::servicePane(1); run(300);
+  ui::openStation(DRIFT); run(500);
+  shot("16_service_fiche_derive");
+  ui::sheetClose(); run(300);
+  // Audit tactile de l'écran
+  std::string repPath = s_out + "/audit_service.txt";
+  FILE * rep = fopen(repPath.c_str(), "w");
+  for (int p = 0; p < 4 && rep; p++) { ui::servicePane(p); run(300); char w[16]; snprintf(w, sizeof w, "service%d", p); audit(w, rep); }
+  if (rep) { fprintf(rep, "\nBilan : %d OK, %d KO, %d petites cibles\n", s_auditOk, s_auditFail, s_auditSmall); fclose(rep); }
+  printf("Audit tactile (service) : %d OK, %d KO, %d petites cibles\n", s_auditOk, s_auditFail, s_auditSmall);
+  return (found == 2 && fpNamed == 0 && fpNoise == 0 && !s_auditFail) ? 0 : 2;
+}
+
 static int realMain(int argc, char ** argv) {
   if (argc < 3) { fprintf(stderr, "usage : sim <json_dir> <out_dir>\n"); return 1; }
   std::string in = argv[1];
@@ -777,6 +917,7 @@ static int realMain(int argc, char ** argv) {
   bool ops = argc > 3 && strcmp(argv[3], "ops") == 0;
   if (argc > 3 && !ops) {
     if (strcmp(argv[3], "totaux") == 0) return totauxScenario(in);
+    if (strcmp(argv[3], "service") == 0) return serviceScenario(in);
     return bootScenario(in, argv[3]);
   }
 
@@ -859,7 +1000,7 @@ static int realMain(int argc, char ** argv) {
   shot("reseau_priorites");
 
   // Carte
-  tap(30, 36 + 47 + 20);
+  tap(30, tabY(ui::TAB_MAP));
   run(500);
   shot("carte");
   tap(460, 36 + 236 - 8 - 32 - 6 - 32 - 6 - 16);   // zoom +
@@ -896,7 +1037,7 @@ static int realMain(int argc, char ** argv) {
   if (pick >= 0) { ui::openStation(pick); run(500); shot("fiche_station_prevision"); ui::sheetClose(); run(300); }
 
   // Stations
-  tap(30, 36 + 2 * 47 + 20);
+  tap(30, tabY(ui::TAB_LIST));
   run(500);
   shot("stations");
   tap(60 + 8 + 3 * 75 + 30, 36 + 8 + 14);      // tri « Échéance »
@@ -904,7 +1045,7 @@ static int realMain(int argc, char ** argv) {
   shot("stations_echeance");
 
   // Alertes
-  tap(30, 36 + 3 * 47 + 20);
+  tap(30, tabY(ui::TAB_ALERTS));
   run(500);
   shot("alertes");
   ui::openTransfers();
@@ -914,7 +1055,7 @@ static int realMain(int argc, char ** argv) {
   run(300);
 
   // Réglages
-  tap(30, 36 + 4 * 47 + 20);
+  tap(30, tabY(ui::TAB_SETTINGS));
   run(500);
   shot("reglages");
   drag(260, 230, 260, 40, 10);
@@ -933,7 +1074,7 @@ static int realMain(int argc, char ** argv) {
   run(300);
 
   // Nouvelle rupture → toast
-  tap(30, 36 + 20);
+  tap(30, tabY(ui::TAB_DASH));
   run(400);
   for (int k = 0; k < ns; k++) {
     int i = g_model.find(recs[k].sid);
@@ -957,14 +1098,14 @@ static int realMain(int argc, char ** argv) {
   if (!rep) { fprintf(stderr, "impossible d'écrire %s\n", repPath.c_str()); return 1; }
   fprintf(rep, "Audit tactile — tap simulé au centre (ou dans un coin*) de chaque élément cliquable visible\n");
   fprintf(rep, "%-10s %-4s %-7s %-11s %s\n", "écran", "res.", "taille", "centre", "élément");
-  static const char * TABS[5] = { "reseau", "carte", "stations", "alertes", "reglages" };
-  for (int t = 0; t < 5; t++) {
-    tap(30, 36 + t * 47 + 20);
+  static const char * TABS[ui::TAB_COUNT] = { "reseau", "carte", "stations", "alertes", "service", "reglages" };
+  for (int t = 0; t < ui::TAB_COUNT; t++) {
+    tap(30, tabY(t));
     run(500);
     audit(TABS[t], rep);
     run(100);
   }
-  tap(30, 36 + 20);
+  tap(30, tabY(ui::TAB_DASH));
   run(300);
   ui::openStation(g_model.alerts[0].st); run(500); audit("fiche", rep); ui::sheetClose(); run(300);
   ui::openTransfers(); run(500); audit("transferts", rep); ui::sheetClose(); run(300);
@@ -1018,7 +1159,7 @@ static int realMain(int argc, char ** argv) {
            ui::touchTestOpen() ? "toujours ouvert (INCORRECT)" : "fermé ✓");
   }
   run(300);
-  tap(30, 36 + 3 * 47 + 20);
+  tap(30, tabY(ui::TAB_ALERTS));
   run(500);
   printf("Tap réel sur « Alertes » après étalonnage → onglet %s\n", ui::debugTab() == ui::TAB_ALERTS ? "Alertes ✓" : "INCORRECT");
   return (s_auditFail || worst > 4 || ui::debugTab() != ui::TAB_ALERTS) ? 2 : 0;

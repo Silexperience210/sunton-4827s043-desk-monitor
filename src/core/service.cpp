@@ -232,11 +232,14 @@ const char * svcKindName(uint8_t kind) {
 }
 
 void svcRecurText(const Recur & r, char * out, size_t n) {
-  snprintf(out, n, "%s %d\xC2\xA0h\xE2\x80\x93%d\xC2\xA0h \xC2\xB7 %u %s sur %u \xC2\xB7 s\xC3\xA9rie %u\xC2\xA0j",
+  char sr[32];
+  if (r.streak) snprintf(sr, sizeof(sr), "s\xC3\xA9rie %u\xC2\xA0j", r.streak);
+  else snprintf(sr, sizeof(sr), "s\xC3\xA9rie interrompue");       // le dernier jour relevé n'est pas touché
+  snprintf(out, n, "%s %d\xC2\xA0h\xE2\x80\x93%d\xC2\xA0h \xC2\xB7 %u %s sur %u \xC2\xB7 %s",
            svcKindName(r.kind), DAY_H0 + r.h0, DAY_H0 + r.h1 + 1, r.hits,
            r.weekend ? (r.hits > 1 ? "week-ends/f\xC3\xA9ri\xC3\xA9s" : "week-end/f\xC3\xA9ri\xC3\xA9")
                      : (r.hits > 1 ? "jours ouvrables" : "jour ouvrable"),
-           r.days, r.streak);
+           r.days, sr);
 }
 
 void svcRecurRule(const RecurOpts & o, char * out, size_t n) {

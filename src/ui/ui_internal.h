@@ -22,9 +22,9 @@ struct ScreenDef {
   void (*shown)();               // écran affiché
 };
 
-extern const ScreenDef SCR_DASH, SCR_MAP, SCR_LIST, SCR_ALERTS, SCR_SETTINGS;
+extern const ScreenDef SCR_DASH, SCR_MAP, SCR_LIST, SCR_ALERTS, SCR_SERVICE, SCR_SETTINGS;
 
-enum Tab { TAB_DASH, TAB_MAP, TAB_LIST, TAB_ALERTS, TAB_SETTINGS, TAB_COUNT };
+enum Tab { TAB_DASH, TAB_MAP, TAB_LIST, TAB_ALERTS, TAB_SERVICE, TAB_SETTINGS, TAB_COUNT };
 
 void showTab(int tab);
 void openStation(int st);                      // fiche station (bottom sheet)

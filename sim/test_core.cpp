@@ -1794,6 +1794,10 @@ static void testRecurRules() {
     svcRecurText(out[f0], t, sizeof(t));
     CHECK(strcmp(t, "Vide 8\xC2\xA0h\xE2\x80\x93" "10\xC2\xA0h \xC2\xB7 9 jours ouvrables sur 10 \xC2\xB7 s\xC3\xA9rie 1\xC2\xA0j") == 0, "phrase : « %s »", t);
   }
+  { Recur z{}; z.kind = RK_FULL; z.weekend = 1; z.h0 = 7; z.h1 = 8; z.hits = 5; z.days = 6; z.streak = 0;
+    svcRecurText(z, t, sizeof(t));
+    CHECK(strcmp(t, "Pleine 14\xC2\xA0h\xE2\x80\x93" "16\xC2\xA0h \xC2\xB7 5 week-ends/f\xC3\xA9ri\xC3\xA9s sur 6 \xC2\xB7 s\xC3\xA9rie interrompue") == 0,
+          "série nulle : « série interrompue », pas « série 0 j » (« %s »)", t); }
   svcRecurRule(g_recur, t, sizeof(t));
   CHECK(strstr(t, "7 des 10 derniers jours ouvrables") && strstr(t, "5 sur 6") && strstr(t, "15\xC2\xA0min"), "règle affichée : « %s »", t);
   int wd, we;

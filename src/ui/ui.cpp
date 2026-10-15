@@ -18,7 +18,7 @@ namespace ui {
 void listSetSort(int mode);
 void mapScreenFocus(int st);
 
-static const ScreenDef * DEFS[TAB_COUNT] = { &SCR_DASH, &SCR_MAP, &SCR_LIST, &SCR_ALERTS, &SCR_SETTINGS };
+static const ScreenDef * DEFS[TAB_COUNT] = { &SCR_DASH, &SCR_MAP, &SCR_LIST, &SCR_ALERTS, &SCR_SERVICE, &SCR_SETTINGS };
 
 static lv_obj_t * s_content, * s_screens[TAB_COUNT];
 static lv_obj_t * s_tabIcon[TAB_COUNT], * s_tabLabel[TAB_COUNT], * s_ind, * s_alertBadge, * s_alertBadgeLbl;
@@ -372,9 +372,9 @@ static void buildRail(lv_obj_t * scr) {
     lv_obj_set_style_bg_color(t, C(HX_S2), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(t, LV_OPA_COVER, LV_STATE_PRESSED);
     s_tabIcon[i] = icon(t, DEFS[i]->icon, HX_TEXT3);
-    lv_obj_align(s_tabIcon[i], LV_ALIGN_TOP_MID, 0, 7);
+    lv_obj_align(s_tabIcon[i], LV_ALIGN_TOP_MID, 0, 3);       // six onglets de 39 px : icône et libellé serrés
     s_tabLabel[i] = label(t, &vn_inter_11, HX_TEXT3, DEFS[i]->label);
-    lv_obj_align(s_tabLabel[i], LV_ALIGN_BOTTOM_MID, 0, -5);
+    lv_obj_align(s_tabLabel[i], LV_ALIGN_BOTTOM_MID, 0, -2);
     lv_obj_add_event_cb(t, [](lv_event_t * e) { showTab((int)(intptr_t)lv_event_get_user_data(e)); },
                         LV_EVENT_CLICKED, (void *)(intptr_t)i);
     if (i == TAB_ALERTS) {
