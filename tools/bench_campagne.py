@@ -34,6 +34,15 @@ KEYS = [
     ("precision_pluie", "précision des annonces, pluie %", 1), ("precision_sec", "précision des annonces, sec %", 1),
     ("absorb_moitie", "agrandissement : jours pour absorber la moitié", 1), ("ecart_plus28", "agrandissement : écart à la jumelle à +28 j", 2),
     ("ecart_plancher", "écart à la jumelle, 4 dernières semaines (bruit du profil)", 2),
+    ("fausses", "fausses/j, tous jours mûrs", 1), ("vraies", "vraies/j, tous jours mûrs", 2),
+    ("rappel_mur", "rappel incidents, période mûre %", 1), ("rappel_mur_pluie", "rappel période mûre, jours de pluie %", 1),
+    ("latence", "retard d'annonce moyen (min)", 1), ("latence_med", "retard d'annonce médian (min)", 0),
+    ("latence_p90", "retard d'annonce, 90e centile (min)", 0), ("latence_pluie", "retard d'annonce moyen, jours de pluie (min)", 1),
+    ("origine_derive", "fausses dues à la dérive ordinaire %", 1),
+    ("saut5_fausses", "sonde saut ≥ 5 / 15 min : fausses/j", 1), ("saut5_rappel", "sonde saut ≥ 5 / 15 min : rappel %", 1),
+    ("saut5c_fausses", "sonde saut ≥ 5 / 5 min : fausses/j", 1), ("saut5c_rappel", "sonde saut ≥ 5 / 5 min : rappel %", 1),
+    ("saut5r_fausses", "sonde saut ≥ 5 / 5 min hors sortie de rupture : fausses/j", 1),
+    ("saut5r_rappel", "sonde saut ≥ 5 / 5 min hors sortie de rupture : rappel %", 1),
 ]
 
 

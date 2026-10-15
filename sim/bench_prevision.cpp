@@ -166,6 +166,7 @@ struct World {
   Rng rFlow{ 1 }, rInc{ 2 };
   double depTot = 0;                // calibrage : retraits simulés
   double emptyAt1430 = 0, fullAt1430 = 0; int n1430 = 0;
+  int64_t truckAt[NST] = {};        // dernier passage du camion de régulation (diagnostic des fausses alertes)
 
   float F(int i, int64_t t) const {
     struct tm lt; plat::localTime(t, &lt);
@@ -342,7 +343,7 @@ static void stepWorld(World & w, int64_t t, int dayIdx, int64_t & lastTruck) {
   if (lt.tm_hour >= 7 && lt.tm_hour < 21 && t - lastTruck >= 1200) {
     int best = -1; int64_t since = t - 1800;
     for (int i = 0; i < NST; i++) if (!w.st[i].closed && w.st[i].badSince && w.st[i].badSince <= since) { since = w.st[i].badSince; best = i; }
-    if (best >= 0) { w.st[best].bikes = w.st[best].cap / 2; w.st[best].badSince = 0; lastTruck = t; }
+    if (best >= 0) { w.st[best].bikes = w.st[best].cap / 2; w.st[best].badSince = 0; lastTruck = t; w.truckAt[best] = t; }
   }
 }
 
@@ -386,7 +387,12 @@ int main(int argc, char ** argv) {
       const char * eq = strchr(kv, '=');
       std::string k = eq ? std::string(kv, eq - kv) : std::string(kv);
       bool v = eq ? atoi(eq + 1) != 0 : true;
+      double num = eq ? atof(eq + 1) : 1;
       if (k == "flux_meteo") g_pred.wxFlow = v;
+      else if (k == "alerte_disp") g_alertOpt.disp = v;              // 1a : tolérance = k × dispersion apprise
+      else if (k == "alerte_k") g_alertOpt.k = (float)num;           // 1a : k
+      else if (k == "inertie") g_alertOpt.persist = (int)num;        // 1b : relevés consécutifs avant d'alerter
+      else if (k == "alerte_echelle") g_alertOpt.scale = (float)num; // témoin : formule fixe élargie uniformément
       else if (k == "prevue_meteo") g_pred.wxForecast = v;
       else if (k == "ferie_dimanche") g_pred.holidaySunday = v;
       else { fprintf(stderr, "levier inconnu : %s\n", k.c_str()); return 1; }
@@ -421,7 +427,7 @@ int main(int argc, char ** argv) {
   std::vector<Pred> preds;
   preds.reserve((size_t)cfg.days * 64 * NST);
   // Incidents (vraies anomalies) : fenêtres par station
-  struct Inc { int st; int64_t t0, t1; bool seen; };
+  struct Inc { int st; int64_t t0, t1; bool seen; int64_t first; };
   std::vector<Inc> incs;
   // Alertes : apparitions par jour
   std::vector<uint32_t> prevMask(NST, 0);
@@ -435,6 +441,15 @@ int main(int argc, char ** argv) {
   struct Soon { int st, type; int64_t t; };
   std::vector<Soon> soons;
   int64_t lastTruck = 0;
+  long falseCat[4] = {};
+  double jF[5] = {}, jR[5] = {};                     // sonde « saut » : fausses/j et rappel (période mûre), pour SYNTHESE                             // fausses : après incident / après camion / vide-pleine / dérive
+  // Sonde (pas un levier) : détecteur de SAUT idéal, |Δ15 observé − Δ15 du profil| ≥ J vélos, mêmes règles d'épisode
+  static const int NJ = 5, JV[NJ] = { 5, 6, 5, 6, 5 }, JL[NJ] = { 3, 3, 1, 1, 1 };   // seuil J, pas de 5 min (15 ou 5 min) ; le 5e : hors sortie de rupture
+  std::vector<int64_t> jLast[NJ];
+  for (auto & v : jLast) v.assign(NST, 0);
+  double jFalse[NJ] = {}; int jDays = 0;
+  std::vector<std::vector<char>> jSeen(NJ);
+  struct Dg { double obs = 0, lrn = 0, z2 = 0, z3 = 0; long n = 0; } dg[24];
 
   for (int k = 0; k < steps; k++) {
     int64_t t = w.T0 + (int64_t)k * VN_RING_STEP_S;
@@ -455,7 +470,7 @@ int main(int argc, char ** argv) {
       int mag = std::max(6, (int)lroundf(0.5f * s.cap));
       int sign = w.rInc.u() < 0.5 ? -1 : 1;
       int nb = std::min(s.cap, std::max(0, s.bikes + sign * mag));
-      if (!s.closed && abs(nb - s.bikes) >= 5) { s.bikes = nb; incs.push_back({ i, t, t + 3 * 3600, false }); }
+      if (!s.closed && abs(nb - s.bikes) >= 5) { s.bikes = nb; incs.push_back({ i, t, t + 3 * 3600, false, 0 }); }
     }
     for (int i = 0; i < NST; i++) {
       const SimSt & s = w.st[i];
@@ -482,7 +497,16 @@ int main(int argc, char ** argv) {
         if (ty == AL_UNUSUAL && t - lastUnus[i] > 3600) {   // un épisode : pas d'alerte dans l'heure précédente
           bool real = false;
           for (auto & in : incs) if (in.st == i && t >= in.t0 && t < in.t1) { real = true; }
-          if (real) days[d].trueUnus++; else days[d].falseUnus++;
+          if (real) days[d].trueUnus++; else {
+            days[d].falseUnus++;
+            if (d >= 56) {                               // origine (diagnostic, période mûre)
+              bool postInc = false;
+              for (auto & in : incs) if (in.st == i && t >= in.t1 && t - in.t1 < 86400) postInc = true;
+              int b = m.st[i].bikes, cp = m.st[i].capEff();
+              int cat = postInc ? 0 : (w.truckAt[i] && t - w.truckAt[i] < 3 * 3600) ? 1 : (b == 0 || b == cp) ? 2 : 3;
+              falseCat[cat]++;
+            }
+          }
         }
         if (ty == AL_SOON_EMPTY || ty == AL_SOON_FULL) soons.push_back({ i, ty, t });
       }
@@ -498,9 +522,49 @@ int main(int argc, char ** argv) {
         prevTruth[i] = v;
       }
       if (mask[i] & (1u << AL_UNUSUAL))
-        for (auto & in : incs) if (in.st == i && t >= in.t0 && t < in.t1) in.seen = true;
+        for (auto & in : incs) if (in.st == i && t >= in.t0 && t < in.t1) { if (!in.seen) in.first = t; in.seen = true; }
       prevMask[i] = mask[i];
     }
+
+    // ── Sonde « saut » (période mûre, 7 h–22 h)
+    if (d >= 56 && k % 288 == 0) jDays++;
+    if (d >= 56 && k >= 3 && lt.tm_hour >= 7 && lt.tm_hour < 22) {
+      for (int j = 0; j < NJ; j++) if (jSeen[j].size() < incs.size()) jSeen[j].resize(incs.size(), 0);
+      for (int i = 0; i < NST; i++) {
+        int b1 = truth[(size_t)k * NST + i];
+        float p1, n1;
+        if (b1 < 0 || !m.profileAt(i, t, p1, n1) || n1 < 4) continue;
+        float rl[4] = { NAN, NAN, NAN, NAN };
+        for (int lag : { 1, 3 }) {
+          int b0 = truth[(size_t)(k - lag) * NST + i];
+          float p0, n0;
+          if (b0 < 0 || !m.profileAt(i, t - lag * 300, p0, n0) || n0 < 4) continue;
+          rl[lag] = (b1 - b0) - (p1 - p0);
+        }
+        for (int j = 0; j < NJ; j++) {
+          float r = rl[JL[j]];
+          if (isnan(r) || fabsf(r) < JV[j]) continue;
+          if (j == 4) { int bp = truth[(size_t)(k - 1) * NST + i]; if (bp == 0 || bp == w.st[i].cap) continue; }   // sortie de rupture (camion)
+          bool real = false;
+          for (size_t q = 0; q < incs.size(); q++) if (incs[q].st == i && t >= incs[q].t0 && t < incs[q].t1) { real = true; jSeen[j][q] = 1; }
+          if (!real && t - jLast[j][i] > 3600) jFalse[j]++;
+          jLast[j][i] = t;
+        }
+      }
+    }
+
+    // ── Diagnostic de la dispersion apprise : écart observé |N − P| contre dispersion apprise, par heure (j mûrs)
+    if (d >= 56 && lt.tm_min == 0 && lt.tm_hour >= 7 && lt.tm_hour < 22)
+      for (int i = 0; i < NST; i++) {
+        const Station & s = m.st[i];
+        if (!s.live || s.status == ST_CLOSED || s.anomExp < 0) continue;
+        float pp, ne, dd, dc;
+        if (!m.profileAt(i, t, pp, ne) || !m.dispersionAt(i, t, dd, dc)) continue;
+        dg[lt.tm_hour].obs += fabsf(s.bikes - pp); dg[lt.tm_hour].lrn += dd; dg[lt.tm_hour].n++;
+        bool inInc = false;
+        for (auto & in : incs) if (in.st == i && t >= in.t0 && t < in.t1) inInc = true;
+        if (!inInc) { float z = fabsf(s.bikes - pp) / fmaxf(dd, 0.25f); dg[lt.tm_hour].z3 += z > 3; dg[lt.tm_hour].z2 += z > 2; }
+      }
 
     // ── Prévisions : toutes les 15 min, 6 h – 22 h
     if (k % 3 == 0 && lt.tm_hour >= 6 && lt.tm_hour < 22) {
@@ -589,13 +653,22 @@ int main(int argc, char ** argv) {
     }
   }
   // Rappel « inhabituel » sur les incidents, précision « rupture prévue »
-  int incTot = 0, incSeen = 0, incR = 0, incRS = 0, incD = 0, incDS = 0;
+  int incTot = 0, incSeen = 0, incR = 0, incRS = 0, incD = 0, incDS = 0, incM = 0, incMS = 0, incMR = 0, incMRS = 0;
+  std::vector<double> lat, latR;                        // retard d'annonce (min) des incidents détectés, période mûre
   for (auto & in : incs) {
     incTot++; incSeen += in.seen;
-    const Day & D = days[(in.t0 - w.T0) / 86400];
+    int di = (int)((in.t0 - w.T0) / 86400);
+    const Day & D = days[di];
     if (D.rainH >= 3) { incR++; incRS += in.seen; }
     if (D.rainH == 0) { incD++; incDS += in.seen; }
+    if (di >= (cfg.days >= 84 ? 56 : cfg.days / 2)) {
+      incM++; incMS += in.seen;
+      if (D.rainH >= 3) { incMR++; incMRS += in.seen; }
+      if (in.seen) { lat.push_back((in.first - in.t0) / 60.0); if (D.rainH >= 3) latR.push_back((in.first - in.t0) / 60.0); }
+    }
   }
+  auto pct = [](std::vector<double> v, double q) { if (v.empty()) return (double)NAN; std::sort(v.begin(), v.end()); return v[(size_t)fmin(v.size() - 1, floor(q * v.size()))]; };
+  auto mean = [](const std::vector<double> & v) { double a = 0; for (double x : v) a += x; return v.empty() ? (double)NAN : a / v.size(); };
   for (auto & so : soons) {
     int k0 = (int)((so.t - w.T0) / VN_RING_STEP_S), d = k0 / 288;
     bool hit = false;
@@ -660,10 +733,15 @@ int main(int argc, char ** argv) {
   unus("jour sec", [&](int d) { return d >= matureFrom && days[d].rainH == 0 && !days[d].hol; });
   unus("jour mixte (1–2 h)", [&](int d) { return d >= matureFrom && days[d].rainH > 0 && days[d].rainH < 3 && !days[d].hol; });
   unus("jour férié", [&](int d) { return d >= matureFrom && days[d].hol; });
+  unus("tous les jours", [&](int d) { return d >= matureFrom; });
   printf("\nIncidents injectés : %d, détectés (« inhabituel » pendant l'incident) : %d → rappel %.1f %% "
          "(jours de pluie %.1f %% sur %d, jours secs %.1f %% sur %d)\n",
          incTot, incSeen, incTot ? 100.0 * incSeen / incTot : 0, incR ? 100.0 * incRS / incR : NAN, incR,
          incD ? 100.0 * incDS / incD : NAN, incD);
+  printf("Période mûre (j ≥ %d) : rappel %.1f %% sur %d incidents (jours de pluie %.1f %% sur %d) ; retard d'annonce des incidents détectés : "
+         "moyen %.1f min, médian %.0f, 90 %% en moins de %.0f min (jours de pluie : moyen %.1f min)\n",
+         matureFrom, incM ? 100.0 * incMS / incM : NAN, incM, incMR ? 100.0 * incMRS / incMR : NAN, incMR,
+         mean(lat), pct(lat, 0.5), pct(lat, 0.9), mean(latR));
 
   if (!cfg.brief) {
     printf("\n## 3. Maturation du profil\n\n| jour | couverture learnPct | confiance +1 h (parc) | confiance du profil (écart) | stations évaluées « inhabituel » |\n|---|---|---|---|---|\n");
@@ -694,6 +772,29 @@ int main(int argc, char ** argv) {
     (void)floorB;
     printf("\nÉcart initial %.2f vélos ; moitié absorbée en %d jours ; 90 %% absorbés en %s\n", b0, dHalf,
            d90 >= 0 ? (std::to_string(d90) + " jours").c_str() : "plus que la durée simulée");
+  }
+
+  if (!cfg.brief) {
+    printf("\n## 2b. Dispersion apprise (levier 1a), jours ≥ 57 : écart observé moyen |N − P| contre dispersion apprise D\n\n"
+           "| heure | |N − P| observé | D appris | hors incident : |N − P| > 2 D | > 3 D |\n|---|---|---|---|---|\n");
+    for (int hh = 7; hh < 22; hh++) if (dg[hh].n)
+      printf("| %d h | %.2f | %.2f | %.1f %% | %.1f %% |\n", hh, dg[hh].obs / dg[hh].n, dg[hh].lrn / dg[hh].n, 100 * dg[hh].z2 / dg[hh].n, 100 * dg[hh].z3 / dg[hh].n);
+  }
+
+  {
+    long ft = falseCat[0] + falseCat[1] + falseCat[2] + falseCat[3];
+    printf("\nOrigine des fausses alertes (période mûre, %ld épisodes) : après un incident (même station, < 24 h après sa fenêtre) %.1f %%, "
+           "après un passage du camion (< 3 h) %.1f %%, station vide ou pleine %.1f %%, dérive ordinaire %.1f %%\n", ft,
+           ft ? 100.0 * falseCat[0] / ft : NAN, ft ? 100.0 * falseCat[1] / ft : NAN, ft ? 100.0 * falseCat[2] / ft : NAN, ft ? 100.0 * falseCat[3] / ft : NAN);
+    (void)0;
+    printf("Sonde (pas un levier) — détecteur de saut idéal |Δ observé − Δ du profil| ≥ J sur 15 ou 5 min :");
+    for (int j = 0; j < NJ; j++) {
+      int sn = 0, st = 0;
+      for (size_t q = 0; q < incs.size(); q++) if ((incs[q].t0 - w.T0) / 86400 >= 56) { st++; sn += q < jSeen[j].size() && jSeen[j][q]; }
+      jF[j] = jDays ? jFalse[j] / jDays : NAN; jR[j] = st ? 100.0 * sn / st : NAN;
+      printf(" J=%d/%d min%s : %.1f fausses/j, rappel %.1f %% ;", JV[j], 5 * JL[j], j == 4 ? " hors sortie de rupture" : "", jF[j], jR[j]);
+    }
+    printf("\n");
   }
 
   printf("\n## 5. Bruit : apparitions d'alertes par jour (j ≥ %d)\n\n| type | sec | pluie | tous |\n|---|---|---|---|\n", matureFrom);
@@ -742,8 +843,9 @@ int main(int argc, char ** argv) {
     }
   }
   // Ligne de synthèse (pour comparer deux réglages d'un coup d'œil)
-  double fRain = 0, fDry = 0; int nR = 0, nD = 0;
+  double fRain = 0, fDry = 0, fAll = 0, tAll = 0; int nR = 0, nD = 0, nA = 0;
   for (int d = matureFrom; d < cfg.days; d++) {
+    fAll += days[d].falseUnus; tAll += days[d].trueUnus; nA++;
     if (days[d].hol) continue;
     if (days[d].rainH >= 3) { fRain += days[d].falseUnus; nR++; }
     if (days[d].rainH == 0) { fDry += days[d].falseUnus; nD++; }
@@ -755,7 +857,9 @@ int main(int argc, char ** argv) {
     if (d >= cfg.days - 28 && !isnan(days[d].chBias)) { absFloor += days[d].chBias; absFloorN++; }
   }
   printf("\nSYNTHESE graine=%llu effet=%s mae15=%.4f mae30=%.4f mae60=%.4f mae120=%.4f mae60_sec=%.4f mae60_pluie=%.4f mae120_pluie=%.4f "
-         "orc60_pluie=%.4f orc60=%.4f per60=%.4f fausses_pluie=%.2f fausses_sec=%.2f rappel=%.1f rappel_pluie=%.1f rappel_sec=%.1f ferie60=%.4f annonce_vide=%.1f annonce_pleine=%.1f annonces_pluie_j=%.2f precision_pluie=%.1f precision_sec=%.1f alpha=%.3f alpha_brut=%.3f alpha_se=%.3f jours_alpha=%.1f mae60_debut=%.4f mae60_fin=%.4f n60_debut=%ld mae240=%.4f mae240_pluie=%.4f mae240_debut=%.4f postferie60=%.4f fausses_ferie=%.2f ferie240=%.4f absorb_moitie=%d ecart_plus28=%.3f ecart_plancher=%.3f\n",
+         "orc60_pluie=%.4f orc60=%.4f per60=%.4f fausses_pluie=%.2f fausses_sec=%.2f rappel=%.1f rappel_pluie=%.1f rappel_sec=%.1f ferie60=%.4f annonce_vide=%.1f annonce_pleine=%.1f annonces_pluie_j=%.2f precision_pluie=%.1f precision_sec=%.1f alpha=%.3f alpha_brut=%.3f alpha_se=%.3f jours_alpha=%.1f mae60_debut=%.4f mae60_fin=%.4f n60_debut=%ld mae240=%.4f mae240_pluie=%.4f mae240_debut=%.4f postferie60=%.4f fausses_ferie=%.2f ferie240=%.4f absorb_moitie=%d ecart_plus28=%.3f ecart_plancher=%.3f "
+         "fausses=%.2f vraies=%.2f rappel_mur=%.1f rappel_mur_pluie=%.1f latence=%.1f latence_med=%.0f latence_p90=%.0f latence_pluie=%.1f "
+         "saut5_fausses=%.2f saut5_rappel=%.1f saut6_fausses=%.2f saut6_rappel=%.1f saut5c_fausses=%.2f saut5c_rappel=%.1f saut6c_fausses=%.2f saut6c_rappel=%.1f saut5r_fausses=%.2f saut5r_rappel=%.1f origine_derive=%.1f\n",
          (unsigned long long)cfg.seed, cfg.effName, mature.fc[0].mean(), mature.fc[1].mean(), mature.fc[2].mean(), mature.fc[3].mean(),
          matureDry.fc[2].mean(), matureWet.fc[2].mean(), matureWet.fc[3].mean(), matureWet.orc[2].mean(), mature.orc[2].mean(), mature.per[2].mean(),
          nR ? fRain / nR : NAN, nD ? fDry / nD : NAN, incTot ? 100.0 * incSeen / incTot : 0,
@@ -764,6 +868,9 @@ int main(int argc, char ** argv) {
          nR ? (wn[0] + wn[1]) / nR : NAN, (wn[0] + wn[1]) ? 100 * (wo[0] + wo[1]) / (wn[0] + wn[1]) : NAN,
          (sn[0] + sn[1]) ? 100 * (so[0] + so[1]) / (sn[0] + sn[1]) : NAN, m.wxAlpha, m.wxAlphaRaw, m.wxAlphaSE, [&] { int a = 0, t = 0; for (int d = 28; d < cfg.days; d++) { t++; a += days[d].alpha != 0; } return t ? 100.0 * a / t : 0.0; }(), onset.fc[2].mean(), ending.fc[2].mean(), onset.fc[2].n, mature.fc[4].mean(), matureWet.fc[4].mean(), onset.fc[4].mean(), postHol.fc[2].mean(),
          [&] { double f = 0; int nn = 0; for (int d = 0; d < cfg.days; d++) if (days[d].hol) { f += days[d].falseUnus; nn++; } return nn ? f / nn : NAN; }(),
-         hol.fc[4].mean(), absHalf, CHANGE_DAY + 28 < cfg.days ? days[CHANGE_DAY + 28].chBias : NAN, absFloorN ? absFloor / absFloorN : NAN);
+         hol.fc[4].mean(), absHalf, CHANGE_DAY + 28 < cfg.days ? days[CHANGE_DAY + 28].chBias : NAN, absFloorN ? absFloor / absFloorN : NAN,
+         nA ? fAll / nA : NAN, nA ? tAll / nA : NAN, incM ? 100.0 * incMS / incM : NAN, incMR ? 100.0 * incMRS / incMR : NAN,
+         mean(lat), pct(lat, 0.5), pct(lat, 0.9), mean(latR),
+         jF[0], jR[0], jF[1], jR[1], jF[2], jR[2], jF[3], jR[3], jF[4], jR[4], [&] { long ft = falseCat[0] + falseCat[1] + falseCat[2] + falseCat[3]; return ft ? 100.0 * falseCat[3] / ft : (double)NAN; }());
   return 0;
 }
