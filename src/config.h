@@ -38,6 +38,7 @@
 #define VN_FC_STEPS        25   // prévision 0…120 min au pas de 5 min
 #define VN_MAX_ALERTS      96
 #define VN_MAX_TRANSFERS    8
+#define VN_DAYS            60   // résumés par jour gardés (vue Service, core/days.h) : 2 mois
 
 // ── Recherche Wi-Fi (voir core/wifiscan.h) ───────────────────────────
 #define VN_SCAN_MAX        40   // réseaux affichés (après dédoublonnage et tri ; au-delà, les plus faibles)

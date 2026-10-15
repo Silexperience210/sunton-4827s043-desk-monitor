@@ -7,6 +7,7 @@
 #include "../config.h"
 #include "gbfs.h"
 #include "weather.h"
+#include "days.h"
 
 namespace vn {
 
@@ -233,6 +234,8 @@ struct Model {
   bool      freshReading = false;          // recompute() appelé par applyStatus (un relevé neuf)
   int64_t   learnSince = 0;
   uint32_t  learnSamples = 0;
+  // Résumés par jour (vue Service) : alimentés à chaque tranche de 5 min relevée
+  DayBook   days;
   // Dérivés
   Totals    tot{};
   float     netFc[VN_FC_STEPS] = {};
@@ -296,7 +299,8 @@ struct Model {
   int   ringIndex(int back) const;       // index du point « back » tranches en arrière (‑1)
 
   // Sauvegarde : serialize() sous verrou (rapide), puis writeSaved() hors verrou (flash lente)
-  struct Blob { uint8_t * prof = nullptr; size_t profLen = 0; uint8_t * hist = nullptr; size_t histLen = 0; };
+  struct Blob { uint8_t * prof = nullptr; size_t profLen = 0; uint8_t * hist = nullptr; size_t histLen = 0;
+                uint8_t * days = nullptr; size_t daysLen = 0; };
   bool serialize(Blob & out) const;
   static bool writeSaved(Blob & b);
   bool load(int64_t now);

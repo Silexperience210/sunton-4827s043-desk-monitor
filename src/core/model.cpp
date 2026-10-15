@@ -110,6 +110,7 @@ bool Model::init() {
   dispPendCell = (int16_t *)plat::psAlloc(sizeof(int16_t) * VN_MAX_ST);
   if (!dispPendDev || !dispPendCell) return false;
   if (!st || !ringT || !ring || !net || !recT || !rec || !prof || !cellN || !alerts || !wxS || !dispSince) return false;
+  if (!days.init()) return false;
   memset(ring, 255, (size_t)VN_RING_SLOTS * VN_MAX_ST);
   memset(rec, 255, (size_t)VN_RECENT_SLOTS * VN_MAX_ST);
   return true;
@@ -261,7 +262,9 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
 
   // Tranche de 5 min : historique 24 h + profils
   int64_t slotT = now - (now % VN_RING_STEP_S);
+  bool newSlot = false;
   if (head < 0 || net[head].t != slotT) {
+    newSlot = true;
     int gaps = 0;
     if (head >= 0 && slotT > net[head].t) gaps = (int)((slotT - net[head].t) / VN_RING_STEP_S) - 1;
     if (gaps > VN_RING_SLOTS) gaps = VN_RING_SLOTS;
@@ -329,6 +332,8 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
   freshReading = true;
   recompute(now);
   freshReading = false;
+  // Résumé du jour : la tranche avec les états qu'elle vient de produire (statut, écart au profil)
+  if (newSlot) days.addSlot(*this, slotT);
 }
 
 // ── Profil appris ────────────────────────────────────────────────────
@@ -1077,6 +1082,7 @@ static_assert(sizeof(WxStats) == 32 && sizeof(WxClimate) == 192, "format v2 de /
 static_assert(sizeof(ProfCell) == 4, "format v3 de /vn_prof.bin");
 static const char * HIST_PATH = "/vn_hist.bin";
 static const char * PROF_PATH = "/vn_prof.bin";
+// /vn_days.bin : résumés par jour, format et migration décrits dans core/days.cpp
 
 bool Model::serialize(Blob & out) const {
   out = Blob();
@@ -1112,6 +1118,8 @@ bool Model::serialize(Blob & out) const {
   memcpy(b + o, net, VN_RING_SLOTS * sizeof(NetSample)); o += VN_RING_SLOTS * sizeof(NetSample);
   for (int r = 0; r < VN_RING_SLOTS; r++) { memcpy(b + o, ring + (size_t)r * VN_MAX_ST, n); o += n; }
   out.hist = b; out.histLen = o;
+  // Résumés par jour (facultatifs : leur échec n'empêche pas de sauver le reste)
+  days.serialize(*this, out.days, out.daysLen);
   return true;
 }
 
@@ -1119,6 +1127,7 @@ bool Model::writeSaved(Blob & b) {
   bool ok = true;
   if (b.prof) { ok &= plat::fsWrite(PROF_PATH, b.prof, b.profLen); plat::psFree(b.prof); }
   if (b.hist) { ok &= plat::fsWrite(HIST_PATH, b.hist, b.histLen); plat::psFree(b.hist); }
+  if (b.days) { ok &= plat::fsWrite(DAYS_PATH, b.days, b.daysLen); plat::psFree(b.days); }
   b = Blob();
   return ok;
 }
@@ -1236,6 +1245,21 @@ bool Model::load(int64_t now) {
     }
     if (b) plat::psFree(b);
   }
+  // Résumés par jour : relus indépendamment (un fichier illisible les laisse vides, rien d'autre)
+  long dsz = plat::fsSize(DAYS_PATH);
+  if (dsz > (long)sizeof(DaysFileHdr)) {
+    uint8_t * b = (uint8_t *)plat::psAlloc(dsz);
+    if (b && plat::fsRead(DAYS_PATH, b, dsz)) {
+      DaysFileHdr h; memcpy(&h, b, sizeof(h));
+      if (h.magic == DAYS_MAGIC && h.ver == DAYS_VER && h.nSt <= VN_MAX_ST
+          && (size_t)dsz >= sizeof(h) + (size_t)h.nSt * 8) {
+        mapSids(*this, b + sizeof(h), h.nSt, map);
+        if (days.load(b, (size_t)dsz, map, h.nSt, now)) any = true;
+        else plat::logf("[model] %s illisible : r\xC3\xA9sum\xC3\xA9s par jour ignor\xC3\xA9s", DAYS_PATH);
+      } else plat::logf("[model] %s : version ou en-t\xC3\xAAte inconnus, ignor\xC3\xA9", DAYS_PATH);
+    }
+    if (b) plat::psFree(b);
+  }
   return any;
 }
 
@@ -1253,8 +1277,10 @@ void Model::resetHistory() {
   updateWxCoef();
   head = -1; count = 0; rHead = -1; rCount = 0;
   learnSince = 0; learnSamples = 0;
+  days.clear();
   plat::fsRemove(HIST_PATH);
   plat::fsRemove(PROF_PATH);
+  plat::fsRemove(DAYS_PATH);
   version++;
 }
 

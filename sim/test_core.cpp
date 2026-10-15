@@ -896,7 +896,8 @@ static void testAlertCalm() {
   { auto x = legacyProf(v3, 3, 2); uint16_t v = 3; memcpy(x.data() + 4, &v, 2); bads.push_back({ "v2 annoncé v3 (taille fausse)", x }); }
   { auto x = v3; uint16_t v = 0; memcpy(x.data() + 4, &v, 2); bads.push_back({ "version 0", x }); }
   { auto x = v3; uint16_t ns = 9999; memcpy(x.data() + 6, &ns, 2); bads.push_back({ "nombre de stations aberrant", x }); }
-  plat::fsRemove("/vn_hist.bin");                 // le profil seul (l'historique recréerait les stations)
+  plat::fsRemove("/vn_hist.bin");                 // le profil seul (l'historique et les résumés par jour
+  plat::fsRemove("/vn_days.bin");                 // recréeraient les stations)
   for (auto & bd : bads) {
     plat::fsWrite("/vn_prof.bin", bd.data.data(), bd.data.size());
     Model & q = *new Model();                      // un modèle neuf par fichier (le banc de la carte au démarrage)
