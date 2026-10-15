@@ -807,7 +807,8 @@ puis la mémoire du profil (levier 2), chacun contre sa propre référence.
 l'alerte (c) ne fait que la rendre moins sensible — **non livré**. Récence : la mémoire est désormais une
 décroissance explicite et réglable, mais **aucune constante ne bat 8 semaines** sur tous les critères —
 **rien de changé**. Tout ce qui est livré par cette branche : le calendrier sourcé, le nom du férié à l'écran,
-les interrupteurs et le banc pour rejouer ces mesures. Rejouable :
+les interrupteurs et le banc pour rejouer ces mesures. Rejouable (la variante `ferie_appris=2`, « exclu », a
+été retirée du code dans feat/final : la rejouer au commit `1521ae6`) :
 
 ```bash
 cd sim && make bench_prevision && cd ..
@@ -1072,6 +1073,10 @@ relevés est bruité et peu sûr, alors que l'ancien profil, trop bas mais lisse
 avant tout autre réglage de la mémoire : **remettre à l'échelle** le profil (× nouvelle capacité / ancienne)
 au lieu de le rajeunir, en gardant n — mais le monde simulé remplit la station agrandie à proportion, ce qui
 ferait gagner cette variante **par construction** : à juger sur un vrai agrandissement.
+
+> **Retiré du code (feat/final, resserrage)** : l'interrupteur `g_pred.rejuvN` et la clé `rajeunir` du banc.
+> Le tableau ci-dessus se rejoue au commit `1521ae6`. Une capacité annoncée qui change ne touche plus au
+> profil, comme avant (testé : « capacité 30 → 31 → 45 bornes : n et moyenne intacts »).
 
 ## Banc sur données réelles (branche `feat/bench-reel`) — la chaîne est prête, **aucune donnée réelle mesurée**
 

@@ -1342,8 +1342,8 @@ static void testHolidayLearn() {
   StatusRec sr[1];
   const int64_t T0 = lux(2026, 4, 27, 0, 0), H = lux(2026, 5, 14, 0, 0), H1 = lux(2026, 5, 15, 0, 0);   // 14/05/2026 : Ascension (jeudi)
   const int THU = 4 * 96 + 40, SUN = 0 * 96 + 40;                  // cellules jeudi et dimanche 10:00
-  static const char * NAME[3] = { "son jour", "dimanche", "exclu" };
-  for (int v = HL_DAY; v <= HL_SKIP; v++) {
+  static const char * NAME[2] = { "son jour", "dimanche" };
+  for (int v = HL_DAY; v <= HL_SUNDAY; v++) {
     g_pred = PredictOpts();
     g_pred.holidayLearn = (uint8_t)v;
     static Model m;
@@ -1355,9 +1355,8 @@ static void testHolidayLearn() {
     for (int64_t t = H; t < H1; t += 300) { sr[0] = mkStat("1", 2, 20); m.applyStatus(sr, 1, t); }
     bool thuMoved = m.prof[THU].a != thu.a || m.prof[THU].n != thu.n, sunMoved = m.prof[SUN].a != sun.a || m.prof[SUN].n != sun.n;
     bool cnMoved = m.cellN[THU] != cn || m.cellN[SUN] != cs;
-    if (v == HL_DAY) CHECK(thuMoved && !sunMoved, "férié appris à « %s » : la case du jeudi bouge, pas celle du dimanche", NAME[v]);
-    if (v == HL_SUNDAY) CHECK(!thuMoved && sunMoved && m.prof[SUN].n == sun.n + 3, "férié appris à « %s » : 3 relevés de plus au dimanche 10:00, jeudi intact", NAME[v]);
-    if (v == HL_SKIP) CHECK(!thuMoved && !sunMoved && !cnMoved, "férié « %s » : ni le jeudi ni le dimanche ne bougent, progression non comptée", NAME[v]);
+    if (v == HL_DAY) CHECK(thuMoved && !sunMoved && cnMoved, "férié appris à « %s » : la case du jeudi bouge, pas celle du dimanche ; progression comptée", NAME[v]);
+    if (v == HL_SUNDAY) CHECK(!thuMoved && sunMoved && m.prof[SUN].n == sun.n + 3 && cnMoved, "férié appris à « %s » : 3 relevés de plus au dimanche 10:00, jeudi intact ; progression comptée", NAME[v]);
     // le lendemain (vendredi) s'apprend normalement quelle que soit la variante
     ProfCell fri = m.prof[5 * 96 + 40];
     for (int64_t t = H1; t < H1 + 86400; t += 300) { sr[0] = mkStat("1", 10, 20); m.applyStatus(sr, 1, t); }
@@ -1485,10 +1484,9 @@ static void testDecay() {
     r2 = Model(); r2.init();
     CHECK(r2.load(tl) && r2.prof[C].a == 10 * 256 && r2.prof[C].n == 12, "v2 relue avec N = 12 : moyenne intacte, n plafonné à 12 (%d)", r2.prof[C].n);
   }
-  // Rajeunissement ciblé (mesuré, non livré) : seule la station dont la capacité annoncée change
+  // Une nouvelle capacité annoncée ne touche pas au profil (le rajeunissement ciblé, mesuré, a été retiré)
   {
     g_pred = PredictOpts();
-    CHECK(g_pred.rejuvN == 0, "réglage livré : pas de rajeunissement ciblé");
     static Model m;
     m = Model(); m.init();
     InfoRec two[2] = { mkInfo("1", 49.6f, 6.13f, 30), mkInfo("2", 49.61f, 6.13f, 30) };
@@ -1500,13 +1498,9 @@ static void testDecay() {
     }
     const int64_t t1 = M0 + 10 * 7 * 86400;
     two[0].cap = 31; m.applyInfo(two, 2, t1);
-    CHECK(m.prof[C].n == 24, "rajeunissement désactivé : capacité 30 → 31, n intact (%d)", m.prof[C].n);
-    g_pred.rejuvN = 6;
-    two[0].cap = 32; m.applyInfo(two, 2, t1);
-    CHECK(m.prof[C].n == 24, "31 → 32 : une borne de plus, pas de rajeunissement (%d)", m.prof[C].n);
-    two[0].cap = 45; m.applyInfo(two, 2, t1);
-    CHECK(m.prof[C].n == 6 && m.prof[C].a == 10 * 256 && m.prof[672 + C].n == 24,
-          "32 → 45 bornes : n ramené à 6 pour cette station seulement, moyenne gardée (%d, voisine %d)", m.prof[C].n, m.prof[672 + C].n);
+    two[0].cap = 45; m.applyInfo(two, 2, t1 + 60);
+    CHECK(m.prof[C].n == 24 && m.prof[C].a == 10 * 256 && m.prof[672 + C].n == 24,
+          "capacité 30 → 31 → 45 bornes : n et moyenne intacts (%d, voisine %d)", m.prof[C].n, m.prof[672 + C].n);
     g_pred = PredictOpts();
   }
   g_pred = PredictOpts();

@@ -406,9 +406,8 @@ int main(int argc, char ** argv) {
       if (k == "flux_meteo") g_pred.wxFlow = v;
       else if (k == "prevue_meteo") g_pred.wxForecast = v;
       else if (k == "ferie_dimanche") g_pred.holidaySunday = v;                 // (b) prévoir un férié en dimanche
-      else if (k == "ferie_appris") g_pred.holidayLearn = (uint8_t)num;       // (a) 0 son jour, 1 dimanche, 2 exclu
+      else if (k == "ferie_appris" && num >= 0 && num <= 1) g_pred.holidayLearn = (uint8_t)num;       // (a) 0 son jour (v1.0.8), 1 dimanche (livré)
       else if (k == "profil_n") g_pred.profDecayN = (int)num;                 // récence : constante de temps (relevés)
-      else if (k == "rajeunir") g_pred.rejuvN = (int)num;                     // rajeunissement ciblé sur changement de capacité
       else { fprintf(stderr, "levier inconnu : %s\n", k.c_str()); return 1; }
     }
     else { fprintf(stderr, "option inconnue : %s\n", argv[a]); return 1; }

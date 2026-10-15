@@ -66,16 +66,14 @@ static void profDM(int64_t t, int & dow, int & mod) {
   if (g_pred.holidaySunday && isPublicHoliday(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday)) dow = 0;
 }
 
-// Case de profil qu'un relevé à l'instant t nourrit (levier « fériés » (a)) ; false = jour non appris
-static bool learnDM(int64_t t, int & dow, int & mod) {
+// Case de profil qu'un relevé à l'instant t nourrit (levier « fériés » (a)) : un jour férié va au
+// dimanche (HL_SUNDAY, livré) ou à son jour de semaine (HL_DAY, la v1.0.8, référence du banc)
+static void learnDM(int64_t t, int & dow, int & mod) {
   struct tm lt;
   plat::localTime(t, &lt);
   dow = lt.tm_wday;
   mod = lt.tm_hour * 60 + lt.tm_min;
-  if (g_pred.holidayLearn == HL_DAY || !isPublicHoliday(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday)) return true;
-  if (g_pred.holidayLearn == HL_SKIP) return false;
-  dow = 0;
-  return true;
+  if (g_pred.holidayLearn == HL_SUNDAY && isPublicHoliday(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday)) dow = 0;
 }
 
 // ── Mémoire du profil (levier « récence ») ───────────────────────────
@@ -161,11 +159,6 @@ void Model::applyInfo(const InfoRec * r, int cnt, int64_t now) {
       st[i].lastChange = now;
     }
     Station & s = st[i];
-    int dc = (int)r[k].cap - (int)s.cap;
-    if (g_pred.rejuvN > 0 && s.cap > 0 && abs(dc) >= 2 && abs(dc) * 10 >= s.cap) {
-      ProfCell * p = prof + (size_t)i * PROF_STRIDE;
-      for (int q = 0; q < PROF_STRIDE; q++) if (p[q].n > g_pred.rejuvN) p[q].n = (uint8_t)g_pred.rejuvN;
-    }
     memcpy(s.name, r[k].name, sizeof(s.name));
     memcpy(s.addr, r[k].addr, sizeof(s.addr));
     s.lat = r[k].lat; s.lon = r[k].lon; s.cap = r[k].cap;
@@ -299,10 +292,10 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
 
       // Profils : moyenne simple puis décroissance exponentielle (profWeight)
       int dow, mod;
-      const bool learnDay = learnDM(t, dow, mod);
+      learnDM(t, dow, mod);
       int cell = dow * DAYQ + mod / 15;
       const int decN = g_pred.profDecayN, nMax = profCountMax(decN);
-      for (int i = 0; i < n && learnDay; i++) {
+      for (int i = 0; i < n; i++) {
         const Station & s = st[i];
         if (!s.active || !s.live || s.status == ST_CLOSED) continue;
         ProfCell & c = prof[(size_t)i * PROF_STRIDE + cell];
@@ -316,7 +309,7 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
           else if (c.n > nMax) c.n = (uint8_t)nMax;     // N raccourci depuis l'écriture du fichier
         }
       }
-      if (learnDay && cellN[cell] < 255) cellN[cell]++;
+      if (cellN[cell] < 255) cellN[cell]++;
       learnSamples++;
       if (!learnSince) learnSince = now;
       learnWeather(t);

@@ -382,9 +382,8 @@ static bool applyLever(const std::string & k, double num, bool v) {
   if (k == "flux_meteo") g_pred.wxFlow = v;
   else if (k == "prevue_meteo") g_pred.wxForecast = v;
   else if (k == "ferie_dimanche") g_pred.holidaySunday = v;
-  else if (k == "ferie_appris") g_pred.holidayLearn = (uint8_t)num;
+  else if (k == "ferie_appris" && num >= 0 && num <= 1) g_pred.holidayLearn = (uint8_t)num;
   else if (k == "profil_n") g_pred.profDecayN = (int)num;
-  else if (k == "rajeunir") g_pred.rejuvN = (int)num;
   else return false;
   return true;
 }

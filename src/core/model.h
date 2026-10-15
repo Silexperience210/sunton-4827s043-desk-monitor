@@ -34,9 +34,9 @@ enum AnomState : uint8_t {
 // ── Leviers de prévision ─────────────────────────────────────────────
 // Ce qu'un jour férié verse au profil
 enum HolLearn : uint8_t {
-  HL_DAY,                      // la case de son jour de semaine (comportement de la v1.0.8)
-  HL_SUNDAY,                   // la case du dimanche (étape 5a-ii)
-  HL_SKIP                      // rien : le jour férié n'est pas appris
+  HL_DAY,                      // la case de son jour de semaine (comportement de la v1.0.8, référence du banc)
+  HL_SUNDAY                    // la case du dimanche (étape 5a-ii, livré)
+  // (« rien : le jour férié n'est pas appris » — 5a-i — a perdu deux fois : retiré)
 };
 // Un interrupteur par levier, pour que sim/bench_prevision mesure chacun SÉPARÉMENT
 // (docs/mesures-prevision.md). Les valeurs par défaut sont celles de la carte.
@@ -52,10 +52,7 @@ struct PredictOpts {
   // (moyenne simple des premiers relevés), a ← a + (x − a) / profDecayN, soit une décroissance
   // exponentielle de facteur λ = 1 − 1/profDecayN par relevé (24 = 8 semaines, levier « récence »).
   int profDecayN = VN_PROFILE_DECAY_N;
-  // Rajeunissement ciblé (mesuré, non livré : 0) : quand station_information annonce une nouvelle capacité
-  // (écart ≥ 2 bornes et ≥ 10 %), les cellules de CETTE station repartent avec n ≤ rejuvN — elles
-  // réapprennent à la vitesse de la montée, le reste du parc garde sa mémoire.
-  int rejuvN = 0;
+  // (Rajeunissement ciblé sur changement de capacité : mesuré, non livré, retiré — docs/mesures-prevision.md.)
 };
 extern PredictOpts g_pred;
 // Poids du relevé suivant dans une cellule qui en a déjà compté n (n saturé à 31) : 1/(n + 1) pendant la
