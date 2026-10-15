@@ -11,25 +11,28 @@ static_assert(sizeof(DaySt) == 16, "format v1 de /vn_days.bin (DaySt)");
 static_assert(sizeof(DaysFileHdr) == 40, "en-tête de /vn_days.bin");
 
 // ── Dates locales (jours depuis le 01/01/1970, calendrier grégorien) ──
+// Calculs en 64 bits : une année ou un jour absurdes (fichier abîmé) ne débordent jamais.
 int32_t civilDay(int y, int m, int d) {
-  y -= m <= 2;
-  const int era = (y >= 0 ? y : y - 399) / 400;
-  const int yoe = y - era * 400;
-  const int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-  const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097 + doe - 719468;
+  int64_t yy = (int64_t)y - (m <= 2);
+  const int64_t era = (yy >= 0 ? yy : yy - 399) / 400;
+  const int64_t yoe = yy - era * 400;
+  const int64_t doy = (153 * (int64_t)(m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  const int64_t r = era * 146097 + doe - 719468;
+  return r > INT32_MAX ? INT32_MAX : r < INT32_MIN ? INT32_MIN : (int32_t)r;
 }
-void dayCivil(int32_t z, int & y, int & m, int & d) {
-  z += 719468;
-  const int era = (z >= 0 ? z : z - 146096) / 146097;
-  const int doe = z - era * 146097;
+void dayCivil(int32_t z32, int & y, int & m, int & d) {
+  const int64_t z = (int64_t)z32 + 719468;
+  const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+  const int doe = (int)(z - era * 146097);
   const int yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
   const int doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
   const int mp = (5 * doy + 2) / 153;
   d = doy - (153 * mp + 2) / 5 + 1;
   m = mp + (mp < 10 ? 3 : -9);
-  y = yoe + era * 400 + (m <= 2);
+  y = (int)(yoe + era * 400 + (m <= 2));
 }
+bool plausibleTime(int64_t t) { return t > 0 && t < 4102444800LL; }   // avant le 01/01/2100
 int32_t localDay(int64_t t) {
   struct tm lt;
   plat::localTime(t, &lt);
@@ -206,7 +209,9 @@ bool DayBook::load(const uint8_t * b, size_t len, const int16_t * map, int nStFi
   memcpy(&h, b, sizeof(h));
   if (h.nSt != nStFile) return false;
   clear();
-  const int32_t maxDay = now > 0 ? localDay(now) : (h.savedAt > 0 ? localDay(h.savedAt) : 0x7FFFFFFF);
+  // Dates du fichier vérifiées AVANT tout calcul de date (revue m1 : 2⁶⁰ débordait civilDay)
+  const int64_t savedAt = plausibleTime(h.savedAt) ? h.savedAt : 0, prevT = plausibleTime(h.prevT) ? h.prevT : 0;
+  const int32_t maxDay = now > 0 ? localDay(now) : (savedAt > 0 ? localDay(savedAt) : 0x7FFFFFFF);
   const int skip = h.nDays > VN_DAYS ? h.nDays - VN_DAYS : 0;          // trop de jours : on garde les plus récents
   size_t o = sizeof(h) + (size_t)h.nSt * 8 + (size_t)skip * (h.netSz + (size_t)h.nSt * h.stSz);
   int32_t last = 0;
@@ -233,7 +238,7 @@ bool DayBook::load(const uint8_t * b, size_t len, const int16_t * map, int nStFi
     }
   }
   // Créneau en cours et tranche précédente : seulement s'ils prolongent le jour le plus récent relu
-  bool cont = head >= 0 && h.prevT > 0 && localDay(h.prevT) == net[head].day && h.hcKey / 100 == net[head].day;
+  bool cont = head >= 0 && prevT > 0 && localDay(prevT) == net[head].day && h.hcKey / 100 == net[head].day;
   if (cont) {
     const uint8_t * hcp = b + o;
     const uint8_t * pv = hcp + (size_t)h.nSt * DAY_HC;
@@ -246,7 +251,7 @@ bool DayBook::load(const uint8_t * b, size_t len, const int16_t * map, int nStFi
       prev[map[j]] = pv[j] < ST_COUNT ? pv[j] : 255;
     }
     hcKey = h.hcKey;
-    prevT = h.prevT;
+    this->prevT = prevT;
   }
   version++;
   return true;

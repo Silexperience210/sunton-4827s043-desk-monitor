@@ -101,6 +101,7 @@ struct DayBook {
 };
 
 // ── Dates locales ────────────────────────────────────────────────────
+bool    plausibleTime(int64_t t);   // 0 < t < 01/01/2100 : une date de fichier qu'on peut convertir
 int32_t localDay(int64_t t);                       // jour local de l'instant t
 int     localHour(int64_t t);
 void    dayCivil(int32_t day, int & y, int & m, int & d);

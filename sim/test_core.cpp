@@ -2043,8 +2043,8 @@ static void testRecurWorld() {
 // ── Vidage série « dump » (core/dump.cpp) : codeur, émetteur, lecteur de commandes ──
 static std::string b64dec(const std::string & s) {
   static const std::string A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  std::string o; int v = 0, bits = 0;
-  for (char c : s) { if (c == '=') break; size_t k = A.find(c); if (k == std::string::npos) return "?"; v = (v << 6) | (int)k; bits += 6;
+  std::string o; unsigned v = 0; int bits = 0;
+  for (char c : s) { if (c == '=') break; size_t k = A.find(c); if (k == std::string::npos) return "?"; v = ((v << 6) | (unsigned)k) & 0xFFFFFFu; bits += 6;
     if (bits >= 8) { bits -= 8; o += (char)((v >> bits) & 0xFF); } }
   return o;
 }
@@ -2221,6 +2221,34 @@ static void testHorsLigne(const std::string & dir) {
   }
 }
 
+// ── /vn_days.bin aux dates absurdes (revue m1) : jamais de calcul de date sur une valeur non vérifiée ──
+// prevT (octet 24) ou savedAt (octet 32) = 2⁶⁰ : les jours restent relus, la tranche en cours est oubliée.
+static void testDaysBadTimes() {
+  settingsDefaults(g_set);
+  static Model m;
+  CHECK(m.init(), "init jours abîmés");
+  InfoRec ir[NS];
+  learn(m, 3, ir);
+  Model::Blob b;
+  CHECK(m.serialize(b) && b.days && b.daysLen > 40, "résumés par jour sérialisés (%zu o)", b.daysLen);
+  int16_t map[NS];
+  for (int i = 0; i < NS; i++) map[i] = (int16_t)i;
+  const int64_t now = m.lastUpdate, huge = (int64_t)1 << 60;
+  for (int k = 0; k < 3; k++) {
+    std::vector<uint8_t> f(b.days, b.days + b.daysLen);
+    if (k != 1) memcpy(&f[24], &huge, 8);                   // prevT
+    if (k != 0) memcpy(&f[32], &huge, 8);                   // savedAt
+    static DayBook d;
+    if (!d.net) d.init();
+    bool ok = d.load(f.data(), f.size(), map, NS, k == 2 ? 0 : now);
+    const int64_t wantPrev = k == 1 ? m.days.prevT : 0;      // savedAt seul abîmé : la tranche en cours reste valable
+    CHECK(ok && d.count == m.days.count && d.prevT == wantPrev,
+          "%s = 2^60 : %d jours relus sur %d, tranche en cours (prevT %lld) comme attendu",
+          k == 0 ? "prevT" : k == 1 ? "savedAt" : "prevT et savedAt (heure inconnue)", d.count, m.days.count, (long long)d.prevT);
+  }
+  plat::psFree(b.prof); plat::psFree(b.hist); plat::psFree(b.days);
+}
+
 // ── Station fermée : rien n'entre dans son profil (revue, mutation PM6) ──
 static void testClosedNotLearned() {
   settingsDefaults(g_set);
@@ -2306,6 +2334,7 @@ int main(int argc, char ** argv) {
   testHorsLigne(argc > 1 ? argv[1] : "");
   testVersion();
   testClosedNotLearned();
+  testDaysBadTimes();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;
 }

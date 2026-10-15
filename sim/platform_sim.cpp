@@ -35,7 +35,7 @@ void localTime(int64_t epoch, struct tm * out) {
   static bool tzSet = false;
   if (!tzSet) { setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1); tzset(); tzSet = true; }
   time_t t = (time_t)epoch;
-  localtime_r(&t, out);
+  if (!localtime_r(&t, out)) { memset(out, 0, sizeof(*out)); out->tm_year = 70; out->tm_mday = 1; }   // hors calendrier : 01/01/1970
 }
 
 void * psAlloc(size_t n) { return calloc(1, n); }

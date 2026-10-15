@@ -1,5 +1,6 @@
 // ── Plateforme ESP32-S3 (Arduino) ────────────────────────────────────
 #ifdef ARDUINO
+#include <string.h>
 #include "platform.h"
 #include "vn_lv_hooks.h"
 #include <Arduino.h>
@@ -62,7 +63,7 @@ bool timeValid() { return now() != 0; }
 
 void localTime(int64_t epoch, struct tm * out) {
   time_t t = (time_t)epoch;
-  localtime_r(&t, out);
+  if (!localtime_r(&t, out)) { memset(out, 0, sizeof(*out)); out->tm_year = 70; out->tm_mday = 1; }   // hors calendrier : 01/01/1970
 }
 
 void * psAlloc(size_t n) {
