@@ -162,6 +162,11 @@ void Model::applyInfo(const InfoRec * r, int cnt, int64_t now) {
       st[i].lastChange = now;
     }
     Station & s = st[i];
+    int dc = (int)r[k].cap - (int)s.cap;
+    if (g_pred.rejuvN > 0 && s.cap > 0 && abs(dc) >= 2 && abs(dc) * 10 >= s.cap) {
+      ProfCell * p = prof + (size_t)i * PROF_STRIDE;
+      for (int q = 0; q < PROF_STRIDE; q++) if (p[q].n > g_pred.rejuvN) p[q].n = (uint8_t)g_pred.rejuvN;
+    }
     memcpy(s.name, r[k].name, sizeof(s.name));
     memcpy(s.addr, r[k].addr, sizeof(s.addr));
     s.lat = r[k].lat; s.lon = r[k].lon; s.cap = r[k].cap;

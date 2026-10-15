@@ -408,6 +408,7 @@ int main(int argc, char ** argv) {
       else if (k == "ferie_appris") g_pred.holidayLearn = (uint8_t)num;       // (a) 0 son jour, 1 dimanche, 2 exclu
       else if (k == "ferie_alerte") g_alertOpt.holidayScale = (float)num;     // (c) tolérance × e un jour férié
       else if (k == "profil_n") g_pred.profDecayN = (int)num;                 // récence : constante de temps (relevés)
+      else if (k == "rajeunir") g_pred.rejuvN = (int)num;                     // rajeunissement ciblé sur changement de capacité
       else { fprintf(stderr, "levier inconnu : %s\n", k.c_str()); return 1; }
     }
     else { fprintf(stderr, "option inconnue : %s\n", argv[a]); return 1; }
@@ -449,7 +450,7 @@ int main(int argc, char ** argv) {
   std::vector<int> prevTruth(NST, -1);
   long rupt[2] = {}, ruptAnt[2] = {};                 // ruptures réelles (7 h–22 h, j mûrs) / annoncées dans l'heure d'avant
   struct Day { int falseUnus = 0, trueUnus = 0, onset[AL_TYPE_COUNT] = {}, soonOk[2] = {}, soonN[2] = {}; int rainH = 0; bool hol = false;
-               float learn = 0, conf = 0, anomConf = 0, evalFrac = 0, alpha = 0, alphaRaw = 0, alphaSE = 0, nRain = 0; int src = 0; float chBias = NAN, chBiasS = NAN; double chErr = 0; int chN = 0; double twErr = 0; int twN = 0; };
+               float learn = 0, conf = 0, anomConf = 0, evalFrac = 0, alpha = 0, alphaRaw = 0, alphaSE = 0, nRain = 0; int src = 0; float chBias = NAN, chBiasS = NAN; double chErr = 0; int chN = 0; double twErr = 0; int twN = 0; double chErr4 = 0, twErr4 = 0; int chN4 = 0, twN4 = 0, chFalse = 0, twFalse = 0; };
   std::vector<Day> days(cfg.days);
   struct Soon { int st, type; int64_t t; };
   std::vector<Soon> soons;
@@ -517,6 +518,8 @@ int main(int argc, char ** argv) {
           for (auto & in : incs) if (in.st == i && t >= in.t0 && t < in.t1) { real = true; }
           if (real) days[d].trueUnus++; else {
             days[d].falseUnus++;
+            if (i == CHANGED) days[d].chFalse++;
+            if (i == TWIN) days[d].twFalse++;
             if (d >= 56) {                               // origine (diagnostic, période mûre)
               bool postInc = false;
               for (auto & in : incs) if (in.st == i && t >= in.t1 && t - in.t1 < 86400) postInc = true;
@@ -685,6 +688,8 @@ int main(int argc, char ** argv) {
       int b = d / 21; if (b < 8) add(byBlock[b]);
       if (p.st == CHANGED && h == 2) { days[d].chErr += fabs(ef); days[d].chN++; }
       if (p.st == TWIN && h == 2) { days[d].twErr += fabs(ef); days[d].twN++; }
+      if (p.st == CHANGED && h == 4) { days[d].chErr4 += fabs(ef); days[d].chN4++; }
+      if (p.st == TWIN && h == 4) { days[d].twErr4 += fabs(ef); days[d].twN4++; }
     }
   }
   // Rappel « inhabituel » sur les incidents, précision « rupture prévue »
@@ -924,7 +929,17 @@ int main(int argc, char ** argv) {
       printf(" biais_j%d=%.3f", a, CHANGE_DAY + a < cfg.days ? days[CHANGE_DAY + a].chBiasS : NAN);
     double ce = 0, te = 0; int cn = 0, tn = 0;
     for (int d = CHANGE_DAY; d < CHANGE_DAY + 28 && d < cfg.days; d++) { ce += days[d].chErr; cn += days[d].chN; te += days[d].twErr; tn += days[d].twN; }
-    printf(" agrandie60_4sem=%.4f jumelle60_4sem=%.4f\n", cn ? ce / cn : NAN, tn ? te / tn : NAN);
+    printf(" agrandie60_4sem=%.4f jumelle60_4sem=%.4f", cn ? ce / cn : NAN, tn ? te / tn : NAN);
+    // Ce que la lenteur coûte à l'exploitant sur la station agrandie : courbe 24 h (+240) et alertes « inhabituel »
+    for (int wk : { 4, 8 }) {
+      double c4 = 0, t4 = 0; int c4n = 0, t4n = 0, cf = 0, tf = 0, nd = 0;
+      for (int d = CHANGE_DAY; d < CHANGE_DAY + 7 * wk && d < cfg.days; d++) {
+        c4 += days[d].chErr4; c4n += days[d].chN4; t4 += days[d].twErr4; t4n += days[d].twN4; cf += days[d].chFalse; tf += days[d].twFalse; nd++;
+      }
+      printf(" agrandie240_%dsem=%.4f jumelle240_%dsem=%.4f agrandie_fausses_%dsem=%.3f jumelle_fausses_%dsem=%.3f", wk, c4n ? c4 / c4n : NAN, wk,
+             t4n ? t4 / t4n : NAN, wk, nd ? (double)cf / nd : NAN, wk, nd ? (double)tf / nd : NAN);
+    }
+    printf("\n");
   }
   return 0;
 }

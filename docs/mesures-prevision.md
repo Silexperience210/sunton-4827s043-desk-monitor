@@ -900,3 +900,126 @@ levier gagne par construction. Les deux autres disent ce qu'il en coûte si l'hy
 mi-chemin, encore −4 % sur les fériés et +0,2 % ailleurs ; vécu comme un jour ouvré, +8 % sur les fériés et
 +0,5 % ailleurs. **À vérifier sur un vrai férié** (25/12/2026, un vendredi ; puis 26/12 un samedi et 1/1/2027
 un vendredi) en comparant les relevés réels aux profils du dimanche et du vendredi.
+
+### Levier 2 — récence (décroissance exponentielle) : **compromis sans gagnant, N = 24 gardé, non livré**
+
+**La règle, écrite explicitement.** Le profil était déjà une décroissance exponentielle une fois n = 24 atteint
+(c'était l'objection de l'étape 5b) ; la branche l'écrit comme telle et la rend réglable : `profWeight(n, N)` =
+1/(n + 1) pendant la montée (moyenne simple des premiers relevés), puis **1/N** : a_k = λ·a_(k−1) + (1 − λ)·x_k,
+**λ = 1 − 1/N par relevé**. Une case reçoit 3 relevés par semaine (les trois tranches de 5 min de son quart
+d'heure) : la constante de temps est N/3 semaines, la demi-vie N·ln 2/3 semaines. N = 24 (livré) : λ = 0,958,
+8 semaines, demi-vie 39 jours. Testé : poids exacts, valeur exacte a_k = x₁ + (x₀ − x₁)·λ^k après k relevés pour
+N = 2, 6, 12, 24, 48 (à N/512 vélo près, l'arrondi au 1/256), N < 2 traité comme 2, et **N = 24 identique au bit
+près à la règle de la v1.0.9** sur 90 relevés aléatoires (et sur le banc entier).
+
+**Balayage** (168 jours, 6 graines × 3 mondes météo, période mûre, écarts appariés à N = 24 ; absorption =
+biais **signé** du profil de la station agrandie contre sa jumelle, 7 h–22 h sur 7 jours, moyenne des 18 mondes) :
+
+| N (relevés) | constante de temps | demi-vie théorique | **moitié absorbée** | 90 % absorbés | MAE +15 | MAE +60 | MAE +240 | **nervosité** du profil | fausses / jour | rappel |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 6 | 2 sem. | 10 j | **9 j** | 32 j | +34,0 % | +12,1 % | +8,2 % | 1,29 (× 3,8) | 87,9 (−43 %)¹ | 74,2 %¹ |
+| 9 | 3 sem. | 15 j | **15 j** | 52 j | +26,3 % | +8,9 % | +3,8 % | 0,88 (× 2,6) | 146,3 (−5,6 %) | 88,3 % |
+| 12 | 4 sem. | 19 j | **19 j** | 63 j | +13,3 % | +4,7 % | +2,0 % | 0,67 (× 2,0) | 149,5 (−3,6 %) | 88,8 % |
+| 16 | 5,3 sem. | 26 j | **26 j** | 81 j | +5,3 % | +2,0 % | +0,8 % | 0,51 (+48 %) | 152,0 (−1,9 %) | 89,3 % |
+| 20 | 6,7 sem. | 32 j | **30 j** | 100 j | +1,7 % | +0,7 % | +0,3 % | 0,41 (+19 %) | 153,7 (−0,9 %) | 89,5 % |
+| **24 (livré)** | **8 sem.** | **39 j** | **35 j** | > 108 j | **0,403** | **1,076** | **2,161** | **0,342** | **155,0** | **89,7 %** |
+| 30 | 10 sem. | 49 j | **46 j** | > 108 j | −1,1 % | −0,5 % | −0,2 % | 0,28 (−19 %) | 156,5 (+0,9 %) | 89,7 % |
+| 36 | 12 sem. | 58 j | **52 j** | > 108 j | −1,6 % | −0,7 % | −0,2 % | 0,24 (−31 %) | 157,5 (+1,6 %) | 89,9 % |
+| 48 | 16 sem. | 78 j² | **60 j** | > 108 j | −1,9 % | −0,8 % | −0,1 % | 0,18 (−46 %) | 158,9 (+2,5 %) | 90,0 % |
+
+« Nervosité » : variation moyenne (vélos) du profil d'un même jour et d'un même créneau (7 h–22 h) d'une semaine à
+la suivante, période mûre, hors fériés ; dans ce monde stationnaire, toute variation est du bruit appris — c'est
+de combien la courbe « habituel » et la prévision 24 h bougent d'une semaine à l'autre sans raison.
+¹ N < 8 plafonne aussi la **confiance** (n ≤ 6 < 8 relevés pour 100 %) : la prévision n'utilise le profil qu'à
+75 % et la tolérance de l'alerte est élargie de 25 % — d'où l'effondrement simultané des fausses alertes et du
+rappel ; N = 6 n'est pas un réglage de récence, il casse la confiance. ² n tient sur 5 bits : au-delà de 31, la
+montée s'arrête à 31 relevés puis passe à 1/48, d'où une absorption plus rapide que la théorie.
+
+**La courbe** (absorption contre nervosité, une ligne par N, de N = 6 à N = 48) :
+
+```
+ moitié absorbée (jours)
+   60 |                                                        • N48
+   52 |                                                    • N36
+   46 |                                               • N30
+   35 |                                     ◉ N24 (livré)
+   30 |                               • N20
+   26 |                     • N16
+   19 |       • N12
+   15 |  • N9                                      (N6 : 9 j, nervosité 1,29, hors cadre)
+      +----+-------+-------+-------+-------+-------+-------+-----
+        0,88    0,67    0,51    0,41    0,34    0,28    0,24  0,18   nervosité du profil (vélos / semaine)
+      MAE +60 : +8,9 %  +4,7 %  +2,0 %  +0,7 %    réf.   −0,5 %  −0,7 %  −0,8 %
+```
+
+**Ce que la lenteur coûte vraiment, sur la station agrandie** (4 et 8 semaines après l'agrandissement, contre
+sa jumelle — même graines) :
+
+| N | MAE +240 (courbe 24 h) agrandie / jumelle, 4 sem. | fausses alertes / jour agrandie / jumelle, 4 sem. | idem, 8 sem. |
+|---|---|---|---|
+| 12 | 3,30 / 2,98 (+0,32) | 1,45 / 1,16 (+0,29) | 1,35 / 1,14 (+0,21) |
+| 16 | 3,31 / 2,94 (+0,37) | 1,52 / 1,19 (+0,33) | 1,42 / 1,15 (+0,27) |
+| **24** | **3,34 / 2,92 (+0,42)** | **1,59 / 1,19 (+0,40)** | **1,54 / 1,16 (+0,38)** |
+| 48 | 3,36 / 2,92 (+0,45) | 1,66 / 1,22 (+0,44) | 1,61 / 1,18 (+0,43) |
+
+À +60 min, la station agrandie n'est presque pas pénalisée (MAE 1,51 contre 1,48 pour sa jumelle avec N = 24) :
+la prévision part du **relevé réel**, et un profil 2/3 trop bas ne fausse que l'amplitude du mouvement prévu.
+Le « modèle qui a tort pendant des semaines » se voit surtout **sur le niveau** : la courbe 24 h (+0,4 vélo) et
+l'alerte « inhabituel » (+0,4 fausse alerte par jour sur cette station, ~20 en 8 semaines).
+
+**Lecture et choix.**
+
+1. **Aucun N ne domine 24.** Plus court : l'agrandissement est absorbé plus vite (moitié en 26 jours à N = 16
+   au lieu de 35), mais **toutes les stations, tous les jours**, paient : MAE +60 +2 %, profil 48 % plus nerveux
+   (la courbe « habituel » bouge d'un demi-vélo par semaine sans raison). Plus long : MAE un peu meilleure
+   (−0,5 à −0,8 %) et profil plus calme, mais **l'alerte se dégrade** (+0,9 à +2,5 % de fausses alertes) et
+   l'absorption ralentit (46 à 60 jours) — c'est l'inverse de la dette de temps qu'il s'agissait de corriger.
+2. **Ce qui se paie, chiffré.** Raccourcir à N = 16 gagne, sur la station agrandie, 0,03 vélo de MAE +240
+   pendant les 4 semaines qui suivent, et perd 0,018 vélo sur **chaque** station le reste du temps : il faudrait
+   qu'à tout instant **38 % des stations** soient dans le mois qui suit un changement franc pour que ça se
+   paie à +240. À +60, ça ne se paie jamais (la station agrandie elle-même est mieux prévue avec N = 24). Côté
+   alerte, N = 16 retire 1,9 % de fausses alertes pour −0,4 point de rappel : le taux du témoin uniforme (aucune
+   information), pas un gain.
+3. **Un parc qui dérive ne change pas le choix.** Contre-hypothèse `--derive 0.3` (l'amplitude de chaque station
+   dérive linéairement de ± 30 % sur les 24 semaines) : mêmes écarts à ± 0,3 point près (N = 16 : MAE +60
+   +2,0 %, fausses −2,2 % ; N = 48 : −0,7 %, +2,6 %), moitié de l'agrandissement en 23 j (N = 16) et 36 j
+   (N = 24). Une dérive de cet ordre (~1 % par semaine) reste petite devant le bruit d'un jour ; un vrai parc a
+   peut-être des ruptures plus franches (chantiers, nouvelles lignes), que ce banc ne sait pas simuler.
+4. **Verdict : la décroissance est désormais explicite, réglable et testée, mais N = 24 reste la valeur, et
+   aucun changement de comportement n'est livré.** Le compromis est réel et il n'y a pas de N meilleur sur tous
+   les critères ; la règle « l'alerte ne doit pas se dégrader » exclut les N plus longs, la règle « aucune
+   dégradation les jours ordinaires » exclut les N plus courts.
+
+**Format de `/vn_prof.bin` : inchangé (v3), et c'est voulu.** La cellule garde la même disposition (moyenne
+×256, n sur 5 bits, dispersion) ; seule la **règle** de mise à jour est paramétrée, et N = 24 donne les mêmes
+octets qu'avant. Changer N plus tard ne demande pas de migration : un n relu au-dessus du nouveau plafond est
+ramené au premier relevé (poids 1/N immédiatement), un n relu en dessous continue sa montée. Testé : un v3 écrit
+avec N = 24 relu avec N = 12 (poids 1/12, n ramené à 12) et avec N = 48 (montée 1/25, 1/26, 1/27), une v2 relue
+avec N = 12 (n plafonné à 12 dès la lecture), migrations v1 et v2 → v3 inchangées. Monter la version sans changer
+la disposition aurait fait refuser le fichier par une carte revenue à la version précédente, pour rien.
+Le profil se nourrit uniquement des relevés GBFS (`applyStatus`) ; aucune correction manuelle n'y entre.
+
+**Ce qui marche pour un changement connu : rajeunir la seule station concernée** (mesuré à part, **non livré**,
+interrupteur `g_pred.rejuvN`, 0 par défaut). Quand `station_information` annonce une nouvelle capacité (écart ≥ 2
+bornes et ≥ 10 %), les cellules de **cette** station repartent avec n ≤ R : elles réapprennent à la vitesse de la
+montée, le reste du parc garde sa mémoire.
+Mesuré sur la station agrandie (mêmes 18 mondes ; le reste du parc est identique au bit près — MAE +60 du parc
+± 0,0 %) :
+
+| réglage | moitié absorbée | 90 % | MAE +60 agrandie, 4 sem. | MAE +240 agrandie, 4 sem. | fausses / jour agrandie, 4 sem. | idem, 8 sem. (jumelle : 1,16) |
+|---|---|---|---|---|---|---|
+| **rien (N = 24)** | **35 j** | > 108 j | **1,512** | **3,343** | **1,59** | **1,54** |
+| R = 12 | 29 j | 104 j | 1,525 (+0,8 %) | 3,300 (−1,3 %) | 1,51 (−5 %) | 1,46 (−6 %) |
+| R = 6 | 19 j | 94 j | 1,584 (+4,8 %) | 3,375 (+0,9 %) | 1,29 (−19 %) | 1,28 (−17 %) |
+| R = 3 | **10 j** | 77 j | 1,623 (**+7,3 %**) | 3,425 (+2,4 %) | 1,08 (−32 %) | 1,15 (−25 %) |
+| pour comparer : N = 16 pour tout le parc | 26 j | 81 j | 1,535 (+1,5 %) | 3,314 (−0,9 %) | 1,52 (−4,5 %) | 1,42 (−8 %) |
+
+Le rajeunissement absorbe **3,5 fois plus vite** (moitié en 10 jours avec R = 3) et ramène les fausses alertes
+de la station au niveau de sa jumelle — mais une partie de ce gain vient de ce qu'un profil rajeuni est
+**trop jeune pour être évalué** (n < 4 : confiance < 50 %, l'alerte se tait la première semaine). Et la
+prévision +60 de cette station est **moins bonne** pendant 4 semaines (+5 à +7 %) : un profil de quelques
+relevés est bruité et peu sûr, alors que l'ancien profil, trop bas mais lisse, donnait déjà le bon **mouvement**
+à un facteur 2/3 près. Pas de gagnant sur les deux critères ; **non livré**. Variante non mesurée, à essayer
+avant tout autre réglage de la mémoire : **remettre à l'échelle** le profil (× nouvelle capacité / ancienne)
+au lieu de le rajeunir, en gardant n — mais le monde simulé remplit la station agrandie à proportion, ce qui
+ferait gagner cette variante **par construction** : à juger sur un vrai agrandissement.

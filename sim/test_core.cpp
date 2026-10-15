@@ -1522,6 +1522,30 @@ static void testDecay() {
     r2 = Model(); r2.init();
     CHECK(r2.load(tl) && r2.prof[C].a == 10 * 256 && r2.prof[C].n == 12, "v2 relue avec N = 12 : moyenne intacte, n plafonné à 12 (%d)", r2.prof[C].n);
   }
+  // Rajeunissement ciblé (mesuré, non livré) : seule la station dont la capacité annoncée change
+  {
+    g_pred = PredictOpts();
+    CHECK(g_pred.rejuvN == 0, "réglage livré : pas de rajeunissement ciblé");
+    static Model m;
+    m = Model(); m.init();
+    InfoRec two[2] = { mkInfo("1", 49.6f, 6.13f, 30), mkInfo("2", 49.61f, 6.13f, 30) };
+    m.applyInfo(two, 2, M0);
+    StatusRec sr[2];
+    for (int w = 0; w < 10; w++) for (int k = 0; k < 3; k++) {
+      sr[0] = mkStat("1", 10, 30); sr[1] = mkStat("2", 10, 30);
+      m.applyStatus(sr, 2, M0 + (int64_t)w * 7 * 86400 + 10 * 3600 + k * 300);
+    }
+    const int64_t t1 = M0 + 10 * 7 * 86400;
+    two[0].cap = 31; m.applyInfo(two, 2, t1);
+    CHECK(m.prof[C].n == 24, "rajeunissement désactivé : capacité 30 → 31, n intact (%d)", m.prof[C].n);
+    g_pred.rejuvN = 6;
+    two[0].cap = 32; m.applyInfo(two, 2, t1);
+    CHECK(m.prof[C].n == 24, "31 → 32 : une borne de plus, pas de rajeunissement (%d)", m.prof[C].n);
+    two[0].cap = 45; m.applyInfo(two, 2, t1);
+    CHECK(m.prof[C].n == 6 && m.prof[C].a == 10 * 256 && m.prof[672 + C].n == 24,
+          "32 → 45 bornes : n ramené à 6 pour cette station seulement, moyenne gardée (%d, voisine %d)", m.prof[C].n, m.prof[672 + C].n);
+    g_pred = PredictOpts();
+  }
   g_pred = PredictOpts();
 }
 

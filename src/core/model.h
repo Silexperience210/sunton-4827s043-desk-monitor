@@ -59,6 +59,10 @@ struct PredictOpts {
   // (moyenne simple des premiers relevés), a ← a + (x − a) / profDecayN, soit une décroissance
   // exponentielle de facteur λ = 1 − 1/profDecayN par relevé (24 = 8 semaines, levier « récence »).
   int profDecayN = VN_PROFILE_DECAY_N;
+  // Rajeunissement ciblé (mesuré, non livré : 0) : quand station_information annonce une nouvelle capacité
+  // (écart ≥ 2 bornes et ≥ 10 %), les cellules de CETTE station repartent avec n ≤ rejuvN — elles
+  // réapprennent à la vitesse de la montée, le reste du parc garde sa mémoire.
+  int rejuvN = 0;
 };
 extern PredictOpts g_pred;
 // Poids du relevé suivant dans une cellule qui en a déjà compté n (n saturé à 31) : 1/(n + 1) pendant la
