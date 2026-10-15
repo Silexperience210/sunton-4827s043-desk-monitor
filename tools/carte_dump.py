@@ -203,8 +203,10 @@ def kvs(fields):
 
 
 def stamp_of(t):
+    # Heure de Paris, quel que soit le fuseau de la machine qui lance le script (la carte, elle, est à Paris).
     if t and t > 0:
-        return datetime.datetime.fromtimestamp(t).strftime("%Y%m%d-%H%M%S")
+        from zoneinfo import ZoneInfo
+        return datetime.datetime.fromtimestamp(t, ZoneInfo("Europe/Paris")).strftime("%Y%m%d-%H%M%S")
     return datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-pc"
 
 
