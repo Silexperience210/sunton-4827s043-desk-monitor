@@ -6,6 +6,7 @@ sim/build/
 sim/sim
 sim/test_core
 sim/bench_prevision
+sim/dump_sim
 sim_fs/
 .deps
 .deps/
