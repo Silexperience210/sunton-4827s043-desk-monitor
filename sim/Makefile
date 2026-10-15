@@ -46,7 +46,7 @@ test_core: $(TEST_OBJ)
 	$(CXX) -o $@ $^ -lm
 
 # Banc de mesure de la prévision (docs/mesures-prevision.md) : même cœur, aucune UI
-BENCH_CXX := $(wildcard ../src/core/*.cpp) platform_sim.cpp bench_prevision.cpp
+BENCH_CXX := $(wildcard ../src/core/*.cpp) platform_sim.cpp bench_prevision.cpp bench_reel.cpp
 BENCH_OBJ := $(patsubst ../%.cpp,$(BUILD)/app/%.o,$(filter ../%,$(BENCH_CXX))) \
              $(patsubst %.cpp,$(BUILD)/sim/%.o,$(filter-out ../%,$(BENCH_CXX)))
 bench_prevision: $(BENCH_OBJ)

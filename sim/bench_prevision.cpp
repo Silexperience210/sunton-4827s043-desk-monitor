@@ -32,9 +32,11 @@
 #include <vector>
 #include <algorithm>
 #include <string>
+#include <sys/stat.h>
 
 namespace sim { extern int64_t g_epoch0; extern uint32_t g_ms; extern const char * g_fsDir; }
 using namespace vn;
+namespace reel { int run(int argc, char ** argv); void exportDump(const Model & m, const char * dir, int64_t t); }
 
 // ── Aléa déterministe (un flux par usage : la vérité ne dépend pas de l'ordre des appels) ──
 struct Rng {
@@ -376,7 +378,9 @@ struct Pred { int16_t st; int32_t step; float cur, fc[NH], orc[NH], prof[NH]; };
 int main(int argc, char ** argv) {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   tzset();
+  for (int a = 1; a < argc; a++) if (!strcmp(argv[a], "--reel")) return reel::run(argc, argv);   // données réelles (bench_reel.cpp)
   World w;
+  const char * exportDir = nullptr;               // --exporter : la « carte simulée » vidée chaque jour à 6 h
   Cfg & cfg = w.cfg;
   for (int a = 1; a < argc; a++) {
     if (!strcmp(argv[a], "--jours") && a + 1 < argc) cfg.days = atoi(argv[++a]);
@@ -388,6 +392,7 @@ int main(int argc, char ** argv) {
     else if (!strcmp(argv[a], "--court")) cfg.brief = true;
     else if (!strcmp(argv[a], "--prevision-parfaite")) cfg.perfectFc = true;
     else if (!strcmp(argv[a], "--derive") && a + 1 < argc) cfg.drift = (float)atof(argv[++a]);
+    else if (!strcmp(argv[a], "--exporter") && a + 1 < argc) exportDir = argv[++a];
     else if (!strcmp(argv[a], "--ferie-comme") && a + 1 < argc) {
       const char * v = argv[++a];
       cfg.holWe = !strcmp(v, "mixte") ? 0.5f : !strcmp(v, "ouvre") ? 0.f : 1.f;
@@ -430,6 +435,12 @@ int main(int argc, char ** argv) {
       InfoRec & r = ir[i]; memset(&r, 0, sizeof(r));
       strcpy(r.sid, w.st[i].sid);
       snprintf(r.name, sizeof(r.name), "%s %d", KNAME[w.st[i].kind], i);
+      if (exportDir) {
+        // la « carte simulée » ne publie pas le type : des noms neutres, sauf ceux qu'un vrai parc porterait
+        // (gare, parc, lycée), et un piège : la station 1000, résidentielle, nommée « Parc »
+        static const char * NM[K_COUNT] = { "Station", "Station", "Gare", "Lycee", "Parc", "Station" };
+        snprintf(r.name, sizeof(r.name), "%s %d", i == 0 ? "Parc (piege)" : NM[w.st[i].kind], 1000 + i);
+      }
       r.lat = w.st[i].lat; r.lon = w.st[i].lon; r.cap = (uint16_t)w.st[i].cap;
     }
   };
@@ -505,6 +516,7 @@ int main(int argc, char ** argv) {
       else { m.wx = Weather(); }
     }
     m.applyStatus(sr, NST, t);
+    if (exportDir && lt.tm_hour == 6 && lt.tm_min == 0 && k > 0) reel::exportDump(m, exportDir, t);
 
     // ── Alertes : apparitions
     uint32_t mask[NST] = {};
@@ -655,6 +667,15 @@ int main(int argc, char ** argv) {
       D.chBias = nb ? (float)(bias / nb) : NAN;
       D.chBiasS = nb ? (float)(biasS / nb) : NAN;     // signé : le bruit des deux profils s'y annule en moyenne
     }
+  }
+
+  if (exportDir) {                                  // la vérité du monde, pour juger la chaîne « réelle » (--reel … --verite)
+    std::string d = std::string(exportDir) + "/verite";
+    mkdir(d.c_str(), 0755);
+    FILE * f = fopen((d + "/incidents.csv").c_str(), "w");
+    if (f) { for (auto & in : incs) fprintf(f, "%s;%lld;%lld\n", w.st[in.st].sid, (long long)in.t0, (long long)in.t1); fclose(f); }
+    f = fopen((d + "/types.csv").c_str(), "w");
+    if (f) { for (int i = 0; i < NST; i++) fprintf(f, "%s;%d\n", w.st[i].sid, w.st[i].kind); fclose(f); }
   }
 
   // ── Évaluation a posteriori des prévisions
