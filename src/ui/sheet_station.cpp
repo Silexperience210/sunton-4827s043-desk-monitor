@@ -179,7 +179,8 @@ static void fill() {
   // Un jour férié est attendu comme un dimanche (le profil le dit, pas seulement la règle)
   if ((s.anom == vn::AN_HIGH || s.anom == vn::AN_LOW || s.anom == vn::AN_NORMAL || s.anom == vn::AN_PENDING) && g_model.holidayProfile(t)) {
     size_t l = strlen(ab);
-    snprintf(ab + l, sizeof(ab) - l, " \xC2\xB7 jour f\xC3\xA9ri\xC3\xA9 : profil du dimanche");
+    const char * hn = vn::holidayNameAt(t);
+    snprintf(ab + l, sizeof(ab) - l, " \xC2\xB7 jour f\xC3\xA9ri\xC3\xA9 (%s) : profil du dimanche", hn ? hn : "?");
   }
   lv_label_set_text(W.insAnom, ab);
   lv_obj_set_style_text_color(W.insAnom, C(ac), 0);

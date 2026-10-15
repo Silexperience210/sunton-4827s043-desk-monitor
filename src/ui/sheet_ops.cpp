@@ -342,7 +342,8 @@ static void fc24Fill() {
     struct tm hl;
     plat::localTime(tk, &hl);
     size_t L = strlen(b);
-    snprintf(b + L, sizeof(b) - L, " Le %02d/%02d est f\xC3\xA9ri\xC3\xA9 : profil du dimanche.", hl.tm_mday, hl.tm_mon + 1);
+    const char * hn = vn::holidayNameAt(tk);
+    snprintf(b + L, sizeof(b) - L, " Le %02d/%02d est f\xC3\xA9ri\xC3\xA9 (%s) : profil du dimanche.", hl.tm_mday, hl.tm_mon + 1, hn ? hn : "?");
     break;
   }
   lv_label_set_text(s_basis, b);

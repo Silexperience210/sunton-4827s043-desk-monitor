@@ -670,7 +670,7 @@ static int opsScenario(const std::string & in, StatusRec * recs, int ns) {
   run(600);
   ui::openForecast24(st); run(600);
   drag(300, 240, 300, 40, 10);
-  expect(textAny(lv_layer_top(), "Le 25/12 est f\xC3\xA9ri\xC3\xA9 : profil du dimanche", textAny), "24 h : « Le 25/12 est férié : profil du dimanche »");
+  expect(textAny(lv_layer_top(), "Le 25/12 est f\xC3\xA9ri\xC3\xA9 (No\xC3\xABl) : profil du dimanche", textAny), "24 h : « Le 25/12 est férié (Noël) : profil du dimanche »");
   shot("09_prevision_24h_ferie");
   ui::sheetClose(); run(300);
   {
@@ -686,7 +686,7 @@ static int opsScenario(const std::string & in, StatusRec * recs, int ns) {
   if (hs >= 0) {
     ui::openStation(hs); run(500);
     drag(300, 240, 300, 40, 10);
-    expect(textAny(lv_layer_top(), "jour f\xC3\xA9ri\xC3\xA9 : profil du dimanche", textAny), "fiche : « … · jour férié : profil du dimanche »");
+    expect(textAny(lv_layer_top(), "jour f\xC3\xA9ri\xC3\xA9 (No\xC3\xABl) : profil du dimanche", textAny), "fiche : « … · jour férié (Noël) : profil du dimanche »");
     shot("09b_fiche_ferie");
     ui::sheetClose(); run(300);
   }
