@@ -284,10 +284,28 @@ fichier `/vn_hist.bin` + 2,3 Ko) et l'écriture en flash sont **non vérifiées 
 | x̄ global, une seule pente, erreur-type naïve | dans le monde **nul**, α = −0,5 « significatif » pendant 5 semaines (froid du matin ≈ heures de pointe, où le profil lissé sous-estime le mouvement) | x̄ par heure, terme β, erreur-type par grappe, profils mûrs seulement |
 | α̂ rétréci de 2 erreurs-types | effet divisé par deux (pluie, moyen : −2,6 % au lieu de −4,5 %) | α̂ entier au-delà du seuil |
 | correction aussi par beau temps (x < x̄ₕ) | +0,4 à +0,6 % d'erreur par temps sec | correction seulement quand le temps est pire que la normale |
-| seuil 2 erreurs-types | une correction inventée **4,3 % des jours** dans le monde nul (6 graines) | seuil 3 : 0,0 % des jours, gain identique (moyen −4,0 % au lieu de −4,2 %) |
+| seuil 2 erreurs-types | une correction inventée **4,3 % des jours** dans le monde nul (6 graines) | seuil 3 : 0,0 % des jours **sur ces 6 graines de réglage**, gain identique (moyen −4,0 % au lieu de −4,2 %) — **mais pas 0 ailleurs, voir ci-dessous** |
 
 Les choix de seuil et de variante ont été faits sur les graines 1–3 et **validés sur des graines
 neuves 4–6** (moyen −3,7 %, fort −7,5 % sur l'horizon pluvieux à +60 min, nul : 0).
+
+**Correction (revue finale, rejouée le 15/10/2026 au commit `1e6ab14`) : le « nul : 0 » est sur-ajusté.**
+Le seuil de 3 erreurs-types a été choisi sur les graines 1–6, et c'est seulement là qu'il ne se
+trompe jamais. Sur **24 graines neuves (7–30)**, même banc, 168 jours, réglage livré
+(`python3 campagne.py bench nul.json "defaut|7,…,30|nul|168||"`) :
+
+| graines | touchées (α ≠ 0 au moins un jour) | jours avec α ≠ 0, moyenne | pire graine | α en fin de période |
+|---|---|---|---|---|
+| 1–6 (réglage) | 0 / 6 | 0,0 % | 0,0 % | 0 partout |
+| **7–30 (neuves)** | **8 / 24** | **3,8 %** | **32,1 %** (graine 9) | 0 partout |
+
+Détail 7–30 : 17,1 · 0 · 32,1 · 0 · 0 · 9,3 · 0 · 0 · 0 · 2,9 · 0 · 0 · 0 · 17,1 · 0 · 7,1 · 3,6 · 0 · 0 · 0 · 0 ·
+0 · 2,9 · 0 (% des jours). Le test, répété toutes les 30 min, produit des faux positifs passagers.
+L'effet sur l'erreur est nul (MAE +60 sous la pluie 1,1251 → 1,1252, ±0,0001 ; pire graine +0,0026),
+mais **pendant ces jours la fiche affiche « coefficient appris »** dans un parc où la pluie ne change
+rien. À retenir pour la carte : un « appris » isolé ne prouve pas un effet de la pluie ; il faut le voir
+tenir des semaines. Un seuil plus dur ou une confirmation sur plusieurs fenêtres serait un nouveau
+levier, à mesurer avant d'être livré (non fait ici : proposé dans `docs/bilan-final.md`).
 
 ### Mesure finale (6 graines, 168 jours, écart apparié levier − référence)
 

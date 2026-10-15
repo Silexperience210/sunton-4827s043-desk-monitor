@@ -744,7 +744,8 @@ void Model::learnWeather(int64_t slotT) {
 // 0 tant que |α̂| ne dépasse pas 3 erreurs-types, puis α̂ tel quel, borné à [−0,5 ; 1].
 // Mesuré (docs/mesures-prevision.md, étape 3a) : un rétrécissement de 2 erreurs-types divisait
 // l'effet par deux ; un seuil de 2 erreurs-types, vérifié en continu, inventait une correction
-// 4 % des jours dans le monde où la pluie est sans effet ; 3 : jamais, pour le même gain.
+// 4 % des jours dans le monde où la pluie est sans effet ; 3 : jamais sur les graines de réglage
+// (1–6), mais encore 3,8 % des jours en moyenne sur 24 graines neuves (8 touchées) — revue M1.
 static float alphaOf(const WxStats & w, float & raw, float & se) {
   raw = se = 0;
   double det = (double)w.sdd * w.szz - (double)w.sdz * w.sdz;

@@ -93,7 +93,7 @@ enum WxUse : uint8_t {
 enum WxCoefSrc : uint8_t {
   WXC_DEFAULT,                 // trop peu de pluie observée pour juger : α = 0, aucune correction
   WXC_NULL,                    // assez de pluie observée, effet non distinguable du bruit : α = 0
-  WXC_LEARNED                  // appris, au-delà de 2 erreurs-types
+  WXC_LEARNED                  // appris, au-delà de 3 erreurs-types (WX_SIGNIF)
 };
 
 // Statistiques suffisantes de l'apprentissage météo (décroissance exponentielle, ~60 jours).
