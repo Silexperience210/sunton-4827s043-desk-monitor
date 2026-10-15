@@ -612,9 +612,37 @@ static void testProjection24() {
   CHECK(flat && cz <= 0.125f, "premier relevé : 7 vélos constants, confiance ≤ 1/8 (max %.3f)", cz);
 }
 
+// /vn_prof.bin des versions 1 et 2 (cellule de 3 octets), reconstruit depuis un fichier v3 de nSt stations :
+// mêmes moyennes et mêmes n, sans dispersion (v2 garde l'apprentissage météo, v1 non)
+static std::vector<uint8_t> legacyProf(const std::vector<uint8_t> & v3, int nSt, int ver) {
+  const size_t hdr = 40, cells = (size_t)nSt * 7 * 96;
+  std::vector<uint8_t> out(v3.begin(), v3.begin() + hdr + (size_t)nSt * 8);
+  uint16_t v = (uint16_t)ver; memcpy(out.data() + 4, &v, 2);
+  const uint8_t * c4 = v3.data() + hdr + (size_t)nSt * 8;
+  for (size_t q = 0; q < cells; q++) {
+    ProfCell c; memcpy(&c, c4 + q * 4, 4);
+    uint8_t b[3]; memcpy(b, &c.a, 2); b[2] = (uint8_t)c.n;
+    out.insert(out.end(), b, b + 3);
+  }
+  const uint8_t * rest = c4 + cells * 4;
+  out.insert(out.end(), rest, rest + 7 * 96);
+  if (ver >= 2) out.insert(out.end(), rest + 7 * 96, rest + 7 * 96 + sizeof(WxClimate) + sizeof(WxStats) * (1 + nSt));
+  return out;
+}
+// Moyennes et n identiques, dispersion inconnue (ce que doit donner une migration v1/v2 → v3)
+static bool sameMeans(const Model & a, const Model & b, int nSt, bool dispZero = true) {
+  for (size_t q = 0; q < (size_t)nSt * 7 * 96; q++) {
+    if (a.prof[q].a != b.prof[q].a || a.prof[q].n != b.prof[q].n) return false;
+    if (dispZero && (a.prof[q].d || a.prof[q].dn)) return false;
+  }
+  return true;
+}
+
 // ── Écart au profil (« inhabituel ») ─────────────────────────────────
 static void testAnomaly() {
   settingsDefaults(g_set);
+  g_alertOpt = AlertOpts();                        // la formule fixe, aussitôt (la règle de la v1.0.8)
+  g_alertOpt.disp = false; g_alertOpt.persist = 1;
   static Model m;
   CHECK(m.init(), "init écart");
   InfoRec ir[NS];
@@ -676,6 +704,222 @@ static void testAnomaly() {
   z.applyStatus(sz, 1, tw);
   CHECK(countAlerts(z, AL_UNUSUAL, -1) == 0 && (z.st[0].anom == AN_NO_PROFILE || z.st[0].anom == AN_YOUNG),
         "premier relevé : pas d'alerte (état %d)", z.st[0].anom);
+  g_alertOpt = AlertOpts();
+}
+
+// ── Alerte calme : dispersion apprise (1a), inertie (1b), migration de /vn_prof.bin v3 ──
+// Trois stations de 20 places, toutes à 10 vélos en moyenne : « calme » (bruit −1…+1),
+// « agitée » (bruit −4…+4, uniforme), « fixe » (aucun bruit).
+static const int64_t AC_T0 = 1791842400 - 86400 * 7;          // mardi 06/10 00:00
+static int acNoise(int st, int64_t t) {
+  uint32_t h = (uint32_t)(t / 300) * 2654435761u ^ (uint32_t)(st + 1) * 40503u;
+  h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
+  if (st == 0) { static const int N[4] = { -1, 0, 0, 1 }; return N[h % 4]; }
+  if (st == 1) return (int)(h % 9) - 4;
+  return 0;
+}
+static void acSet(Model & m, int64_t t, int v0 = -1, int v1 = -1, int v2 = -1) {
+  StatusRec sr[3];
+  int v[3] = { v0, v1, v2 };
+  for (int s = 0; s < 3; s++) {
+    char sid[4]; snprintf(sid, sizeof(sid), "%d", 21 + s);
+    sr[s] = mkStat(sid, v[s] >= 0 ? v[s] : 10 + acNoise(s, t), 20);
+  }
+  m.applyStatus(sr, 3, t);
+}
+static void acLearn(Model & m, int days) {
+  InfoRec ir[3] = { mkInfo("21", 49.60f, 6.13f, 20), mkInfo("22", 49.61f, 6.14f, 20), mkInfo("23", 49.62f, 6.15f, 20) };
+  m.applyInfo(ir, 3, AC_T0);
+  for (int64_t t = AC_T0; t < AC_T0 + (int64_t)days * 86400; t += 300) acSet(m, t);
+}
+
+static void testAlertCalm() {
+  settingsDefaults(g_set);
+  g_alertOpt = AlertOpts();
+  static Model m;
+  CHECK(m.init(), "init alerte calme");
+  acLearn(m, 21);
+  const int64_t tq = AC_T0 + 22 * 86400 + 10 * 3600;          // mercredi 28/10, en journée
+  const Station & calm = m.st[0], & agit = m.st[1], & fixe = m.st[2];
+
+  // 1. La dispersion apprise suit le bruit réel de chaque station (écart absolu moyen : 0,5 ; 2,2 ; 0)
+  float d0, c0, d1, c1, d2, c2;
+  CHECK(m.dispersionAt(0, tq, d0, c0) && m.dispersionAt(1, tq, d1, c1) && m.dispersionAt(2, tq, d2, c2), "dispersion connue (3 semaines)");
+  CHECK(fabsf(d0 - 0.5f) < 0.25f && fabsf(d1 - 2.22f) < 0.6f && d2 < 0.15f && c0 >= 4 && c1 >= 4,
+        "dispersion apprise : calme %.2f (0,5), agitée %.2f (2,2), fixe %.2f (0) ; relevés %.0f / %.0f", d0, d1, d2, c0, c1);
+
+  // 2. Levier 1a : la même valeur jugée selon la variabilité de SA station
+  g_alertOpt.disp = true; g_alertOpt.k = 3; g_alertOpt.persist = 1;
+  acSet(m, tq, 10, 16, 10);
+  CHECK(agit.anomSrc == ATS_DISP && agit.anom == AN_NORMAL && agit.anomTol == (int)lroundf(fmaxf(4, 3 * agit.anomDisp10 / 10.f)) && agit.anomTol >= 6,
+        "agitée : 16 contre 10, variation habituelle ± %.1f → seuil ± %d, silence (état %d)", d1, agit.anomTol, agit.anom);
+  CHECK(agit.anomDisp10 >= 15 && agit.anomDisp10 <= 30 && agit.anomDispDays >= 17 && agit.anomDispDays <= 22,
+        "agitée : dispersion affichable %d dixièmes, mesurée sur %d jours", agit.anomDisp10, agit.anomDispDays);
+  g_alertOpt.disp = false;
+  m.recompute(tq);
+  CHECK(agit.anom == AN_HIGH && agit.anomSrc == ATS_FORMULA, "même relevé, formule fixe (± 4) : l'agitée sonnait (état %d)", agit.anom);
+  g_alertOpt.disp = true;
+  acSet(m, tq + 60, 15, -1, -1);
+  CHECK(calm.anomSrc == ATS_DISP && calm.anomTol == 4 && calm.anom == AN_HIGH && countAlerts(m, AL_UNUSUAL, 0) == 1,
+        "vrai écart sur la station calme (15 contre 10, plancher ± 4) : alerte quand même (état %d, ± %d)", calm.anom, calm.anomTol);
+  acSet(m, tq + 90, -1, -1, 15);
+  CHECK(fixe.anomSrc == ATS_DISP && fixe.anomTol == 4 && fixe.anom == AN_HIGH, "dispersion nulle : le plancher de 4 vélos tient (± %d)", fixe.anomTol);
+  acSet(m, tq + 120, 10, 2, 10);
+  CHECK(agit.anom == AN_LOW && countAlerts(m, AL_UNUSUAL, 1) == 1, "agitée : 2 contre 10 (écart 8 > ± %d) : alerte « en dessous »", agit.anomTol);
+
+  // 2b. Ce que l'écran en dit : chaque chiffre est celui du calcul, l'origine est nommée
+  {
+    char t1[256], t2[128], want[96];
+    anomLineText(agit, t1, sizeof(t1));
+    anomAlertText(agit, t2, sizeof(t2));
+    snprintf(want, sizeof(want), "\xC2\xB1 %d,%d (mesur\xC3\xA9 sur %d jours) \xE2\x86\x92 seuil \xC2\xB1 %d (3 \xC3\x97 l'\xC3\xA9" "cart habituel)",
+             agit.anomDisp10 / 10, agit.anomDisp10 % 10, agit.anomDispDays, agit.anomTol);
+    CHECK(strstr(t1, "Inhabituel : 2 v\xC3\xA9los contre 10 attendus, \xC3\xA9" "cart de -8") && strstr(t1, want),
+          "fiche (1a) : « %s »", t1);
+    snprintf(want, sizeof(want), "Inhabituel : 2 contre 10 \xC2\xB7 \xC2\xB1 %d (habituel \xC2\xB1 %d,%d)", agit.anomTol, agit.anomDisp10 / 10, agit.anomDisp10 % 10);
+    CHECK(!strcmp(t2, want), "liste (1a) : « %s »", t2);
+    acSet(m, tq + 150, 10, 10, 10);
+    anomLineText(calm, t1, sizeof(t1));
+    CHECK(strstr(t1, "Habituel : 10 v\xC3\xA9los contre 10 attendus") && strstr(t1, "seuil \xC2\xB1 4 (plancher de 4 v\xC3\xA9los)"),
+          "créneau très calme : le plancher est nommé (« %s »)", t1);
+    g_alertOpt.disp = false;
+    m.recompute(tq + 150);
+    anomLineText(agit, t1, sizeof(t1));
+    char want2[200];
+    snprintf(want2, sizeof(want2), "Habituel : 10 v\xC3\xA9los contre 10 attendus (\xC2\xB1 4) \xC2\xB7 confiance du profil 100 %% \xC2\xB7 "
+             "\xC3\xA9" "cart habituel \xC3\xA0 cette heure \xC2\xB1 %d,%d, mesur\xC3\xA9 sur %d jours (pour information)",
+             agit.anomDisp10 / 10, agit.anomDisp10 % 10, agit.anomDispDays);
+    CHECK(!strcmp(t1, want2), "formule fixe : phrase de la v1.0.8, l'écart habituel en information (« %s »)", t1);
+    anomLineText(fixe, t1, sizeof(t1));
+    CHECK(strstr(t1, "\xC2\xB1 0,0, mesur\xC3\xA9") != nullptr && fixe.anomDispOk, "dispersion nulle affichée 0,0 (pas 0,1) : « %s »", t1);
+    Station u = agit; u.anomDispOk = false;
+    anomLineText(u, t1, sizeof(t1));
+    CHECK(!strcmp(t1, "Habituel : 10 v\xC3\xA9los contre 10 attendus (\xC2\xB1 4) \xC2\xB7 confiance du profil 100 %"),
+          "formule fixe sans dispersion connue : phrase de la v1.0.8 à l'identique (« %s »)", t1);
+    g_alertOpt.disp = true;
+    acSet(m, tq + 120 + 60, 10, 2, 10);
+  }
+
+  // 3. L'alerte ne touche pas la prévision : fc identique quel que soit le réglage de l'alerte
+  float fcA[VN_FC_STEPS], fcB[VN_FC_STEPS];
+  g_alertOpt.disp = false; g_alertOpt.persist = 1; m.recompute(tq + 120); memcpy(fcA, agit.fc, sizeof(fcA));
+  g_alertOpt.disp = true; g_alertOpt.persist = 3; m.recompute(tq + 120); memcpy(fcB, agit.fc, sizeof(fcB));
+  CHECK(memcmp(fcA, fcB, sizeof(fcA)) == 0 && agit.conf > 0, "prévision 2 h identique, alerte calme ou non");
+
+  // 4. Levier 1b : n'alerter que si l'écart tient 3 relevés de 5 min consécutifs
+  g_alertOpt.persist = 3;
+  const int64_t ti = tq + 3600 - (tq + 3600) % 300;           // début de tranche
+  acSet(m, ti, 0);
+  CHECK(calm.anom == AN_PENDING && calm.anomRun == 1 && countAlerts(m, AL_UNUSUAL, 0) == 0,
+        "inertie : 1er relevé hors tolérance → en attente, pas d'alerte (état %d, %d/3)", calm.anom, calm.anomRun);
+  acSet(m, ti + 300, 0);
+  CHECK(calm.anom == AN_PENDING && calm.anomRun == 2 && countAlerts(m, AL_UNUSUAL, 0) == 0, "2e relevé : toujours en attente (%d/3)", calm.anomRun);
+  {
+    char t1[256];
+    anomLineText(calm, t1, sizeof(t1));
+    char want[160];
+    snprintf(want, sizeof(want), "\xC3\x80 confirmer : 0 v\xC3\xA9lo contre %d attendus, \xC3\xA9" "cart de %+d (2 relev\xC3\xA9s sur 3 de suite avant l'alerte)",
+             calm.anomExp, -calm.anomExp);
+    CHECK(strstr(t1, want) != nullptr,
+          "fiche (1b) : l'attente est dite (« %s »)", t1);
+  }
+  acSet(m, ti + 600, 1);
+  CHECK(calm.anom == AN_LOW && calm.anomRun == 3 && countAlerts(m, AL_UNUSUAL, 0) == 1,
+        "vrai incident (station vidée) : alerte au 3e relevé, 10 min après (état %d)", calm.anom);
+  acSet(m, ti + 660, 0);
+  CHECK(calm.anom == AN_LOW, "relevé de la même tranche : l'alerte tient");
+  acSet(m, ti + 900);
+  CHECK(calm.anom == AN_NORMAL && calm.anomRun == 0, "retour dans la tolérance : silence (état %d)", calm.anom);
+  acSet(m, ti + 1200, 16); acSet(m, ti + 1500, 4); acSet(m, ti + 1800, 16);
+  CHECK(calm.anom == AN_PENDING && calm.anomRun == 1 && countAlerts(m, AL_UNUSUAL, 0) == 0,
+        "écarts alternés (+6, −6, +6) : jamais confirmés (%d/3)", calm.anomRun);
+  // une tranche manquante interrompt la série
+  acSet(m, ti + 2100, 0);
+  acSet(m, ti + 2700, 0);                                      // pas de relevé à ti + 2400
+  CHECK(calm.anom == AN_PENDING && calm.anomRun == 1, "trou dans l'historique : la série repart de 1 (%d/3)", calm.anomRun);
+  acSet(m, ti + 3000, 0); acSet(m, ti + 3300, 0);
+  CHECK(calm.anom == AN_LOW && countAlerts(m, AL_UNUSUAL, 0) == 1, "puis 3 relevés consécutifs : alerte");
+  // inertie et dispersion ensemble : l'agitée, vidée, sonne quand même
+  acSet(m, ti + 3600, 10, 0); acSet(m, ti + 3900, 10, 0); acSet(m, ti + 4200, 10, 1);
+  CHECK(agit.anom == AN_LOW && agit.anomSrc == ATS_DISP && countAlerts(m, AL_UNUSUAL, 1) == 1,
+        "agitée vidée 15 min (1a + 1b) : alerte (état %d, ± %d)", agit.anom, agit.anomTol);
+  g_alertOpt.persist = 1;
+
+  // 5. Persistance v3 : aller-retour exact (moyenne, n, dispersion, compte, date de début)
+  sim::g_fsDir = "/tmp/vn_test_calm";
+  if (system("rm -rf /tmp/vn_test_calm") != 0) {}
+  Model::Blob b;
+  CHECK(m.serialize(b), "sérialisation profils v3");
+  std::vector<uint8_t> v3(b.prof, b.prof + b.profLen);
+  Model::writeSaved(b);
+  uint16_t ver; memcpy(&ver, v3.data() + 4, 2);
+  CHECK(ver == 3 && v3.size() == 40 + 3 * 8 + 3 * 672 * 4 + 672 + sizeof(WxClimate) + 4 * sizeof(WxStats) + 3 * 8,
+        "fichier v3 : version %d, %zu octets (cellule de 4 octets + date de dispersion)", ver, v3.size());
+  const int64_t tl = ti + 4500;
+  static Model r;
+  r.init(); r.load(tl);
+  CHECK(memcmp(r.prof, m.prof, sizeof(ProfCell) * 3 * 672) == 0 && memcmp(r.dispSince, m.dispSince, 3 * 8) == 0,
+        "v3 relu : cellules et dates de dispersion identiques");
+  // 6. Migration v2 (v1.0.9) et v1 (v1.0.8) : moyenne et n intacts, dispersion inconnue → formule fixe, dite
+  for (int lv = 2; lv >= 1; lv--) {
+    std::vector<uint8_t> old = legacyProf(v3, 3, lv);
+    plat::fsWrite("/vn_prof.bin", old.data(), old.size());
+    static Model o1, o2;
+    Model & o = lv == 2 ? o2 : o1;
+    o.init();
+    CHECK(o.load(tl), "v%d relu", lv);
+    CHECK(sameMeans(o, m, 3) && o.dispSince[1] == 0, "v%d → v3 : moyennes et n identiques, dispersion inconnue", lv);
+    CHECK(lv == 1 ? o.wxG.sn == 0 : memcmp(&o.wxG, &m.wxG, sizeof(WxStats)) == 0, "v%d : apprentissage météo %s", lv, lv == 1 ? "à zéro" : "gardé");
+    InfoRec io[3] = { mkInfo("21", 49.60f, 6.13f, 20), mkInfo("22", 49.61f, 6.14f, 20), mkInfo("23", 49.62f, 6.15f, 20) };
+    o.applyInfo(io, 3, tl);
+    g_alertOpt.disp = true;
+    acSet(o, tl, -1, 16);
+    CHECK(o.st[1].anomSrc == ATS_FORMULA_YOUNG && o.st[1].anomTol == 4 && o.st[1].anom == AN_HIGH && !o.st[1].anomDispOk,
+          "v%d migré : dispersion pas encore mesurée → formule fixe (± %d), et l'écran le sait (origine %d)", lv, o.st[1].anomTol, o.st[1].anomSrc);
+    char t1[256], t2[128];
+    anomLineText(o.st[1], t1, sizeof(t1));
+    anomAlertText(o.st[1], t2, sizeof(t2));
+    CHECK(strstr(t1, "\xC2\xB1 4 par d\xC3\xA9" "faut : \xC3\xA9" "cart habituel de ce cr\xC3\xA9neau pas encore mesur\xC3\xA9") && strstr(t2, "(\xC2\xB1 4 par d\xC3\xA9" "faut)"),
+          "v%d migré : « %s » / « %s »", lv, t1, t2);
+    if (lv == 2) {                                          // la dispersion se réapprend : une semaine plus tard, elle sert
+      for (int64_t t = tl + 300; t < tl + 8 * 86400; t += 300) acSet(o, t);
+      acSet(o, tl + 8 * 86400 + 600, -1, 16);
+      CHECK(o.st[1].anomSrc == ATS_DISP && o.st[1].anom == AN_NORMAL && o.st[1].anomDispDays >= 7,
+            "v2 migré + 8 jours : dispersion réapprise (± %d, %d jours), l'agitée ne sonne plus pour 6 vélos", o.st[1].anomTol, o.st[1].anomDispDays);
+    }
+  }
+  // 7. Fichiers corrompus : ignorés sans plantage, jamais lus de travers
+  struct Bad { std::string what; std::vector<uint8_t> data; };
+  std::vector<Bad> bads;
+  { auto x = v3; uint16_t v = 4; memcpy(x.data() + 4, &v, 2); bads.push_back({ "version 4 (inconnue)", x }); }
+  { auto x = v3; x.pop_back(); bads.push_back({ "v3 tronqué d'un octet", x }); }
+  { auto x = legacyProf(v3, 3, 2); uint16_t v = 3; memcpy(x.data() + 4, &v, 2); bads.push_back({ "v2 annoncé v3 (taille fausse)", x }); }
+  { auto x = v3; uint16_t v = 0; memcpy(x.data() + 4, &v, 2); bads.push_back({ "version 0", x }); }
+  { auto x = v3; uint16_t ns = 9999; memcpy(x.data() + 6, &ns, 2); bads.push_back({ "nombre de stations aberrant", x }); }
+  plat::fsRemove("/vn_hist.bin");                 // le profil seul (l'historique recréerait les stations)
+  for (auto & bd : bads) {
+    plat::fsWrite("/vn_prof.bin", bd.data.data(), bd.data.size());
+    Model & q = *new Model();                      // un modèle neuf par fichier (le banc de la carte au démarrage)
+    q.init();
+    q.load(tl);
+    bool empty = true;
+    for (int k = 0; k < 3 * 672; k++) if (q.prof[k].n || q.prof[k].dn) empty = false;
+    CHECK(empty && q.n == 0, "%s : fichier ignoré, profil vide", bd.what.c_str());
+  }
+  { // n hors bornes dans un v2 (corruption douce) : plafonné ; date de dispersion future : oubliée
+    auto x = legacyProf(v3, 3, 2);
+    x[40 + 3 * 8 + 2] = 200;
+    plat::fsWrite("/vn_prof.bin", x.data(), x.size());
+    static Model q2; q2.init(); q2.load(tl);
+    CHECK(q2.prof[0].n == VN_PROFILE_CAP_N, "v2, n = 200 dans une cellule : plafonné à %d (%d)", VN_PROFILE_CAP_N, q2.prof[0].n);
+    auto y = v3;
+    int64_t fut = tl + 400 * 86400;
+    memcpy(y.data() + y.size() - 3 * 8, &fut, 8);
+    plat::fsWrite("/vn_prof.bin", y.data(), y.size());
+    static Model q3; q3.init(); q3.load(tl);
+    CHECK(q3.dispSince[0] == 0 && q3.dispSince[1] == m.dispSince[1], "date de dispersion dans le futur : oubliée (les autres gardées)");
+  }
+  g_alertOpt = AlertOpts();
 }
 
 // ── Météo dans l'historique 5 min + format versionné de /vn_hist.bin ──
@@ -937,18 +1181,17 @@ static void testWxLearn() {
   CHECK(memcmp(&r.wxG, &m.wxG, sizeof(WxStats)) == 0 && r.wxAlpha == m.wxAlpha && r.wxSrc == WXC_LEARNED,
         "v2 relu : statistiques et α identiques (%.3f)", r.wxAlpha);
   CHECK(memcmp(&r.wxClim, &m.wxClim, sizeof(WxClimate)) == 0 && memcmp(r.wxS, m.wxS, sizeof(WxStats) * 4) == 0, "v2 relu : x̄ par heure et statistiques par station");
-  const size_t wxLen = sizeof(WxClimate) + sizeof(WxStats) * 5;
-  std::vector<uint8_t> v1(prof.begin(), prof.end() - wxLen);
-  uint16_t one = 1; memcpy(v1.data() + 4, &one, 2);
+  const size_t wxLen = sizeof(WxClimate) + sizeof(WxStats) * 5, dsLen = sizeof(int64_t) * 4;
+  std::vector<uint8_t> v1 = legacyProf(prof, 4, 1);
   plat::fsWrite("/vn_prof.bin", v1.data(), v1.size());
   static Model r1;
   r1.init();
   r1.load(tq + 300);
   r1.recompute(tq + 300);
-  CHECK(memcmp(r1.prof, m.prof, sizeof(ProfCell) * 4 * 7 * 96) == 0 && r1.wxSrc == WXC_DEFAULT && r1.wxG.sn == 0,
+  CHECK(sameMeans(r1, m, 4) && r1.wxSrc == WXC_DEFAULT && r1.wxG.sn == 0,
         "profils v1 (v1.0.8) relus, apprentissage météo reparti de zéro");
   std::vector<uint8_t> bad = prof;
-  float nanv = NAN; memcpy(bad.data() + (prof.size() - wxLen) + sizeof(WxClimate), &nanv, 4);
+  float nanv = NAN; memcpy(bad.data() + (prof.size() - dsLen - wxLen) + sizeof(WxClimate), &nanv, 4);
   plat::fsWrite("/vn_prof.bin", bad.data(), bad.size());
   static Model r2;
   r2.init();
@@ -1199,6 +1442,7 @@ int main(int argc, char ** argv) {
   testProvenance(argc > 1 ? argv[1] : "");
   testProjection24();
   testAnomaly();
+  testAlertCalm();
   testHistWeather();
   testWxLearn();
   testHolidays();

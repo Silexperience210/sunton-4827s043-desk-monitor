@@ -27,7 +27,15 @@ enum AnomState : uint8_t {
   AN_NO_PROFILE,               // aucun profil pour ce créneau
   AN_YOUNG,                    // profil trop jeune (confiance insuffisante)
   AN_NORMAL,                   // dans la tolérance
-  AN_HIGH, AN_LOW              // inhabituel : au-dessus / en dessous de l'attendu
+  AN_HIGH, AN_LOW,             // inhabituel : au-dessus / en dessous de l'attendu
+  AN_PENDING                   // hors tolérance, mais pas encore assez longtemps pour alerter (levier 1b)
+};
+
+// Origine de la tolérance de l'écart au profil (affichée : la carte dit d'où vient le « ± »)
+enum AnomTolSrc : uint8_t {
+  ATS_FORMULA,                 // formule fixe max(4 vélos, 20 % de la capacité) × (2 − confiance)
+  ATS_FORMULA_YOUNG,           // formule fixe, parce que la dispersion du créneau n'est pas encore mesurée
+  ATS_DISP                     // k × dispersion apprise du créneau et de la station (levier 1a)
 };
 
 // ── Leviers de prévision ─────────────────────────────────────────────
@@ -42,6 +50,16 @@ struct PredictOpts {
   // (5a-i — férié exclu du profil — et 5b — plafond de récence — mesurés et non livrés : commit 011ef52)
 };
 extern PredictOpts g_pred;
+
+// ── Leviers de l'alerte « inhabituel » (docs/mesures-prevision.md, « alerte calme ») ──
+// Mesurés séparément par le banc ; les valeurs par défaut sont celles de la carte.
+struct AlertOpts {
+  bool  disp = false;          // 1a : tolérance = k × dispersion apprise (sinon la formule fixe)
+  float k = 3.f;               // 1a : multiple de la dispersion (écart absolu moyen)
+  int   persist = 1;           // 1b : relevés de 5 min consécutifs hors tolérance avant d'alerter (1 = aussitôt)
+  float scale = 1.f;           // témoin du banc : formule fixe × scale (élargissement uniforme, sans information)
+};
+extern AlertOpts g_alertOpt;
 
 // Disponibilité de la météo pour le modèle (affichée : la carte dit quand elle s'en passe)
 enum WxUse : uint8_t {
@@ -103,6 +121,13 @@ struct Station {
   uint8_t  anomConf;         // 0…100
   int16_t  anomExp;          // vélos attendus (profil arrondi), ‑1 = inconnu
   int16_t  anomTol;          // tolérance en vélos, 0 = non évaluée
+  uint8_t  anomSrc;          // AnomTolSrc : d'où vient la tolérance
+  uint8_t  anomRun;          // relevés de 5 min consécutifs hors tolérance, du même côté (levier 1b)
+  int8_t   anomRunSide;      // côté de la série en cours (+1 au-dessus, −1 en dessous)
+  int64_t  anomRunSlot;      // tranche de 5 min du dernier relevé compté dans la série
+  bool     anomDispOk;       // dispersion du créneau connue (assez de relevés)
+  uint8_t  anomDisp10;       // dispersion habituelle du créneau, dixièmes de vélo
+  uint16_t anomDispDays;     // jours de relevés sur lesquels la dispersion a été mesurée
 
   uint16_t capEff() const { return (uint16_t)(bikes + docks); }
   float    fill() const { int c = bikes + docks; return c ? (float)bikes / c : 0.f; }
@@ -157,7 +182,10 @@ struct Alert {
 
 struct Transfer { int16_t from, to; uint8_t n; uint16_t distM; };
 
-struct ProfCell { uint16_t a; uint8_t n; } __attribute__((packed));   // moyenne ×256, n plafonné
+// Cellule de profil (jour × quart d'heure) : moyenne ×256 et n plafonné à VN_PROFILE_CAP_N (5 bits),
+// dispersion d = écart absolu moyen au profil ×16 (plafond 15,9 vélos) et son compte dn (3 bits,
+// plafonné à 7 : au-delà, d suit la même moyenne mobile que a). d n'est pas utilisé tant que dn = 0.
+struct ProfCell { uint16_t a; uint8_t n : 5; uint8_t dn : 3; uint8_t d; } __attribute__((packed));
 
 struct NetEvent { int16_t st; uint8_t type; };   // nouvelle rupture (toast UI)
 
@@ -176,6 +204,12 @@ struct Model {
   // Profils appris (jour de semaine × quart d'heure)
   ProfCell* prof = nullptr;              // [VN_MAX_ST][7][96]
   uint8_t * cellN = nullptr;             // [7][96] échantillons réseau (progression)
+  int64_t * dispSince = nullptr;         // [VN_MAX_ST] premier relevé versé à la dispersion (0 = jamais)
+  // Écart du relevé au profil, mis en attente : versé à la dispersion à la tranche suivante, pour que
+  // le relevé soit toujours jugé contre une dispersion qui ne le contient pas (un incident ne se masque pas)
+  float *   dispPendDev = nullptr;         // [VN_MAX_ST]
+  int16_t * dispPendCell = nullptr;        // [VN_MAX_ST] cellule + 1 (0 = rien en attente)
+  bool      freshReading = false;          // recompute() appelé par applyStatus (un relevé neuf)
   int64_t   learnSince = 0;
   uint32_t  learnSamples = 0;
   // Dérivés
@@ -224,6 +258,9 @@ struct Model {
   bool  profileAt(int s, int64_t t, float & avg, float & nEff) const;
   // Vrai si l'instant t est un jour férié prévu avec le profil du dimanche (étape 5a-ii) : provenance affichable
   bool  holidayProfile(int64_t t) const;
+  // Dispersion habituelle (écart absolu moyen au profil, vélos) à l'instant t, lissée comme le profil ;
+  // cnt = relevés qui la fondent. false si aucun relevé.
+  bool  dispersionAt(int s, int64_t t, float & d, float & cnt) const;
   // Projection d'une station sur nSteps pas de stepMin minutes à partir de now (point 0 = actuel),
   // avec la MÊME règle que la prévision 2 h (profil + tendance amortie). conf[k] = 0…1 par pas
   // (confiance du profil sur ce créneau). Renvoie false si la station est inconnue.
@@ -232,6 +269,7 @@ struct Model {
   bool  wxPenaltyAt(int64_t now, int64_t tau, float & x) const;
   float wxClimAt(int64_t t) const;       // x̄ₕ de l'heure locale de t (0 si inconnue)
   void  learnWeather(int64_t slotT);     // une fenêtre de 30 min (appelée par applyStatus)
+  void  learnDispersion(int s, int cell, int64_t t);   // une tranche de 5 min, avant la moyenne (applyStatus)
   void  updateWxCoef();                  // α global depuis les statistiques
   float learnPct() const;                // 0…100
   int   ringIndex(int back) const;       // index du point « back » tranches en arrière (‑1)

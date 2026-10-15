@@ -10,11 +10,22 @@ namespace vn {
 
 Model g_model;
 PredictOpts g_pred;
+AlertOpts g_alertOpt;
 
 static const int DAYQ = 96;                         // quarts d'heure par jour
 static const int PROF_STRIDE = 7 * DAYQ;            // cellules par station
 static const float PROF_FULL_N = 6.f;               // n à partir duquel la cellule « propre » suffit
 static const float CONF_N = 8.f;                    // n effectif pour une confiance de 100 %
+// Écart au profil (voir anomalyStation) — ici parce que l'apprentissage de la dispersion s'en sert
+static const float ANOM_MIN_CONF = 0.5f;
+static const float ANOM_MIN_BIKES = 4.f;
+static const float ANOM_REL_CAP = 0.2f;
+// Dispersion apprise (levier 1a) : d = écart absolu moyen du relevé au profil, ×16 dans la cellule
+static const float DISP_SCALE = 16.f;
+static const int   DISP_DN_MAX = 7;                 // compte dn sur 3 bits
+static const float DISP_FULL_N = 6.f;               // dn à partir duquel la cellule « propre » suffit
+static const float DISP_MIN_N = 4.f;                // relevés effectifs pour juger avec la dispersion
+static const float DISP_CLIP_K = 1.5f, DISP_CLIP_B = 0.5f;   // écart versé écrêté à 1,5 D + ½ vélo
 
 // ── Utilitaires ──────────────────────────────────────────────────────
 static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -63,7 +74,11 @@ bool Model::init() {
   cellN  = (uint8_t *)plat::psAlloc(PROF_STRIDE);
   alerts = (Alert *)plat::psAlloc(sizeof(Alert) * VN_MAX_ALERTS);
   wxS    = (WxStats *)plat::psAlloc(sizeof(WxStats) * VN_MAX_ST);
-  if (!st || !ringT || !ring || !net || !recT || !rec || !prof || !cellN || !alerts || !wxS) return false;
+  dispSince = (int64_t *)plat::psAlloc(sizeof(int64_t) * VN_MAX_ST);
+  dispPendDev = (float *)plat::psAlloc(sizeof(float) * VN_MAX_ST);
+  dispPendCell = (int16_t *)plat::psAlloc(sizeof(int16_t) * VN_MAX_ST);
+  if (!dispPendDev || !dispPendCell) return false;
+  if (!st || !ringT || !ring || !net || !recT || !rec || !prof || !cellN || !alerts || !wxS || !dispSince) return false;
   memset(ring, 255, (size_t)VN_RING_SLOTS * VN_MAX_ST);
   memset(rec, 255, (size_t)VN_RECENT_SLOTS * VN_MAX_ST);
   return true;
@@ -253,6 +268,7 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
         const Station & s = st[i];
         if (!s.active || !s.live || s.status == ST_CLOSED) continue;
         ProfCell & c = prof[(size_t)i * PROF_STRIDE + cell];
+        learnDispersion(i, cell, t);
         float x = s.bikes * 256.f;
         if (c.n == 0) { c.a = (uint16_t)clampf(x, 0, 65535); c.n = 1; }
         else {
@@ -273,7 +289,9 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
 
   lastUpdate = now;
   dirty = true;
+  freshReading = true;
   recompute(now);
+  freshReading = false;
 }
 
 // ── Profil appris ────────────────────────────────────────────────────
@@ -341,6 +359,96 @@ bool Model::profileAt(int s, int64_t t, float & avg, float & nEff) const {
   int dow, mod;
   profDM(t, dow, mod);
   return profileLocal(prof + (size_t)s * PROF_STRIDE, dow, mod, avg, nEff);
+}
+
+// ── Dispersion apprise (levier 1a) ───────────────────────────────────
+// À chaque tranche de 5 min, avant que le relevé ne nourrisse la moyenne : |relevé − profil| (le
+// profil tel que l'alerte le lit, hors échantillon), mis en attente et versé à la cellule à la tranche
+// SUIVANTE — le relevé est donc toujours jugé contre une dispersion qui ne le contient pas (sinon un
+// incident élargit sa propre tolérance : mesuré, ± 4 → ± 11 en deux relevés sur un profil de 3 semaines).
+// Moyenne mobile : poids 1/(dn + 1) pour les 7 premiers relevés, puis le même 1/n que la moyenne
+// (n ≥ 8). Écart écrêté à 1,5 D + ½ vélo, D = la dispersion lissée du créneau au moment du relevé
+// dès qu'elle est connue (à la Huber : un relevé aberrant — un incident — ne fait monter D que de
+// quelques %, au lieu d'élargir sa propre tolérance et celle des semaines suivantes ; sur un bruit
+// gaussien, D en sort sous-estimé de ~3 %, ce que le réglage de k absorbe). Seulement
+// quand le profil est assez mûr pour être évalué (confiance ≥ 50 %) : avant, l'écart mesure surtout
+// la jeunesse du profil. Arrondi au 1/16 de vélo par un tramage déterministe (sans lui, un pas de mise
+// à jour < ½ unité serait perdu et la dispersion resterait bloquée loin de sa valeur).
+static inline float dither01(uint32_t a, uint32_t b) {
+  uint32_t h = a * 0x9E3779B1u ^ (b + 0x7F4A7C15u) * 0x85EBCA77u;
+  h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; h *= 0x297A2D39u; h ^= h >> 15;
+  return (h >> 8) * (1.f / 16777216.f);
+}
+
+void Model::learnDispersion(int i, int cell, int64_t t) {
+  // 1. l'écart de la tranche précédente, mis en attente : versé maintenant
+  if (dispPendCell[i] > 0) {
+    int pc = dispPendCell[i] - 1;
+    ProfCell & c = prof[(size_t)i * PROF_STRIDE + pc];
+    float dev = dispPendDev[i];
+    float x = clampf(dev * DISP_SCALE, 0, 255);
+    int w = c.dn < DISP_DN_MAX ? c.dn + 1 : (c.n > 8 ? c.n : 8);
+    float v = c.d + (x - c.d) / w;
+    int iv = (int)floorf(v);
+    if (v - iv > dither01((uint32_t)i * PROF_STRIDE + (uint32_t)pc, learnSamples)) iv++;
+    c.d = (uint8_t)(iv < 0 ? 0 : iv > 255 ? 255 : iv);
+    if (c.dn < DISP_DN_MAX) c.dn++;
+    dispPendCell[i] = 0;
+  }
+  // 2. l'écart du relevé courant, contre le profil d'avant ce relevé
+  float p, nEff;
+  if (!profileAt(i, t, p, nEff) || nEff < ANOM_MIN_CONF * CONF_N) return;
+  float dev = fabsf(st[i].bikes - p), dref, dcnt;
+  if (dispersionAt(i, t, dref, dcnt) && dcnt >= DISP_MIN_N) dev = fminf(dev, DISP_CLIP_K * dref + DISP_CLIP_B);
+  dispPendDev[i] = dev;
+  dispPendCell[i] = (int16_t)(cell + 1);
+  if (!dispSince[i]) dispSince[i] = t;
+}
+
+// Dispersion d'une cellule : cellule propre complétée par les jours de même type tant qu'elle est jeune
+// (la même règle que cellValue pour la moyenne)
+static bool dispCell(const ProfCell * p, int dow, int q, float & v, float & cnt) {
+  const ProfCell & own = p[dow * DAYQ + q];
+  if (own.dn >= DISP_FULL_N) { v = own.d / DISP_SCALE; cnt = own.dn; return true; }
+  bool weekend = (dow == 0 || dow == 6);
+  float sum = 0, pn = 0;
+  for (int d = 0; d < 7; d++) {
+    if (d == dow || ((d == 0 || d == 6) != weekend)) continue;
+    const ProfCell & c = p[d * DAYQ + q];
+    if (!c.dn) continue;
+    sum += (c.d / DISP_SCALE) * c.dn;
+    pn += c.dn;
+  }
+  if (!own.dn && pn <= 0) return false;
+  if (pn <= 0) { v = own.d / DISP_SCALE; cnt = own.dn; return true; }
+  float w = own.dn / DISP_FULL_N;
+  v = w * (own.d / DISP_SCALE) + (1 - w) * (sum / pn);
+  cnt = own.dn + 0.5f * (pn > 12 ? 12 : pn);
+  return true;
+}
+
+bool Model::dispersionAt(int s, int64_t t, float & d, float & cnt) const {
+  if (s < 0 || s >= n) return false;
+  int dow, mod;
+  profDM(t, dow, mod);
+  const ProfCell * p = prof + (size_t)s * PROF_STRIDE;
+  // lissage ±15 min (0,25 / 0,5 / 0,25), comme le profil ; compte = le plus faible des trois
+  static const float W[3] = { 0.25f, 0.5f, 0.25f };
+  float sv = 0, sw = 0, sn = 1e9f;
+  int q = mod / 15;
+  for (int o = -1; o <= 1; o++) {
+    int qq = q + o, dd = dow;
+    if (qq < 0) { qq += DAYQ; dd = (dd + 6) % 7; }
+    if (qq >= DAYQ) { qq -= DAYQ; dd = (dd + 1) % 7; }
+    float cv, cn;
+    if (!dispCell(p, dd, qq, cv, cn)) { sn = 0; continue; }
+    sv += W[o + 1] * cv; sw += W[o + 1];
+    if (cn < sn) sn = cn;
+  }
+  if (sw < 0.5f) return false;
+  d = sv / sw;
+  cnt = sn;
+  return true;
 }
 
 float Model::learnPct() const {
@@ -622,33 +730,87 @@ void Model::updateWxCoef() {
 //      signification ;
 //    – profil absent, ou trop jeune : c < ANOM_MIN_CONF = 0,5 (moins de 4 relevés
 //      effectifs pour ce créneau) — sans recul, « inhabituel » ne veut rien dire.
-//  • Tolérance T (vélos) = max(ANOM_MIN_BIKES, ANOM_REL_CAP × capacité utile) × (2 − c) :
-//      à confiance pleine, T = max(4 vélos, 20 % de la capacité) ; à c = 0,5, T est 1,5 ×
-//      plus large (moins le profil est nourri, plus il faut d'écart pour conclure).
+//  • Tolérance T (vélos), deux règles (g_alertOpt.disp, docs/mesures-prevision.md) :
+//    – formule fixe : max(ANOM_MIN_BIKES, ANOM_REL_CAP × capacité utile) × (2 − c) — à
+//      confiance pleine, max(4 vélos, 20 % de la capacité) ; à c = 0,5, 1,5 × plus large ;
+//    – dispersion apprise (levier 1a) : T = max(ANOM_MIN_BIKES, k × D), D = écart absolu moyen
+//      du relevé au profil, mesuré pour CE créneau et CETTE station ; tant que D repose sur
+//      moins de DISP_MIN_N relevés, retour à la formule fixe (dit à l'écran). Décision sur les
+//      nombres affichés (écart = N − P arrondi, T arrondie) : l'écran ne peut pas montrer
+//      « écart 6, tolérance ± 6 » à côté d'une alerte.
 //  • Écart minimal : ANOM_MIN_BIKES = 4 vélos, plancher de T — un retrait groupé de
 //      2–3 vélos est du bruit ordinaire, même sur une petite station.
-//  • Alerte si |N − P| > T (strictement).
+//  • Hors tolérance si |N − P| > T (strictement).
+//  • Inertie (levier 1b) : l'alerte ne sonne que si l'écart, de même sens, tient sur
+//      g_alertOpt.persist relevés de 5 min consécutifs (le relevé courant et les tranches
+//      précédentes de l'historique, chacune jugée contre le profil de SON instant) ; avant,
+//      l'état est AN_PENDING (affiché, sans alerte). Une tranche manquante interrompt la série.
 // Limite connue : le relevé courant vient d'alimenter la cellule du profil (moyenne
 // plafonnée à VN_PROFILE_CAP_N), ce qui rapproche P de N d'au plus 1/n : l'écart est
 // légèrement sous-estimé, jamais gonflé.
-static const float ANOM_MIN_CONF = 0.5f;
-static const float ANOM_MIN_BIKES = 4.f;
-static const float ANOM_REL_CAP = 0.2f;
+struct AnomEval { float p, c, tol, disp, dcnt; uint8_t src; };
+
+static bool anomEval(const Model & m, const Station & s, int i, int64_t t, AnomEval & e) {
+  float nEff;
+  if (!m.profileAt(i, t, e.p, nEff)) return false;
+  e.c = clampf(nEff / CONF_N, 0, 1);
+  e.disp = e.dcnt = 0;
+  bool dk = m.dispersionAt(i, t, e.disp, e.dcnt) && e.dcnt >= DISP_MIN_N;
+  if (!dk) e.disp = e.dcnt = 0;
+  float formula = fmaxf(ANOM_MIN_BIKES, ANOM_REL_CAP * s.capEff()) * (2.f - e.c) * g_alertOpt.scale;
+  if (g_alertOpt.disp && dk) { e.tol = (float)lroundf(fmaxf(ANOM_MIN_BIKES, g_alertOpt.k * e.disp)); e.src = ATS_DISP; }
+  else { e.tol = formula; e.src = g_alertOpt.disp ? ATS_FORMULA_YOUNG : ATS_FORMULA; }
+  return true;
+}
+// Écart signé hors tolérance (+1 au-dessus, −1 en dessous, 0 dans la tolérance)
+static int anomSide(const AnomEval & e, float bikes) {
+  float dev = e.src == ATS_DISP ? bikes - (float)lroundf(e.p) : bikes - e.p;
+  return fabsf(dev) > e.tol ? (dev > 0 ? 1 : -1) : 0;
+}
 
 static void anomalyStation(const Model & m, Station & s, int i, int64_t now, bool activeHours) {
-  s.anomExp = -1; s.anomTol = 0; s.anomConf = 0;
-  if (!s.live || s.status == ST_CLOSED) { s.anom = AN_CLOSED; return; }
-  float p, nEff;
-  bool has = m.profileAt(i, now, p, nEff);
-  float c = has ? clampf(nEff / CONF_N, 0, 1) : 0;
-  if (has) { s.anomExp = (int16_t)lroundf(p); s.anomConf = (uint8_t)lroundf(c * 100); }
-  if (!activeHours) { s.anom = AN_OFF_HOURS; return; }
-  if (!has) { s.anom = AN_NO_PROFILE; return; }
-  if (c < ANOM_MIN_CONF) { s.anom = AN_YOUNG; return; }
-  float tol = fmaxf(ANOM_MIN_BIKES, ANOM_REL_CAP * s.capEff()) * (2.f - c);
-  s.anomTol = (int16_t)lroundf(tol);
-  float dev = s.bikes - p;
-  s.anom = fabsf(dev) > tol ? (dev > 0 ? AN_HIGH : AN_LOW) : AN_NORMAL;
+  s.anomExp = -1; s.anomTol = 0; s.anomConf = 0; s.anomSrc = ATS_FORMULA;
+  s.anomDispOk = false; s.anomDisp10 = 0; s.anomDispDays = 0;
+  int side = 0;
+  AnomEval e;
+  bool has = s.live && s.status != ST_CLOSED && anomEval(m, s, i, now, e);
+  if (!s.live || s.status == ST_CLOSED) s.anom = AN_CLOSED;
+  else {
+    if (has) {
+      s.anomExp = (int16_t)lroundf(e.p); s.anomConf = (uint8_t)lroundf(e.c * 100);
+      if (e.dcnt > 0) {
+        s.anomDispOk = true;
+        s.anomDisp10 = (uint8_t)clampf(lroundf(e.disp * 10), 0, 255);
+        int64_t since = m.dispSince[i];
+        s.anomDispDays = since > 0 && now > since ? (uint16_t)clampf((float)((now - since) / 86400), 0, 65535) : 0;
+      }
+    }
+    if (!activeHours) s.anom = AN_OFF_HOURS;
+    else if (!has) s.anom = AN_NO_PROFILE;
+    else if (e.c < ANOM_MIN_CONF) s.anom = AN_YOUNG;
+    else {
+      s.anomTol = (int16_t)lroundf(e.tol);
+      s.anomSrc = e.src;
+      side = anomSide(e, s.bikes);
+      s.anom = side ? AN_PENDING : AN_NORMAL;
+    }
+  }
+  // Inertie : la série ne compte que des relevés NEUFS (un recalcul après la météo ou les réglages
+  // ne fait pas avancer le temps), chacun jugé une fois, à son instant ; une tranche de 5 min sans
+  // relevé, un retour dans la tolérance ou un changement de côté la remettent à zéro.
+  if (m.freshReading) {
+    int64_t slot = now - now % VN_RING_STEP_S;
+    if (!side) { s.anomRun = 0; s.anomRunSlot = 0; s.anomRunSide = 0; }
+    else if (s.anomRun && s.anomRunSide == side && s.anomRunSlot == slot) {}          // même tranche : déjà compté
+    else if (s.anomRun && s.anomRunSide == side && s.anomRunSlot == slot - VN_RING_STEP_S) {
+      if (s.anomRun < 255) s.anomRun++;
+      s.anomRunSlot = slot;
+    } else { s.anomRun = 1; s.anomRunSide = (int8_t)side; s.anomRunSlot = slot; }
+  }
+  if (!side) return;
+  int need = g_alertOpt.persist < 1 ? 1 : g_alertOpt.persist;
+  int run = s.anomRunSide == side ? s.anomRun : 0;
+  if (run >= need || need == 1) s.anom = side > 0 ? AN_HIGH : AN_LOW;
 }
 
 // ── Alertes ──────────────────────────────────────────────────────────
@@ -861,11 +1023,18 @@ struct NetSampleV1 {                              // format des versions ≤ 1.0
 };
 static_assert(sizeof(NetSampleV1) == 24, "format v1 de /vn_hist.bin");
 static_assert(sizeof(NetSample) == 32, "format v2 de /vn_hist.bin");
-// /vn_prof.bin : ver 1 (≤ v1.0.8) = profils ; ver 2 = profils + statistiques météo (global,
-// puis une par station dans l'ordre des sid). Une version 1 est relue, apprentissage météo à zéro.
+// /vn_prof.bin : ver 1 (≤ v1.0.8) = profils (cellule de 3 octets) ; ver 2 = + statistiques météo
+// (global, puis une par station dans l'ordre des sid) ; ver 3 = cellule de 4 octets (+ dispersion,
+// levier 1a) et, en fin de fichier, le premier relevé de dispersion de chaque station.
+// Une version 1 ou 2 est relue cellule par cellule (moyenne et n intacts, dispersion inconnue :
+// la tolérance retombe sur la formule fixe le temps de la réapprendre) ; une version 1 sans
+// apprentissage météo. Version inconnue, taille fausse : fichier ignoré (profil à zéro), jamais
+// de lecture hors du fichier.
 static const uint32_t PROF_MAGIC = 0x31504E56;   // "VNP1"
-static const uint16_t PROF_VER = 2;
+static const uint16_t PROF_VER = 3;
+static const size_t PROF_CELL_V12 = 3;            // { uint16 a ; uint8 n } des versions 1 et 2
 static_assert(sizeof(WxStats) == 32 && sizeof(WxClimate) == 192, "format v2 de /vn_prof.bin");
+static_assert(sizeof(ProfCell) == 4, "format v3 de /vn_prof.bin");
 static const char * HIST_PATH = "/vn_hist.bin";
 static const char * PROF_PATH = "/vn_prof.bin";
 
@@ -877,7 +1046,7 @@ bool Model::serialize(Blob & out) const {
   h.learnSince = learnSince; h.learnSamples = learnSamples; h.savedAt = lastUpdate;
   // Profils
   size_t sz = sizeof(h) + (size_t)n * 8 + (size_t)n * PROF_STRIDE * sizeof(ProfCell) + PROF_STRIDE
-              + sizeof(WxClimate) + sizeof(WxStats) * (1 + (size_t)n);
+              + sizeof(WxClimate) + sizeof(WxStats) * (1 + (size_t)n) + sizeof(int64_t) * (size_t)n;
   uint8_t * b = (uint8_t *)plat::psAlloc(sz);
   if (!b) return false;
   h.magic = PROF_MAGIC; h.ver = PROF_VER;
@@ -889,6 +1058,7 @@ bool Model::serialize(Blob & out) const {
   memcpy(b + o, &wxClim, sizeof(WxClimate)); o += sizeof(WxClimate);
   memcpy(b + o, &wxG, sizeof(WxStats)); o += sizeof(WxStats);
   memcpy(b + o, wxS, sizeof(WxStats) * (size_t)n); o += sizeof(WxStats) * (size_t)n;
+  memcpy(b + o, dispSince, sizeof(int64_t) * (size_t)n); o += sizeof(int64_t) * (size_t)n;
   out.prof = b; out.profLen = o;
   // Historique 24 h
   sz = sizeof(h) + (size_t)n * 8 + VN_RING_SLOTS * (8 + sizeof(NetSample) + (size_t)n);
@@ -932,20 +1102,34 @@ bool Model::load(int64_t now) {
     uint8_t * b = (uint8_t *)plat::psAlloc(psz);
     if (b && plat::fsRead(PROF_PATH, b, psz)) {
       FileHdr h; memcpy(&h, b, sizeof(h));
-      size_t need = sizeof(h) + (size_t)h.nSt * 8 + (size_t)h.nSt * PROF_STRIDE * sizeof(ProfCell) + PROF_STRIDE;
-      if (h.ver == PROF_VER) need += sizeof(WxClimate) + sizeof(WxStats) * (1 + (size_t)h.nSt);
-      if (h.magic == PROF_MAGIC && (h.ver == 1 || h.ver == PROF_VER) && h.nSt <= VN_MAX_ST && (size_t)psz == need) {
+      size_t cell = h.ver >= 3 ? sizeof(ProfCell) : PROF_CELL_V12;
+      size_t need = sizeof(h) + (size_t)h.nSt * 8 + (size_t)h.nSt * PROF_STRIDE * cell + PROF_STRIDE;
+      if (h.ver >= 2) need += sizeof(WxClimate) + sizeof(WxStats) * (1 + (size_t)h.nSt);
+      if (h.ver >= 3) need += sizeof(int64_t) * (size_t)h.nSt;
+      if (h.magic == PROF_MAGIC && h.ver >= 1 && h.ver <= PROF_VER && h.nSt <= VN_MAX_ST && (size_t)psz == need) {
         mapSids(*this, b + sizeof(h), h.nSt, map);
         const uint8_t * pp = b + sizeof(h) + (size_t)h.nSt * 8;
-        for (int j = 0; j < h.nSt; j++)
-          if (map[j] >= 0) memcpy(prof + (size_t)map[j] * PROF_STRIDE, pp + (size_t)j * PROF_STRIDE * sizeof(ProfCell), PROF_STRIDE * sizeof(ProfCell));
-        memcpy(cellN, pp + (size_t)h.nSt * PROF_STRIDE * sizeof(ProfCell), PROF_STRIDE);
-        if (h.ver == PROF_VER) {
-          const uint8_t * wp = pp + (size_t)h.nSt * PROF_STRIDE * sizeof(ProfCell) + PROF_STRIDE;
+        for (int j = 0; j < h.nSt; j++) {
+          if (map[j] < 0) continue;
+          ProfCell * dst = prof + (size_t)map[j] * PROF_STRIDE;
+          const uint8_t * src = pp + (size_t)j * PROF_STRIDE * cell;
+          if (h.ver >= 3) { memcpy(dst, src, PROF_STRIDE * sizeof(ProfCell)); continue; }
+          for (int q = 0; q < PROF_STRIDE; q++) {     // migration 3 → 4 octets : dispersion inconnue
+            const uint8_t * c3 = src + (size_t)q * PROF_CELL_V12;
+            uint16_t a; memcpy(&a, c3, 2);
+            dst[q].a = a;
+            dst[q].n = c3[2] > VN_PROFILE_CAP_N ? VN_PROFILE_CAP_N : c3[2];
+            dst[q].dn = 0; dst[q].d = 0;
+          }
+        }
+        const uint8_t * wp = pp + (size_t)h.nSt * PROF_STRIDE * cell;
+        memcpy(cellN, wp, PROF_STRIDE); wp += PROF_STRIDE;
+        if (h.ver >= 2) {
           // Statistiques relues seulement si toutes finies et de signe plausible ; sinon on repart de zéro
           WxClimate c; memcpy(&c, wp, sizeof(c));
           static WxStats tmp[VN_MAX_ST + 1];
           memcpy(tmp, wp + sizeof(WxClimate), sizeof(WxStats) * (1 + (size_t)h.nSt));
+          wp += sizeof(WxClimate) + sizeof(WxStats) * (1 + (size_t)h.nSt);
           bool sane = true;
           for (int k = 0; k < 24; k++) sane &= isfinite(c.sx[k]) && isfinite(c.sw[k]) && c.sw[k] >= 0;
           for (int j = 0; j <= h.nSt; j++) {
@@ -959,6 +1143,14 @@ bool Model::load(int64_t now) {
             for (int j = 0; j < h.nSt; j++) if (map[j] >= 0) wxS[map[j]] = tmp[1 + j];
           }
           updateWxCoef();
+        }
+        if (h.ver >= 3) {
+          // date du premier relevé de dispersion : une valeur impossible (future, négative) est oubliée
+          for (int j = 0; j < h.nSt; j++) {
+            if (map[j] < 0) continue;
+            int64_t v; memcpy(&v, wp + (size_t)j * sizeof(int64_t), sizeof(v));
+            dispSince[map[j]] = (v > 0 && (h.savedAt <= 0 || v <= h.savedAt)) ? v : 0;
+          }
         }
         learnSince = h.learnSince; learnSamples = h.learnSamples;
         any = true;
@@ -1015,6 +1207,8 @@ void Model::resetHistory() {
   memset(&wxG, 0, sizeof(wxG));
   memset(&wxClim, 0, sizeof(wxClim));
   memset(wxS, 0, sizeof(WxStats) * VN_MAX_ST);
+  memset(dispSince, 0, sizeof(int64_t) * VN_MAX_ST);
+  memset(dispPendCell, 0, sizeof(int16_t) * VN_MAX_ST);
   updateWxCoef();
   head = -1; count = 0; rHead = -1; rCount = 0;
   learnSince = 0; learnSamples = 0;

@@ -172,35 +172,16 @@ static void fill() {
 
   // Écart au profil appris (règles : Model::recompute / anomalyStation)
   uint32_t ac = HX_TEXT3;
-  switch (s.anom) {
-    case vn::AN_HIGH: case vn::AN_LOW:
-      snprintf(b, sizeof(b), "Inhabituel : %d v\xC3\xA9lo%s contre %d attendu%s (\xC2\xB1 %d) \xC2\xB7 confiance du profil %d %%",
-               s.bikes, s.bikes > 1 ? "s" : "", s.anomExp, s.anomExp > 1 ? "s" : "", s.anomTol, s.anomConf);
-      ac = HX_WARN;
-      break;
-    case vn::AN_NORMAL:
-      snprintf(b, sizeof(b), "Habituel : %d v\xC3\xA9lo%s contre %d attendu%s (\xC2\xB1 %d) \xC2\xB7 confiance du profil %d %%",
-               s.bikes, s.bikes > 1 ? "s" : "", s.anomExp, s.anomExp > 1 ? "s" : "", s.anomTol, s.anomConf);
-      ac = HX_TEXT2;
-      break;
-    case vn::AN_YOUNG:
-      snprintf(b, sizeof(b), "\xC3\x89" "cart au profil non \xC3\xA9valu\xC3\xA9 : profil trop jeune (confiance %d %%, 50 %% requis)", s.anomConf);
-      break;
-    case vn::AN_NO_PROFILE:
-      snprintf(b, sizeof(b), "\xC3\x89" "cart au profil non \xC3\xA9valu\xC3\xA9 : aucun profil appris pour ce cr\xC3\xA9neau");
-      break;
-    case vn::AN_OFF_HOURS:
-      snprintf(b, sizeof(b), "\xC3\x89" "cart au profil non \xC3\xA9valu\xC3\xA9 hors 7 h\xE2\x80\x93" "22 h");
-      break;
-    default:
-      snprintf(b, sizeof(b), "\xC3\x89" "cart au profil non \xC3\xA9valu\xC3\xA9 : station ferm\xC3\xA9" "e");
-  }
+  char ab[288];
+  vn::anomLineText(s, ab, sizeof(ab));
+  if (s.anom == vn::AN_HIGH || s.anom == vn::AN_LOW || s.anom == vn::AN_PENDING) ac = HX_WARN;
+  else if (s.anom == vn::AN_NORMAL) ac = HX_TEXT2;
   // Un jour férié est attendu comme un dimanche (le profil le dit, pas seulement la règle)
-  if ((s.anom == vn::AN_HIGH || s.anom == vn::AN_LOW || s.anom == vn::AN_NORMAL) && g_model.holidayProfile(t)) {
-    char hb[176];
-    snprintf(hb, sizeof(hb), "%s \xC2\xB7 jour f\xC3\xA9ri\xC3\xA9 : profil du dimanche", b);
-    lv_label_set_text(W.insAnom, hb);
-  } else lv_label_set_text(W.insAnom, b);
+  if ((s.anom == vn::AN_HIGH || s.anom == vn::AN_LOW || s.anom == vn::AN_NORMAL || s.anom == vn::AN_PENDING) && g_model.holidayProfile(t)) {
+    size_t l = strlen(ab);
+    snprintf(ab + l, sizeof(ab) - l, " \xC2\xB7 jour f\xC3\xA9ri\xC3\xA9 : profil du dimanche");
+  }
+  lv_label_set_text(W.insAnom, ab);
   lv_obj_set_style_text_color(W.insAnom, C(ac), 0);
 
   // Part météo de la prévision à +2 h (bout de l'horizon : effet cumulé) et son origine

@@ -1,5 +1,6 @@
 // ── Écran « Alertes » : ruptures, prévisions, maintenance, régulation ─
 #include "ui_internal.h"
+#include "../core/ops.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -34,8 +35,7 @@ void alertWhy(const vn::Alert & a, char * out, size_t n) {
       snprintf(out, n, "Aucun mouvement depuis %s \xE2\x80\x94 v\xC3\xA9rifier la station", d);
       break;
     case vn::AL_UNUSUAL:      // a.value = écart signé au moment du calcul ; attendu et tolérance : la station
-      snprintf(out, n, "Inhabituel : %d v\xC3\xA9lo%s contre %d attendu%s (\xC2\xB1 %d)",
-               s.bikes, s.bikes > 1 ? "s" : "", s.anomExp, s.anomExp > 1 ? "s" : "", s.anomTol);
+      vn::anomAlertText(s, out, n);
       break;
     case vn::AL_CLOSED:
       snprintf(out, n, "%s", a.value == 1 ? "Location suspendue" : a.value == 2 ? "Retours suspendus"
