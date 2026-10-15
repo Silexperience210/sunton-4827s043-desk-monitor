@@ -877,29 +877,6 @@ int main(int argc, char ** argv) {
   printf("\nPrécision des alertes prévues (la rupture arrive dans les 75 min) : rupture %.0f %% sec / %.0f %% pluie · saturation %.0f %% sec / %.0f %% pluie\n",
          sn[0] ? 100 * so[0] / sn[0] : NAN, wn[0] ? 100 * wo[0] / wn[0] : NAN, sn[1] ? 100 * so[1] / sn[1] : NAN, wn[1] ? 100 * wo[1] / wn[1] : NAN);
 
-  if (!cfg.brief || true) {
-    // Dispersion des α par station (2 termes, comme le modèle) : vraie sensibilité contre estimation
-    double sr = 0, sr2 = 0, sse = 0; int k = 0; double cov = 0, st2 = 0, smean = 0, nrain = 0;
-    std::vector<double> rv, tv;
-    for (int i = 0; i < NST; i++) {
-      const WxStats & ws = m.wxS[i];
-      double det = (double)ws.sdd * ws.szz - (double)ws.sdz * ws.sdz;
-      if (ws.sn < 1 || det <= 0) continue;
-      double raw = -((double)ws.sdd * ws.szr - (double)ws.sdz * ws.sdr) / det;
-      double se = sqrt((double)ws.sgg) / (det / ws.sdd);
-      sr += raw; sr2 += raw * raw; sse += se * se; k++; nrain += ws.nRain;
-      rv.push_back(raw); tv.push_back(w.st[i].sens * cfg.effect);
-    }
-    if (k > 1) {
-      for (size_t j = 0; j < rv.size(); j++) smean += tv[j];
-      smean /= tv.size(); double rm = sr / k;
-      for (size_t j = 0; j < rv.size(); j++) { cov += (rv[j] - rm) * (tv[j] - smean); st2 += (tv[j] - smean) * (tv[j] - smean); }
-      printf("\nα par station : %d stations, fenêtres pluvieuses %.0f en moyenne ; α̂ moyen %.3f, écart-type %.3f ; erreur-type moyenne %.3f ; "
-             "τ² = %.4f ; corrélation avec la vraie sensibilité %.2f\n",
-             k, nrain / k, rm, sqrt(fmax(0, sr2 / k - rm * rm)), sqrt(sse / k), fmax(0, sr2 / k - rm * rm - sse / k),
-             st2 > 0 ? cov / sqrt(st2 * fmax(1e-12, sr2 - k * rm * rm)) : NAN);
-    }
-  }
   // Ligne de synthèse (pour comparer deux réglages d'un coup d'œil)
   double fRain = 0, fDry = 0, fAll = 0, tAll = 0; int nR = 0, nD = 0, nA = 0;
   for (int d = matureFrom; d < cfg.days; d++) {

@@ -103,12 +103,11 @@ bool Model::init() {
   prof   = (ProfCell *)plat::psAlloc(sizeof(ProfCell) * (size_t)VN_MAX_ST * PROF_STRIDE);
   cellN  = (uint8_t *)plat::psAlloc(PROF_STRIDE);
   alerts = (Alert *)plat::psAlloc(sizeof(Alert) * VN_MAX_ALERTS);
-  wxS    = (WxStats *)plat::psAlloc(sizeof(WxStats) * VN_MAX_ST);
   dispSince = (int64_t *)plat::psAlloc(sizeof(int64_t) * VN_MAX_ST);
   dispPendDev = (float *)plat::psAlloc(sizeof(float) * VN_MAX_ST);
   dispPendCell = (int16_t *)plat::psAlloc(sizeof(int16_t) * VN_MAX_ST);
   if (!dispPendDev || !dispPendCell) return false;
-  if (!st || !ringT || !ring || !net || !recT || !rec || !prof || !cellN || !alerts || !wxS || !dispSince) return false;
+  if (!st || !ringT || !ring || !net || !recT || !rec || !prof || !cellN || !alerts || !dispSince) return false;
   if (!days.init()) return false;
   memset(ring, 255, (size_t)VN_RING_SLOTS * VN_MAX_ST);
   memset(rec, 255, (size_t)VN_RECENT_SLOTS * VN_MAX_ST);
@@ -713,7 +712,6 @@ void Model::learnWeather(int64_t slotT) {
   wxClim.sx[hh] += x; wxClim.sw[hh] += 1;
   float xbar = wxClim.sx[hh] / wxClim.sw[hh];
   wxDecay(wxG);
-  for (int i = 0; i < n; i++) wxDecay(wxS[i]);
   float g = 0;
   int used = 0;
   const uint8_t * r0 = ring + (size_t)i0 * VN_MAX_ST, * r6 = ring + (size_t)i6 * VN_MAX_ST;
@@ -726,10 +724,7 @@ void Model::learnWeather(int64_t slotT) {
     float d = pb - pa;
     float r = clampf((float)r0[i] - (float)r6[i] - d, -WX_RES_CLIP, WX_RES_CLIP);
     float z = (x - xbar) * d;
-    WxStats * ws[2] = { &wxG, &wxS[i] };
-    for (WxStats * w : ws) { w->sdd += d * d; w->sdz += d * z; w->szz += z * z; w->sdr += d * r; w->szr += z * r; w->sn += 1; }
-    wxS[i].sgg += (z * r) * (z * r);                        // grappe = l'observation elle-même
-    if (x > 0.05f) wxS[i].nRain += 1;
+    wxG.sdd += d * d; wxG.sdz += d * z; wxG.szz += z * z; wxG.sdr += d * r; wxG.szr += z * r; wxG.sn += 1;
     g += z * r;
     used++;
   }
@@ -1034,17 +1029,18 @@ struct NetSampleV1 {                              // format des versions ≤ 1.0
 static_assert(sizeof(NetSampleV1) == 24, "format v1 de /vn_hist.bin");
 static_assert(sizeof(NetSample) == 32, "format v2 de /vn_hist.bin");
 // /vn_prof.bin : ver 1 (≤ v1.0.8) = profils (cellule de 3 octets) ; ver 2 = + statistiques météo
-// (global, puis une par station dans l'ordre des sid) ; ver 3 = cellule de 4 octets (+ dispersion,
-// levier 1a) et, en fin de fichier, le premier relevé de dispersion de chaque station.
+// (global, puis une par station dans l'ordre des sid) ; ver 3 = cellule de 4 octets (+ dispersion)
+// et, en fin de fichier, le premier relevé de dispersion de chaque station ; ver 4 (1.1.0) = ver 3
+// sans les statistiques par station (étape 3b, jamais appliquée : retirée).
 // Une version 1 ou 2 est relue cellule par cellule (moyenne et n intacts, dispersion inconnue :
-// la tolérance retombe sur la formule fixe le temps de la réapprendre) ; une version 1 sans
-// apprentissage météo. Version inconnue, taille fausse : fichier ignoré (profil à zéro), jamais
-// de lecture hors du fichier.
+// l'écart habituel n'est plus affiché le temps de le réapprendre) ; une version 1 sans
+// apprentissage météo ; les statistiques par station d'une version 2 ou 3 sont sautées.
+// Version inconnue, taille fausse : fichier ignoré (profil à zéro), jamais de lecture hors du fichier.
 static const uint32_t PROF_MAGIC = 0x31504E56;   // "VNP1"
-static const uint16_t PROF_VER = 3;
+static const uint16_t PROF_VER = 4;
 static const size_t PROF_CELL_V12 = 3;            // { uint16 a ; uint8 n } des versions 1 et 2
 static_assert(sizeof(WxStats) == 32 && sizeof(WxClimate) == 192, "format v2 de /vn_prof.bin");
-static_assert(sizeof(ProfCell) == 4, "format v3 de /vn_prof.bin");
+static_assert(sizeof(ProfCell) == 4, "formats v3 et v4 de /vn_prof.bin");
 static const char * HIST_PATH = "/vn_hist.bin";
 static const char * PROF_PATH = "/vn_prof.bin";
 // /vn_days.bin : résumés par jour, format et migration décrits dans core/days.cpp
@@ -1057,7 +1053,7 @@ bool Model::serialize(Blob & out) const {
   h.learnSince = learnSince; h.learnSamples = learnSamples; h.savedAt = lastUpdate;
   // Profils
   size_t sz = sizeof(h) + (size_t)n * 8 + (size_t)n * PROF_STRIDE * sizeof(ProfCell) + PROF_STRIDE
-              + sizeof(WxClimate) + sizeof(WxStats) * (1 + (size_t)n) + sizeof(int64_t) * (size_t)n;
+              + sizeof(WxClimate) + sizeof(WxStats) + sizeof(int64_t) * (size_t)n;
   uint8_t * b = (uint8_t *)plat::psAlloc(sz);
   if (!b) return false;
   h.magic = PROF_MAGIC; h.ver = PROF_VER;
@@ -1068,7 +1064,6 @@ bool Model::serialize(Blob & out) const {
   memcpy(b + o, cellN, PROF_STRIDE); o += PROF_STRIDE;
   memcpy(b + o, &wxClim, sizeof(WxClimate)); o += sizeof(WxClimate);
   memcpy(b + o, &wxG, sizeof(WxStats)); o += sizeof(WxStats);
-  memcpy(b + o, wxS, sizeof(WxStats) * (size_t)n); o += sizeof(WxStats) * (size_t)n;
   memcpy(b + o, dispSince, sizeof(int64_t) * (size_t)n); o += sizeof(int64_t) * (size_t)n;
   out.prof = b; out.profLen = o;
   // Historique 24 h
@@ -1118,7 +1113,9 @@ bool Model::load(int64_t now) {
       FileHdr h; memcpy(&h, b, sizeof(h));
       size_t cell = h.ver >= 3 ? sizeof(ProfCell) : PROF_CELL_V12;
       size_t need = sizeof(h) + (size_t)h.nSt * 8 + (size_t)h.nSt * PROF_STRIDE * cell + PROF_STRIDE;
-      if (h.ver >= 2) need += sizeof(WxClimate) + sizeof(WxStats) * (1 + (size_t)h.nSt);
+      // statistiques météo : le parc, puis (versions 2 et 3 seulement) une par station
+      const size_t wxPerSt = h.ver == 2 || h.ver == 3 ? (size_t)h.nSt : 0;
+      if (h.ver >= 2) need += sizeof(WxClimate) + sizeof(WxStats) * (1 + wxPerSt);
       if (h.ver >= 3) need += sizeof(int64_t) * (size_t)h.nSt;
       if (h.magic == PROF_MAGIC && h.ver >= 1 && h.ver <= PROF_VER && h.nSt <= VN_MAX_ST && (size_t)psz == need) {
         mapSids(*this, b + sizeof(h), h.nSt, map);
@@ -1140,24 +1137,16 @@ bool Model::load(int64_t now) {
         const uint8_t * wp = pp + (size_t)h.nSt * PROF_STRIDE * cell;
         memcpy(cellN, wp, PROF_STRIDE); wp += PROF_STRIDE;
         if (h.ver >= 2) {
-          // Statistiques relues seulement si toutes finies et de signe plausible ; sinon on repart de zéro
-          // (vérifiées sur place dans le tampon lu : pas de copie de 6 Ko en RAM interne)
+          // Statistiques relues seulement si finies et de signe plausible ; sinon on repart de zéro
           WxClimate c; memcpy(&c, wp, sizeof(c));
-          const uint8_t * ws = wp + sizeof(WxClimate);
-          wp += sizeof(WxClimate) + sizeof(WxStats) * (1 + (size_t)h.nSt);
+          WxStats g; memcpy(&g, wp + sizeof(WxClimate), sizeof(g));
+          wp += sizeof(WxClimate) + sizeof(WxStats) * (1 + wxPerSt);
           bool sane = true;
           for (int k = 0; k < 24; k++) sane &= isfinite(c.sx[k]) && isfinite(c.sw[k]) && c.sw[k] >= 0;
-          for (int j = 0; j <= h.nSt; j++) {
-            WxStats t; memcpy(&t, ws + (size_t)j * sizeof(WxStats), sizeof(t));
-            const float * f = (const float *)&t;
-            for (size_t k = 0; k < sizeof(WxStats) / sizeof(float); k++) sane &= isfinite(f[k]);
-            sane &= t.sdd >= 0 && t.szz >= 0 && t.sgg >= 0 && t.sn >= 0;
-          }
-          if (sane) {
-            wxClim = c;
-            memcpy(&wxG, ws, sizeof(WxStats));
-            for (int j = 0; j < h.nSt; j++) if (map[j] >= 0) memcpy(&wxS[map[j]], ws + (size_t)(1 + j) * sizeof(WxStats), sizeof(WxStats));
-          }
+          const float * f = (const float *)&g;
+          for (size_t k = 0; k < sizeof(WxStats) / sizeof(float); k++) sane &= isfinite(f[k]);
+          sane &= g.sdd >= 0 && g.szz >= 0 && g.sgg >= 0 && g.sn >= 0;
+          if (sane) { wxClim = c; wxG = g; }
           updateWxCoef();
         }
         if (h.ver >= 3) {
@@ -1236,7 +1225,6 @@ void Model::resetHistory() {
   memset(net, 0, sizeof(NetSample) * VN_RING_SLOTS);
   memset(&wxG, 0, sizeof(wxG));
   memset(&wxClim, 0, sizeof(wxClim));
-  memset(wxS, 0, sizeof(WxStats) * VN_MAX_ST);
   memset(dispSince, 0, sizeof(int64_t) * VN_MAX_ST);
   memset(dispPendCell, 0, sizeof(int16_t) * VN_MAX_ST);
   updateWxCoef();

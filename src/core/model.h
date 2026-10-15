@@ -81,7 +81,7 @@ enum WxCoefSrc : uint8_t {
 };
 
 // Statistiques suffisantes de l'apprentissage météo (décroissance exponentielle, ~60 jours).
-// Par fenêtre de 30 min et par station : d = mouvement du profil, r = mouvement observé − d,
+// Par fenêtre de 30 min, cumulées sur les stations du parc : d = mouvement du profil, r = mouvement observé − d,
 // z = (x − x̄ₕ)·d, x̄ₕ = pénalité moyenne à cette heure de la journée (ce que le profil moyenne).
 // Régression r = β·d − α·z : β absorbe le biais du profil (lissage, jeunesse) quel que soit le
 // temps, α est l'effet de la météo. Erreur-type robuste par grappe (une fenêtre = une grappe pour
@@ -222,10 +222,8 @@ struct Model {
   int       netConf = 0;
   uint8_t   wxUse = WXU_NONE;            // WxUse, évaluée par recompute
   // Coefficient météo appris (étape 3) — sur le mouvement net, jamais sur le niveau constaté
-  WxStats   wxG{};                       // parc entier
+  WxStats   wxG{};                       // parc entier (le coefficient par station, étape 3b, n'a pas gagné : retiré)
   WxClimate wxClim{};                    // x̄ₕ
-  WxStats * wxS = nullptr;               // [VN_MAX_ST] par station (appris et sauvegardé ; non appliqué,
-                                         // voir docs/mesures-prevision.md, étape 3b)
   float     wxAlpha = 0;                 // α global appliqué (0 si non significatif)
   float     wxAlphaRaw = 0, wxAlphaSE = 0; // estimation brute et son erreur-type
   float     wxXbar = 0;                  // x̄ₕ de l'heure courante (affichage)

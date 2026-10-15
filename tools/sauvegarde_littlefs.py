@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sauvegarde de la partition LittleFS de la carte AVANT un flash qui change le format des fichiers.
 
-La 1.1.0 réécrit /vn_prof.bin (v3) et /vn_hist.bin (v2) ; les 1.0.8 et 1.0.9 refusent ces versions :
+La 1.1.0 réécrit /vn_prof.bin (v4) et /vn_hist.bin (v2) ; les 1.0.8 et 1.0.9 refusent ces versions :
 revenir en arrière sans cette sauvegarde, c'est perdre les profils appris. Le flash lui-même ne
 touche pas la partition (l'image fusionnée s'arrête bien avant 0xC90000).
 

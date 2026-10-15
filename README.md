@@ -158,7 +158,7 @@ esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-
 ### Mise à jour d'une carte déjà en service (1.0.x → 1.1.0)
 
 La 1.1.0 relit sans perte les profils et l'historique d'une 1.0.x, puis les réécrit dans un format plus
-récent (`/vn_prof.bin` v3, `/vn_hist.bin` v2, nouveau `/vn_days.bin`) que **les 1.0.8 et 1.0.9 refusent**.
+récent (`/vn_prof.bin` v4, `/vn_hist.bin` v2, nouveau `/vn_days.bin`) que **les 1.0.8 et 1.0.9 refusent**.
 Revenir en arrière sans sauvegarde, c'est repartir d'un profil vide. Donc :
 
 1. **Sauvegarder la partition de fichiers** (lecture seule ; refuse d'écraser une sauvegarde, et vérifie
@@ -344,9 +344,9 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision dump_sim
-./test_core ../docs/donnees     # 949 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 956 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
-                                 # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2 → v3),
+                                 # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2, v3 → v4),
                                  # écart habituel (dispersion apprise, affichée pour information, textes de l'écart),
                                  # jours fériés (calendrier sourcé, Pâques sur 12 années, profil du dimanche),
                                  # mémoire du profil (décroissance exacte, relecture d'un profil d'une autre mémoire),

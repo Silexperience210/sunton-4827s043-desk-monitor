@@ -615,21 +615,31 @@ static void testProjection24() {
   CHECK(flat && cz <= 0.125f, "premier relevé : 7 vélos constants, confiance ≤ 1/8 (max %.3f)", cz);
 }
 
-// /vn_prof.bin des versions 1 et 2 (cellule de 3 octets), reconstruit depuis un fichier v3 de nSt stations :
-// mêmes moyennes et mêmes n, sans dispersion (v2 garde l'apprentissage météo, v1 non)
-static std::vector<uint8_t> legacyProf(const std::vector<uint8_t> & v3, int nSt, int ver) {
+// /vn_prof.bin des versions 1 à 3, reconstruit depuis un fichier v4 (1.1.0) de nSt stations :
+// v1 et v2 = cellule de 3 octets, mêmes moyennes et mêmes n, sans dispersion (v2 garde l'apprentissage
+// météo, v1 non) ; v2 et v3 portent en plus une statistique météo par station (étape 3b, retirée),
+// remplie ici de valeurs repérables (perSt) que la relecture doit sauter.
+static std::vector<uint8_t> legacyProf(const std::vector<uint8_t> & v4, int nSt, int ver, float perSt = 7.f) {
   const size_t hdr = 40, cells = (size_t)nSt * 7 * 96;
-  std::vector<uint8_t> out(v3.begin(), v3.begin() + hdr + (size_t)nSt * 8);
+  std::vector<uint8_t> out(v4.begin(), v4.begin() + hdr + (size_t)nSt * 8);
   uint16_t v = (uint16_t)ver; memcpy(out.data() + 4, &v, 2);
-  const uint8_t * c4 = v3.data() + hdr + (size_t)nSt * 8;
-  for (size_t q = 0; q < cells; q++) {
-    ProfCell c; memcpy(&c, c4 + q * 4, 4);
-    uint8_t b[3]; memcpy(b, &c.a, 2); b[2] = (uint8_t)c.n;
-    out.insert(out.end(), b, b + 3);
-  }
+  const uint8_t * c4 = v4.data() + hdr + (size_t)nSt * 8;
+  if (ver >= 3) out.insert(out.end(), c4, c4 + cells * 4);
+  else
+    for (size_t q = 0; q < cells; q++) {
+      ProfCell c; memcpy(&c, c4 + q * 4, 4);
+      uint8_t b[3]; memcpy(b, &c.a, 2); b[2] = (uint8_t)c.n;
+      out.insert(out.end(), b, b + 3);
+    }
   const uint8_t * rest = c4 + cells * 4;
   out.insert(out.end(), rest, rest + 7 * 96);
-  if (ver >= 2) out.insert(out.end(), rest + 7 * 96, rest + 7 * 96 + sizeof(WxClimate) + sizeof(WxStats) * (1 + nSt));
+  if (ver >= 2) {
+    out.insert(out.end(), rest + 7 * 96, rest + 7 * 96 + sizeof(WxClimate) + sizeof(WxStats));
+    std::vector<float> st((size_t)nSt * sizeof(WxStats) / sizeof(float), perSt);
+    const uint8_t * pb = (const uint8_t *)st.data();
+    out.insert(out.end(), pb, pb + st.size() * sizeof(float));
+  }
+  if (ver >= 3) { const uint8_t * ds = rest + 7 * 96 + sizeof(WxClimate) + sizeof(WxStats); out.insert(out.end(), ds, ds + (size_t)nSt * 8); }
   return out;
 }
 // Moyennes et n identiques, dispersion inconnue (ce que doit donner une migration v1/v2 → v3)
@@ -777,22 +787,34 @@ static void testDispersionInfo() {
   }
   const int64_t ti = tq + 3600 - (tq + 3600) % 300;
 
-  // 5. Persistance v3 : aller-retour exact (moyenne, n, dispersion, compte, date de début)
+  // 5. Persistance v4 : aller-retour exact (moyenne, n, dispersion, compte, date de début)
   sim::g_fsDir = "/tmp/vn_test_calm";
   if (system("rm -rf /tmp/vn_test_calm") != 0) {}
   Model::Blob b;
-  CHECK(m.serialize(b), "sérialisation profils v3");
-  std::vector<uint8_t> v3(b.prof, b.prof + b.profLen);
+  CHECK(m.serialize(b), "sérialisation profils v4");
+  std::vector<uint8_t> v3(b.prof, b.prof + b.profLen);          // (nom historique : le fichier courant, v4)
   Model::writeSaved(b);
   uint16_t ver; memcpy(&ver, v3.data() + 4, 2);
-  CHECK(ver == 3 && v3.size() == 40 + 3 * 8 + 3 * 672 * 4 + 672 + sizeof(WxClimate) + 4 * sizeof(WxStats) + 3 * 8,
-        "fichier v3 : version %d, %zu octets (cellule de 4 octets + date de dispersion)", ver, v3.size());
+  CHECK(ver == 4 && v3.size() == 40 + 3 * 8 + 3 * 672 * 4 + 672 + sizeof(WxClimate) + sizeof(WxStats) + 3 * 8,
+        "fichier v4 : version %d, %zu octets (cellule de 4 octets, météo du parc seule, date de dispersion)", ver, v3.size());
   const int64_t tl = ti + 4500;
   static Model r;
   r.init(); r.load(tl);
-  CHECK(memcmp(r.prof, m.prof, sizeof(ProfCell) * 3 * 672) == 0 && memcmp(r.dispSince, m.dispSince, 3 * 8) == 0,
-        "v3 relu : cellules et dates de dispersion identiques");
-  // 6. Migration v2 (branche prévision-météo, jamais publiée) et v1 (v1.0.8 et v1.0.9 publiées) : moyenne et n intacts, dispersion inconnue → formule fixe, dite
+  CHECK(memcmp(r.prof, m.prof, sizeof(ProfCell) * 3 * 672) == 0 && memcmp(r.dispSince, m.dispSince, 3 * 8) == 0
+        && memcmp(&r.wxG, &m.wxG, sizeof(WxStats)) == 0,
+        "v4 relu : cellules, dates de dispersion et apprentissage météo identiques");
+  // 5b. v3 (pile avant le resserrage, jamais publiée) : statistiques par station sautées, le reste relu à l'identique
+  for (float junk : { 7.f, NAN }) {
+    std::vector<uint8_t> f3 = legacyProf(v3, 3, 3, junk);
+    CHECK(f3.size() == v3.size() + 3 * sizeof(WxStats), "fichier v3 reconstruit : %zu octets (+ 3 statistiques par station)", f3.size());
+    plat::fsWrite("/vn_prof.bin", f3.data(), f3.size());
+    static Model r3;
+    r3 = Model(); r3.init();
+    CHECK(r3.load(tl) && memcmp(r3.prof, m.prof, sizeof(ProfCell) * 3 * 672) == 0 && memcmp(r3.dispSince, m.dispSince, 3 * 8) == 0
+          && memcmp(&r3.wxG, &m.wxG, sizeof(WxStats)) == 0,
+          "v3 relu (statistiques par station %s) : cellules, dates et météo du parc identiques", isnan(junk) ? "non finies" : "quelconques");
+  }
+  // 6. Migration v2 (branche prévision-météo, jamais publiée) et v1 (v1.0.8 et v1.0.9 publiées) : moyenne et n intacts, dispersion inconnue
   for (int lv = 2; lv >= 1; lv--) {
     std::vector<uint8_t> old = legacyProf(v3, 3, lv);
     plat::fsWrite("/vn_prof.bin", old.data(), old.size());
@@ -800,7 +822,7 @@ static void testDispersionInfo() {
     Model & o = lv == 2 ? o2 : o1;
     o.init();
     CHECK(o.load(tl), "v%d relu", lv);
-    CHECK(sameMeans(o, m, 3) && o.dispSince[1] == 0, "v%d → v3 : moyennes et n identiques, dispersion inconnue", lv);
+    CHECK(sameMeans(o, m, 3) && o.dispSince[1] == 0, "v%d → v4 : moyennes et n identiques, dispersion inconnue", lv);
     CHECK(lv == 1 ? o.wxG.sn == 0 : memcmp(&o.wxG, &m.wxG, sizeof(WxStats)) == 0, "v%d : apprentissage météo %s", lv, lv == 1 ? "à zéro" : "gardé");
     InfoRec io[3] = { mkInfo("21", 49.60f, 6.13f, 20), mkInfo("22", 49.61f, 6.14f, 20), mkInfo("23", 49.62f, 6.15f, 20) };
     o.applyInfo(io, 3, tl);
@@ -821,8 +843,9 @@ static void testDispersionInfo() {
   // 7. Fichiers corrompus : ignorés sans plantage, jamais lus de travers
   struct Bad { std::string what; std::vector<uint8_t> data; };
   std::vector<Bad> bads;
-  { auto x = v3; uint16_t v = 4; memcpy(x.data() + 4, &v, 2); bads.push_back({ "version 4 (inconnue)", x }); }
-  { auto x = v3; x.pop_back(); bads.push_back({ "v3 tronqué d'un octet", x }); }
+  { auto x = v3; uint16_t v = 5; memcpy(x.data() + 4, &v, 2); bads.push_back({ "version 5 (inconnue)", x }); }
+  { auto x = v3; x.pop_back(); bads.push_back({ "v4 tronqué d'un octet", x }); }
+  { auto x = v3; uint16_t v = 3; memcpy(x.data() + 4, &v, 2); bads.push_back({ "v4 annoncé v3 (taille fausse)", x }); }
   { auto x = legacyProf(v3, 3, 2); uint16_t v = 3; memcpy(x.data() + 4, &v, 2); bads.push_back({ "v2 annoncé v3 (taille fausse)", x }); }
   { auto x = v3; uint16_t v = 0; memcpy(x.data() + 4, &v, 2); bads.push_back({ "version 0", x }); }
   { auto x = v3; uint16_t ns = 9999; memcpy(x.data() + 6, &ns, 2); bads.push_back({ "nombre de stations aberrant", x }); }
@@ -1116,8 +1139,8 @@ static void testWxLearn() {
   r.recompute(tq + 300);
   CHECK(memcmp(&r.wxG, &m.wxG, sizeof(WxStats)) == 0 && r.wxAlpha == m.wxAlpha && r.wxSrc == WXC_LEARNED,
         "v2 relu : statistiques et α identiques (%.3f)", r.wxAlpha);
-  CHECK(memcmp(&r.wxClim, &m.wxClim, sizeof(WxClimate)) == 0 && memcmp(r.wxS, m.wxS, sizeof(WxStats) * 4) == 0, "v2 relu : x̄ par heure et statistiques par station");
-  const size_t wxLen = sizeof(WxClimate) + sizeof(WxStats) * 5, dsLen = sizeof(int64_t) * 4;
+  CHECK(memcmp(&r.wxClim, &m.wxClim, sizeof(WxClimate)) == 0 && m.wxG.sn > 0, "relu : x̄ par heure identique");
+  const size_t wxLen = sizeof(WxClimate) + sizeof(WxStats), dsLen = sizeof(int64_t) * 4;
   std::vector<uint8_t> v1 = legacyProf(prof, 4, 1);
   plat::fsWrite("/vn_prof.bin", v1.data(), v1.size());
   static Model r1;
@@ -1126,6 +1149,16 @@ static void testWxLearn() {
   r1.recompute(tq + 300);
   CHECK(sameMeans(r1, m, 4) && r1.wxSrc == WXC_DEFAULT && r1.wxG.sn == 0,
         "profils v1 (v1.0.8) relus, apprentissage météo reparti de zéro");
+  for (int lv = 2; lv <= 3; lv++) {                // statistiques par station (3b, retirée) sautées, celles du parc gardées
+    std::vector<uint8_t> old = legacyProf(prof, 4, lv, NAN);
+    plat::fsWrite("/vn_prof.bin", old.data(), old.size());
+    static Model rv;
+    rv = Model(); rv.init();
+    rv.load(tq + 300);
+    rv.recompute(tq + 300);
+    CHECK(memcmp(&rv.wxG, &m.wxG, sizeof(WxStats)) == 0 && rv.wxAlpha == m.wxAlpha && rv.wxSrc == WXC_LEARNED && m.wxG.sn > 0,
+          "v%d relu : apprentissage météo du parc et α identiques (%.3f), statistiques par station ignorées", lv, rv.wxAlpha);
+  }
   std::vector<uint8_t> bad = prof;
   float nanv = NAN; memcpy(bad.data() + (prof.size() - dsLen - wxLen) + sizeof(WxClimate), &nanv, 4);
   plat::fsWrite("/vn_prof.bin", bad.data(), bad.size());
@@ -1414,7 +1447,7 @@ static void testDecay() {
     }
     CHECK(same, "N = 24 (livré) : identique au bit près à la moyenne plafonnée de la v1.0.8 sur 90 relevés aléatoires");
   }
-  // Un fichier écrit avec une mémoire de 24 relu avec une autre : format inchangé (v3), n relu tel quel,
+  // Un fichier écrit avec une mémoire de 24 relu avec une autre : format inchangé (v4), n relu tel quel,
   // puis ramené au plafond de la nouvelle mémoire au premier relevé
   {
     g_pred = PredictOpts();
@@ -1436,8 +1469,8 @@ static void testDecay() {
       bool same = r.prof[C].a == 10 * 256 && r.prof[C].n == 24;
       feedCell(r, tl, 1, 16);                                   // mardi suivant (tl est un mardi 00:00)
       double expect = N == 12 ? 16 - 6 * pow(11.0 / 12, 3) : 10 + (16 - 10) * (1 - (24.0 / 25) * (25.0 / 26) * (26.0 / 27));
-      CHECK(ver == 3 && same && fabsf(r.prof[C].a / 256.f - (float)expect) < 0.02f && r.prof[C].n == (N == 12 ? 12 : 27),
-            "fichier v3 écrit avec N = 24, relu avec N = %d : moyenne et n = 24 relus, puis %s (a = %.3f, attendu %.3f, n = %d)", N,
+      CHECK(ver == 4 && same && fabsf(r.prof[C].a / 256.f - (float)expect) < 0.02f && r.prof[C].n == (N == 12 ? 12 : 27),
+            "fichier v4 écrit avec N = 24, relu avec N = %d : moyenne et n = 24 relus, puis %s (a = %.3f, attendu %.3f, n = %d)", N,
             N == 12 ? "poids 1/12 et n ramené à 12" : "la montée continue (1/25, 1/26, 1/27)", r.prof[C].a / 256.f, expect, r.prof[C].n);
     }
     // une v2 (cellules de 3 octets) relue avec N = 12 : n plafonné à 12 dès la lecture

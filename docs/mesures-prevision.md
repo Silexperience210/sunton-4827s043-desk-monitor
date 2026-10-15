@@ -348,7 +348,10 @@ identique sans météo, vérifié sur toutes les mesures du banc).
 
 Le plan voulait la modulation « seulement là où il y a assez d'échantillons pluvieux pour l'estimer
 honnêtement » : **il n'y en a nulle part** en deux mois de mémoire, avec une pluie sur 10 % des heures.
-Code mesuré au commit d'expérience suivant, puis retiré.
+Code mesuré au commit d'expérience suivant, puis retiré. **Restaient** l'apprentissage et la sauvegarde des
+statistiques par station (`Model::wxS`, 32 o × 200 stations en PSRAM, ≈ 4,6 Ko de plus à chaque écriture de
+`/vn_prof.bin`), sans aucun lecteur : retirés à leur tour dans feat/final (`/vn_prof.bin` v4 ; les v2 et v3 sont
+relus, leur bloc par station sauté — `docs/bilan-final.md`).
 
 ## Étape 4 — la météo prévue, au bon horizon : **livrée au-delà de 2 h seulement**
 
