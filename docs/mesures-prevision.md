@@ -524,7 +524,8 @@ férié y est un dimanche par construction (voir la réserve de l'étape 5a).
 
 ## Recommandations (non mesurées ici — à mesurer avant de construire)
 
-1. **Le vrai problème de l'alerte « inhabituel » est son bruit, pas la météo** : ~159 épisodes faux par jour
+1. *(Mesuré depuis : voir « Alerte calme » ci-dessous — l'écart type par case ne suffit pas.)*
+   **Le vrai problème de l'alerte « inhabituel » est son bruit, pas la météo** : ~159 épisodes faux par jour
    pour ~2 vrais. La tolérance est fixe (max(4 vélos, 20 % de la capacité)) alors que la variabilité dépend du
    créneau et de la station. Piste : apprendre l'**écart type par case** (un second moment dans `ProfCell`,
    +2 octets × 672 × 143 ≈ 190 Ko de PSRAM — **non vérifié sur la carte**) et sonner au-delà de k·σ. Le banc
@@ -538,3 +539,219 @@ férié y est un dimanche par construction (voir la réserve de l'étape 5a).
 4. **Calibrer le banc sur le réel** : le parc simulé est moins dispersé que le vrai (3 vides contre 15 à
    14 h 30). Les relevés que la carte stocke désormais (historique + météo) permettent de rejouer de vraies
    journées dans le banc : c'est ce qui transformera ces mesures relatives en mesures de terrain.
+
+## Alerte calme (branche `feat/alerte-calme`) — l'alerte « inhabituel » : **critère non atteint, rien d'activé par défaut**
+
+### Le critère, énoncé sans ambiguïté
+
+**≤ 5 épisodes faux par jour** (parc entier, tous les jours de la période mûre, j ≥ 57) **et ≥ 80 % de
+rappel** des incidents de la même période (un incident est rappelé si l'alerte sonne pendant ses 3 h), en
+moyenne sur 3 graines × 3 mondes (nul, moyen, fort). Référence (v1.0.9) : **155,0 fausses/jour, rappel
+88,4 %**. Le rappel « historique » du banc (toute la période, y compris les 8 premiers jours où l'alerte ne
+peut pas sonner) est donné en plus : 83,5 %.
+
+Rejouable : `python3 tools/bench_balayage.py --var "alerte_disp=1 alerte_k={}" --valeurs 1,1.5,2,3` (et
+`--var "inertie={}"`, `--var "alerte_echelle={}"`) ; `python3 tools/bench_campagne.py` pour la référence.
+
+### Ce que le banc mesure en plus (étendu, pas remplacé)
+
+- fausses alertes / jour sur **tous** les jours mûrs (en plus de pluie / sec / férié) et vraies / jour ;
+- rappel sur la période mûre, global et jours de pluie ;
+- **retard d'annonce** : premier instant où l'alerte sonne pour un incident détecté, moins son début
+  (moyenne, médiane, 90ᵉ centile ; jours de pluie) ;
+- **origine** des fausses alertes : après un incident (même station, < 24 h après sa fenêtre), après un
+  passage du camion (< 3 h), station vide ou pleine, dérive ordinaire ;
+- la dispersion apprise contre l'écart réellement observé, heure par heure (`./bench_prevision`, § 2b) ;
+- un **témoin** (`alerte_echelle`) : la formule fixe élargie uniformément, sans aucune information — un
+  levier qui ne fait pas mieux que lui à rappel égal n'apporte rien, il rend seulement l'alerte moins sensible ;
+- une **sonde** (pas un levier, aucun code dans le modèle) : un détecteur de saut idéal (voir plus bas).
+
+**La MAE est identique à la 4ᵉ décimale dans tous les réglages mesurés** (1,0726 à +60 min) : l'alerte ne
+touche pas la prévision. Test dédié dans `test_core` (prévision 2 h identique octet pour octet).
+
+### D'où viennent les 155 fausses alertes par jour
+
+| origine (période mûre, 9 mondes) | part |
+|---|---|
+| **dérive ordinaire** (aucun incident, aucun camion, ni vide ni pleine) | **84 %** |
+| station vide ou pleine | 11 % |
+| après un passage du camion | 4 % |
+| après un incident (la station reste décalée après la fenêtre de 3 h) | 1 % |
+
+La dispersion de l'écart au profil, apprise par créneau (levier 1a ci-dessous), est **juste** : elle colle à
+l'écart observé à chaque heure, et la queue est quasi gaussienne (graine 1, effet moyen) :
+
+| heure | 7 h | 9 h | 12 h | 15 h | 18 h | 21 h |
+|---|---|---|---|---|---|---|
+| écart observé moyen \|N − P\| (vélos) | 1,40 | 2,24 | 2,60 | 2,82 | 3,11 | 3,08 |
+| dispersion apprise D | 1,47 | 2,32 | 2,68 | 2,90 | 3,16 | 3,14 |
+| hors incident, \|N − P\| > 3 D | 1,3 % | 1,3 % | 1,2 % | 1,0 % | 0,8 % | 1,1 % |
+
+C'est le cœur du constat : **le bruit du niveau est du même ordre que le signal.** Un incident décale une
+station de max(6, ½ capacité) vélos ; la dérive ordinaire d'une station de 20 places, à 15 h, est de ± 2,8
+vélos en moyenne (le niveau est une marche aléatoire de trajets qui s'accumule dans la journée, remise à
+zéro par la régulation de nuit). Aucune tolérance sur le **niveau**, fixe ou apprise, ne sépare les deux à
+5 fausses alertes par jour sur 143 stations × 15 h (un taux de 2 pour 1 000 stations-heure).
+
+### Levier 1a — tolérance = k × dispersion apprise : **ne gagne pas, non activé**
+
+- `ProfCell` passe de 3 à 4 octets : moyenne ×256 (16 bits), n (5 bits), **compte de dispersion dn** (3 bits,
+  plafonné à 7), **dispersion D** = écart absolu moyen du relevé au profil ×16 (8 bits, plafond 15,9 vélos).
+- Apprentissage : à chaque tranche de 5 min, |relevé − profil| contre le profil **d'avant** ce relevé, versé à
+  la cellule **à la tranche suivante** (le relevé n'est jamais jugé contre une dispersion qui le contient),
+  écrêté à 1,5 D + ½ vélo (à la Huber), moyenne mobile 1/(dn + 1) puis 1/n comme la moyenne, arrondi par
+  tramage déterministe. Seulement quand le profil est mûr (confiance ≥ 50 %).
+- Lecture : lissée ± 15 min et complétée par les jours de même type tant que la cellule est jeune (la règle
+  de la moyenne). Tolérance = max(4 vélos, k × D), décidée sur les nombres affichés (écart et seuil
+  arrondis). Moins de 4 relevés de dispersion : **retour à la formule fixe, dit à l'écran**.
+- Deux défauts trouvés par les tests et corrigés avant mesure : sans le report d'une tranche et sans
+  l'écrêtage, un incident élargissait **sa propre** tolérance (± 4 → ± 11 en deux relevés sur un profil de 3
+  semaines) ; un écrêtage relatif à la cellule seule ne s'appliquait pas avant 3 semaines (écrêtage relatif
+  à la dispersion lissée du créneau).
+
+**Courbe de k** (3 graines × 3 mondes, 168 jours ; rappel et retard sur la période mûre) :
+
+| réglage | fausses/j | pluie | sec | férié | rappel | rappel, jours de pluie | retard moyen | retard p90 |
+|---|---|---|---|---|---|---|---|---|
+| **référence** (formule fixe) | **155,0** | 146,8 | 158,9 | 127,4 | **88,4 %** | 88,2 % | 3,8 min | 0 min |
+| k = 1 | 142,5 | 135,5 | 145,8 | 118,7 | 85,0 % | 82,8 % | 4,6 | 0 |
+| k = 1,25 | 140,0 | 133,2 | 143,1 | 116,1 | 84,2 % | 81,7 % | 4,4 | 0 |
+| k = 1,5 | 131,9 | 126,2 | 134,7 | 110,4 | 82,9 % | 81,4 % | 4,7 | 3 |
+| k = 1,75 | 118,1 | 113,5 | 120,1 | 101,6 | 79,7 % | 77,4 % | 5,5 | 3 |
+| k = 2 | 101,1 | 98,3 | 102,5 | 89,0 | 75,5 % | 73,2 % | 5,2 | 4 |
+| k = 2,5 | 67,9 | 66,3 | 68,5 | 63,4 | 64,3 % | 64,7 % | 8,6 | 23 |
+| k = 3 | 41,5 | 41,0 | 41,3 | 41,7 | 50,3 % | 51,1 % | 9,9 | 30 |
+| k = 4 | 14,2 | 14,1 | 13,9 | 16,9 | 28,8 % | 28,8 % | 13,6 | 57 |
+
+**Témoin** — la formule fixe × e, sans information :
+
+| e | fausses/j | pluie | sec | férié | rappel | rappel, jours de pluie | retard moyen |
+|---|---|---|---|---|---|---|---|
+| 1,1 | 132,4 | 125,8 | 135,5 | 107,7 | 84,6 % | 83,0 % | 4,3 |
+| 1,25 | 101,8 | 96,9 | 104,2 | 82,2 | 78,5 % | 78,3 % | 6,4 |
+| 1,5 | 60,2 | 56,8 | 61,6 | 48,9 | 63,1 % | 61,0 % | 8,8 |
+| 2 | 16,7 | 16,6 | 16,8 | 14,0 | 39,7 % | 36,3 % | 9,6 |
+| 3 | 0,5 | 0,5 | 0,5 | 0,2 | 6,7 % | 5,4 % | 14,7 |
+
+**Lecture.** À bruit égal, 1a rappelle **moins** que le témoin : ≈ 132 fausses/jour → 82,9 % (k = 1,5) contre
+84,6 % (× 1,1) ; ≈ 101 → 75,5 % (k = 2) contre 78,5 % (× 1,25). La dispersion apprise ne fait pas mieux qu'un
+simple réglage de sensibilité, elle fait un peu moins bien. Hypothèse (non vérifiée) : la formule fixe,
+proportionnelle à la capacité, suit déjà l'essentiel de la variabilité (une grande station dérive plus), et
+resserrer le matin calme pour élargir le soir agité ne sépare pas mieux incidents et dérive. Les jours de pluie
+perdent comme les autres (aucun effet propre à la météo, comme attendu). **Aucun k ne remplit le critère** :
+à 80 % de rappel, 118 fausses/jour ; à 14 fausses/jour, 29 % de rappel.
+
+### Levier 1b — inertie (N relevés de 5 min consécutifs, même côté) : **gain marginal, non activé**
+
+Une série par station : chaque relevé **neuf** (un recalcul après la météo ou les réglages ne fait pas avancer
+le temps) est jugé une fois, à son instant ; une tranche sans relevé, un retour dans la tolérance ou un
+changement de côté remettent la série à zéro. Avant le N-ième relevé, l'état est « à confirmer » (affiché,
+sans alerte). La série vit en mémoire : un redémarrage la remet à zéro (au pire N − 1 relevés de retard).
+
+| N | fausses/j | pluie | sec | férié | rappel | rappel, jours de pluie | retard moyen | retard p90 |
+|---|---|---|---|---|---|---|---|---|
+| **1 (référence)** | **155,0** | 146,8 | 158,9 | 127,4 | **88,4 %** | 88,2 % | **3,8 min** | 0 min |
+| 2 | 145,4 | 138,1 | 148,8 | 121,9 | 86,9 % | 87,0 % | 8,3 | 5 |
+| 3 | 138,0 | 131,1 | 141,1 | 116,4 | 85,8 % | 85,4 % | 13,3 | 10 |
+| 4 | 132,3 | 126,0 | 135,1 | 112,6 | 85,2 % | 84,7 % | 18,2 | 15 |
+
+À bruit égal, N = 4 rappelle 85,2 % contre 84,6 % pour le témoin × 1,1 (132 fausses/jour) : **+0,6 point,
+dans l'écart entre graines**, payé de **+14 min** de retard d'annonce sur chaque vraie rupture. La dérive
+ordinaire *persiste* (c'est une marche aléatoire, pas une excursion isolée) : attendre ne la distingue pas
+d'un incident.
+
+### 1a + 1b ensemble (tableau séparé, pour juger le critère — jamais mélangé aux deux précédents)
+
+| réglage | fausses/j | pluie | sec | férié | rappel | rappel, jours de pluie | retard moyen | retard p90 |
+|---|---|---|---|---|---|---|---|---|
+| référence | 155,0 | 146,8 | 158,9 | 127,4 | 88,4 % | 88,2 % | 3,8 | 0 |
+| k = 1,5 ; N = 3 | 113,2 | 109,1 | 115,0 | 99,5 | 79,5 % | 78,6 % | 16,1 | 22 |
+| k = 1,25 ; N = 4 | 117,5 | 112,4 | 119,7 | 102,1 | 80,0 % | 79,0 % | 19,2 | 20 |
+| k = 2 ; N = 4 | 76,8 | 75,5 | 77,4 | 72,0 | 67,8 % | 68,2 % | 21,5 | 29 |
+| k = 3 ; N = 4 | 28,4 | 28,6 | 27,9 | 31,0 | 41,1 % | 42,2 % | 24,7 | 60 |
+
+À 80,0 % de rappel (k = 1,25 ; N = 4), 117,5 fausses/jour et 19 min de retard ; le témoin seul, interpolé au
+même rappel (entre × 1,1 et × 1,25), en fait ≈ 109, sans retard.
+
+### Verdict
+
+**Le critère n'est pas atteint, ni par 1a, ni par 1b, ni par les deux** : au mieux 117,5 fausses alertes par
+jour à 80 % de rappel (−24 %), là où il en faudrait 5. Aucun des deux ne bat le témoin à rappel égal : ils
+retirent du bruit **en perdant du signal**, exactement comme l'élargissement uniforme. Conformément à la règle
+du document, **ni l'un ni l'autre n'est activé** (`g_alertOpt` : `disp = false`, `persist = 1` ; la carte
+alerte comme la v1.0.9 — vérifié : fausses alertes et rappel identiques à la 2ᵉ décimale).
+
+Ce qui est livré quand même, et pourquoi :
+
+- **la dispersion est apprise et gardée** (`/vn_prof.bin` v3) et la fiche la donne **pour information** à côté
+  de la règle actuelle (« · écart habituel à cette heure ± 2,6, mesuré sur 34 jours (pour information) ») :
+  elle ne décide de rien, mais elle dit à l'exploitant si un écart de 6 vélos est banal ici, et c'est la donnée
+  qu'il faudra pour rejuger 1a sur le **vrai** parc, plus dispersé que le parc simulé ;
+- les deux leviers restent derrière leurs interrupteurs, testés et affichables (captures 44 à 47).
+
+Coût mémoire (non vérifié sur la carte) : PSRAM **+134 400 octets** pour les cellules (l'allocation est faite
+pour `VN_MAX_ST` = 200 stations, pas 143 : 200 × 672 cellules × 1 octet) **+ 2 800 octets** (date de
+début de dispersion, écart en attente) ; `/vn_prof.bin` passe de 305 224 à 405 864 octets pour les 148
+stations du flux réel (**+100 640 octets**, dont 99 456 pour les cellules), réécrit toutes les 30 min — durée
+d'écriture et usure de la flash à mesurer sur la carte. Le « +96 Ko » de la consigne est juste pour le fichier
+de 143 stations (96 096 octets), pas pour la mémoire réservée.
+
+### `/vn_prof.bin` version 3 — migration
+
+- v3 = en-tête, sid, cellules de **4** octets, `cellN`, statistiques météo (inchangées), puis la date du premier
+  relevé de dispersion de chaque station (8 octets par station).
+- Une **v2** (v1.0.9) ou une **v1** (v1.0.8) est relue cellule par cellule : moyenne et n **identiques**,
+  dispersion « inconnue » (dn = 0) — la tolérance retombe sur la formule fixe, l'écran le dit (« ± 5 par
+  défaut : écart habituel de ce créneau pas encore mesuré »), et la dispersion se réapprend (testé : utilisable
+  8 jours après la migration). Une v1 repart sans apprentissage météo, comme avant.
+- Refusés proprement (profil vide, aucune lecture hors du fichier) : version 0 ou 4, v3 tronqué d'un octet, v2
+  annoncé v3 (taille fausse), nombre de stations aberrant. Corruption douce : un n > 24 dans une v2 est
+  plafonné ; une date de dispersion future est oubliée (les autres gardées).
+
+### Tests
+
+47 vérifications nouvelles dans `test_core` (**754 au total**) : la dispersion apprise suit le bruit réel de
+trois stations (calme ± 0,5, agitée ± 2,2, fixe 0) ; la même valeur jugée selon la variabilité de **sa**
+station ; un vrai écart sur une station calme **alerte quand même** (plancher de 4 vélos) ; prévision 2 h
+identique quel que soit le réglage de l'alerte ; inertie (attente, confirmation au 3ᵉ relevé, relevé de la même
+tranche, retour à la normale, écarts alternés jamais confirmés, trou dans l'historique, station agitée **vidée
+15 min : alerte** avec 1a + 1b) ; aller-retour v3 exact ; migrations v2 et v1 ; dispersion inconnue → formule
+fixe dite à l'écran, puis réapprise ; 5 fichiers corrompus refusés ; textes de la fiche et de la liste (chaque
+chiffre affiché = celui du calcul ; phrase de la v1.0.9 à l'identique sans dispersion connue ; « 0,0 » et non
+« 0,1 » pour une dispersion nulle).
+
+### Affichage (provenance de la tolérance)
+
+- **Réglage livré** (formule fixe) : phrases de la v1.0.9 **à l'identique** tant que la dispersion n'est pas
+  connue (captures 35, 36, 42 identiques au pixel près) ; une fois connue, la fiche ajoute « · écart habituel à
+  cette heure ± 2,6, mesuré sur 34 jours (pour information) » (capture `43_fiche_ecart_info.png`).
+- **1a activé** : fiche « Inhabituel : 1 vélo contre 12 attendus, écart de -11 · écart habituel à cette heure
+  ± 2,6 (mesuré sur 34 jours) → seuil ± 5 (2 × l'écart habituel) » ; quand le plancher l'emporte : « seuil ± 4
+  (plancher de 4 vélos) » ; liste « Inhabituel : 1 contre 12 · ± 5 (habituel ± 2,6) » ; dispersion inconnue :
+  « ± 5 par défaut : écart habituel de ce créneau pas encore mesuré » (captures `44`, `45`, `46`).
+- **1b activé** : « À confirmer : 0 vélo contre 11 attendus, écart de -11 (1 relevé sur 3 de suite avant
+  l'alerte) · … », sans alerte dans la liste ; une fois confirmée : « · sur 3 relevés de suite » (capture `47`).
+- « mesuré sur 34 jours » = jours écoulés depuis le premier relevé versé à la dispersion de **cette** station ;
+  au-delà de 8 semaines (la mémoire de la moyenne mobile), « sur plus de 8 semaines ».
+- L'état de dispersion des captures est **injecté** par le scénario du simulateur (le jeu de données réel n'a
+  pas d'historique) ; le scénario vérifie chaque texte affiché.
+
+### Ce que dit la sonde « saut » — à lire avec la réserve de l'étape 5a
+
+Sonde du banc (aucun code dans le modèle) : sonner quand **le mouvement** sur 5 ou 15 min s'écarte de celui du
+profil d'au moins J vélos, |ΔN − ΔP| ≥ J, mêmes règles d'épisode et de rappel :
+
+| sonde (période mûre, 9 mondes) | fausses/j | rappel |
+|---|---|---|
+| saut ≥ 5 en 15 min | 28,8 | 97,7 % |
+| saut ≥ 5 en 5 min | 23,5 | 96,9 % |
+| saut ≥ 5 en 5 min, **hors sortie de rupture** (ce sont les passages du camion) | **0,3** | **93,5 %** |
+
+Elle passe le critère de très loin — **et c'est précisément pourquoi elle ne prouve rien.** Dans le monde
+simulé, un incident **est** un saut instantané (« décalée d'un coup de ± max(6, ½ capacité) ») et les seuls
+autres sauts sont ceux du camion : un détecteur de saut gagne par construction, comme le profil du dimanche
+gagnait les fériés d'un monde où un férié est un dimanche. Sur le vrai parc, une station vidée par un
+évènement, un dépôt groupé qui s'étale sur 20 min, un rééquilibrage sans rupture préalable ou une remise à
+zéro du flux GBFS ne ressemblent pas forcément à ça. C'est néanmoins la piste à mesurer en premier — **sur
+des relevés réels** (la carte les stocke) — parce que le diagnostic, lui, est solide : ce qui distingue un
+incident de la dérive n'est pas *où* est la station mais *comment elle y est arrivée*.

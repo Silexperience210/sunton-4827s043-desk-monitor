@@ -334,10 +334,11 @@ make sim test_core bench_prevision
 ./sim ../docs/donnees /tmp/boot2 boot-wifi-ko     # réseau enregistré mais injoignable
 ./sim ../docs/donnees /tmp/totaux totaux          # totaux du tableau de bord, sans historique (audit des chiffres)
 ./sim ../docs/donnees /tmp/ops ops                # écrans d'exploitation : fraîcheur, provenance, ingestion, 24 h, « inhabituel »
-                                 # ces écrans sont archivés dans docs/captures/ (24_…42_)
+                                 # ces écrans sont archivés dans docs/captures/ (24_…47_)
 ./bench_prevision                # banc de la prévision : 143 stations et une météo simulées sur 168 jours,
                                  # MAE à +15…+120 min, alertes par jour de pluie / sec, maturation du profil
                                  # (méthode et chiffres : docs/mesures-prevision.md)
+python3 ../tools/bench_balayage.py --var "inertie={}" --valeurs 2,3,4   # courbe d'un réglage de l'alerte « inhabituel »
 ```
 
 `./sim <dossier-json> <sortie> totaux` imprime les totaux calculés par le **code du firmware**
