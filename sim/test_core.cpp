@@ -8,6 +8,7 @@
 #include "../src/core/wifiscan.h"
 #include "../src/core/calendar.h"
 #include "../src/core/service.h"
+#include "../src/core/dump.h"
 #include "../src/platform/platform.h"
 #include "../src/hal/touch_api.h"
 #include <stdio.h>
@@ -16,6 +17,7 @@
 #include <math.h>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 namespace sim { extern int64_t g_epoch0; extern uint32_t g_ms; extern const char * g_fsDir; }
 using namespace vn;
@@ -2029,6 +2031,111 @@ static void testRecurWorld() {
   CHECK(r.days.count == 0 && plat::fsSize("/vn_days.bin") < 0, "réinitialisation : résumés effacés, fichier supprimé");
 }
 
+// ── Vidage série « dump » (core/dump.cpp) : codeur, émetteur, lecteur de commandes ──
+static std::string b64dec(const std::string & s) {
+  static const std::string A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string o; int v = 0, bits = 0;
+  for (char c : s) { if (c == '=') break; size_t k = A.find(c); if (k == std::string::npos) return "?"; v = (v << 6) | (int)k; bits += 6;
+    if (bits >= 8) { bits -= 8; o += (char)((v >> bits) & 0xFF); } }
+  return o;
+}
+static void testDump() {
+  CHECK(crc32("123456789", 9) == 0xCBF43926u, "crc32 du vecteur de référence (%08X)", (unsigned)crc32("123456789", 9));
+  CHECK(crc32("", 0) == 0, "crc32 vide");
+  CHECK(crc32("6789", 4, crc32("12345", 5)) == 0xCBF43926u, "crc32 enchaîné");
+  struct { const char * in, * out; } B[] = { { "", "" }, { "f", "Zg==" }, { "fo", "Zm8=" }, { "foo", "Zm9v" },
+                                             { "foob", "Zm9vYg==" }, { "fooba", "Zm9vYmE=" }, { "foobar", "Zm9vYmFy" } };
+  for (auto & b : B) {
+    char o[16];
+    size_t n = base64Encode((const uint8_t *)b.in, strlen(b.in), o);
+    CHECK(n == strlen(b.out) && !strcmp(o, b.out), "base64(« %s ») = %s (attendu %s)", b.in, o, b.out);
+  }
+  // Émetteur : trois fichiers dont un vide et un d'un bloc tout juste, réassemblés depuis les lignes
+  std::vector<uint8_t> big(1000), one(DUMP_BLOCK);
+  for (size_t i = 0; i < big.size(); i++) big[i] = (uint8_t)(i * 37 + 11);
+  for (size_t i = 0; i < one.size(); i++) one[i] = (uint8_t)(255 - i);
+  DumpWriter w;
+  w.at = 1791894641; w.fw = "9.9.9";
+  CHECK(w.add("/a.bin", big.data(), big.size()) && w.add("/vide.bin", nullptr, 0) && w.add("/un.bin", one.data(), one.size()), "ajout");
+  CHECK(w.blocks(0) == 11 && w.blocks(1) == 0 && w.blocks(2) == 1, "blocs : 11, 0, 1");
+  char line[DUMP_LINE_MAX];
+  size_t n;
+  std::vector<std::string> L;
+  while (w.next(line, sizeof(line), n)) {
+    CHECK(n == strlen(line) && n < DUMP_LINE_MAX && line[n - 1] == '\n', "ligne terminée et bornée (%zu)", n);
+    L.push_back(line);
+  }
+  CHECK(w.done() && L.size() == 1 + 3 + 11 + 0 + 1 + 3 + 1, "nombre de lignes (%zu)", L.size());
+  CHECK(L.front() == "VNDUMP DEBUT proto=1 version=9.9.9 t=1791894641 fichiers=3\n", "DEBUT : %s", L.front().c_str());
+  CHECK(L.back() == "VNDUMP TERMINE fichiers=3\n", "TERMINE");
+  { char e[96]; snprintf(e, sizeof(e), "VNDUMP FICHIER 0 /a.bin taille=1000 blocs=11 crc=%08X\n", (unsigned)crc32(big.data(), big.size()));
+    CHECK(L[1] == e, "FICHIER : %s", L[1].c_str()); }
+  CHECK(L[14].rfind("VNDUMP FICHIER 1 /vide.bin taille=0 blocs=0", 0) == 0 && L[15].rfind("VNDUMP FIN 1 /vide.bin blocs=0", 0) == 0,
+        "fichier vide : FICHIER puis FIN, aucun bloc");
+  std::string re;
+  bool crcOk = true;
+  for (int j = 0; j < 11; j++) {
+    char hdr[32]; snprintf(hdr, sizeof(hdr), "VNDUMP B 0 %d ", j);
+    const std::string & s = L[2 + j];
+    CHECK(s.rfind(hdr, 0) == 0, "bloc %d en ordre", j);
+    size_t sp = s.rfind(' ');
+    std::string b64 = s.substr(strlen(hdr), sp - strlen(hdr)), d = b64dec(b64);
+    unsigned c = (unsigned)strtoul(s.c_str() + sp + 1, nullptr, 16);
+    crcOk &= c == crc32(d.data(), d.size());
+    re += d;
+  }
+  CHECK(crcOk, "somme de chaque bloc juste");
+  CHECK(re.size() == big.size() && !memcmp(re.data(), big.data(), big.size()), "réassemblage octet pour octet");
+  // Abandon au milieu : une ligne ABANDON, puis plus rien
+  DumpWriter w2;
+  w2.add("/a.bin", big.data(), big.size());
+  for (int k = 0; k < 4; k++) w2.next(line, sizeof(line), n);
+  w2.abort("stop demande");
+  CHECK(w2.next(line, sizeof(line), n) && !strcmp(line, "VNDUMP ABANDON stop demande\n"), "abandon : %s", line);
+  CHECK(!w2.next(line, sizeof(line), n) && w2.done(), "abandon : plus rien ensuite");
+  CHECK(!w2.next(line, 10, n), "tampon trop petit : refusé (aucun débordement)");
+  // Lecteur de commandes
+  CmdLine c;
+  const char * got = nullptr;
+  for (const char * p = "  dump \r\n"; *p; p++) { const char * r = c.feed(*p); if (r) got = r; }
+  CHECK(got && !strcmp(got, "dump"), "commande « dump » (espaces, CR LF)");
+  got = nullptr;
+  for (int k = 0; k < 100; k++) c.feed('x');
+  for (const char * p = "dump\n"; *p; p++) { const char * r = c.feed(*p); if (r) got = r; }
+  CHECK(!got, "ligne trop longue : ignorée en entier, y compris sa fin « dump »");
+  for (const char * p = "stop\n"; *p; p++) { const char * r = c.feed(*p); if (r) got = r; }
+  CHECK(got && !strcmp(got, "stop"), "la ligne suivante est lue");
+  // Instantané d'un vrai modèle : mêmes octets que serialize (= la prochaine sauvegarde), liste des stations
+  static Model m; m.init();
+  InfoRec ir[3] = { mkInfo("11", 49.6f, 6.1f, 20), mkInfo("12", 49.61f, 6.12f, 15), mkInfo("13", 49.62f, 6.13f, 10) };
+  strcpy(ir[1].name, "Gare; quai\n2");
+  m.applyInfo(ir, 3, 1791894000);
+  StatusRec sr[3] = { mkStat("11", 5, 20), mkStat("12", 7, 15), mkStat("13", 1, 10) };
+  m.applyStatus(sr, 3, 1791894000);
+  DumpSnap snap;
+  CHECK(dumpSnapshot(m, snap), "instantané");
+  Model::Blob b;
+  m.serialize(b);
+  CHECK(snap.blob.histLen == b.histLen && !memcmp(snap.blob.hist, b.hist, b.histLen) && snap.blob.profLen == b.profLen &&
+        !memcmp(snap.blob.prof, b.prof, b.profLen) && snap.blob.daysLen == b.daysLen && !memcmp(snap.blob.days, b.days, b.daysLen),
+        "instantané = serialize, octet pour octet");
+  std::string csv((const char *)snap.csv, snap.csvLen);
+  CHECK(csv.rfind("# vn_stations v1 t=1791894000\nsid;capacite;publiee;lat;lon;nom\n11;20;1;", 0) == 0, "liste : %s", csv.substr(0, 90).c_str());
+  CHECK(csv.find("12;15;1;") != std::string::npos && csv.find("Gare, quai,2\n") != std::string::npos && std::count(csv.begin(), csv.end(), '\n') == 5,
+        "liste : séparateur et fin de ligne retirés du nom");
+  DumpWriter w3;
+  dumpSetup(w3, snap, 1791894100, "1.0.8");
+  CHECK(w3.nf == 4 && !strcmp(w3.f[0].name, "/vn_hist.bin") && !strcmp(w3.f[1].name, "/vn_prof.bin") && !strcmp(w3.f[2].name, "/vn_days.bin")
+        && !strcmp(w3.f[3].name, "/vn_stations.csv"), "quatre fichiers, dans l'ordre");
+  long fsBefore = plat::fsSize("/vn_prof.bin");
+  dumpFree(snap);
+  plat::psFree(b.hist); plat::psFree(b.prof); plat::psFree(b.days);
+  CHECK(plat::fsSize("/vn_prof.bin") == fsBefore, "le vidage n'écrit rien sur le stockage");
+  static Model e; e.init();
+  DumpSnap s2;
+  CHECK(!dumpSnapshot(e, s2), "modèle sans station : instantané refusé (la carte répond ABANDON)");
+}
+
 int main(int argc, char ** argv) {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   testNames();
@@ -2056,6 +2163,7 @@ int main(int argc, char ** argv) {
   testDayCounts();
   testRecurRules();
   testRecurWorld();
+  testDump();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;
 }

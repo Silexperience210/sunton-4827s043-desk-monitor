@@ -21,6 +21,7 @@
 #include "hal/display.h"
 #include "net/net.h"
 #include "ui/ui.h"
+#include "serial_cmd.h"
 
 // Pile de la boucle UI : ≈ 4 Ko mesurés (rendu + mises en page LVGL), 16 Ko par sécurité
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
@@ -93,6 +94,7 @@ void loop() {
   uint32_t wait = lv_timer_handler();
   plat::modelUnlock();
   boot::tick();
+  serialcmd::poll();                                // « dump » : données apprises vers le PC (lecture seule)
 #ifdef VN_QEMU
   static uint32_t t = 0;
   if (millis() - t > 5000) {

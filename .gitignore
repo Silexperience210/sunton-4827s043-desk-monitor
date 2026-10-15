@@ -22,3 +22,4 @@ qemu_out/
 __pycache__/
 tools/build/
 result.json
+sim/dump_sim
