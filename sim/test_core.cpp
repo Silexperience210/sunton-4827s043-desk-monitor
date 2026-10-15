@@ -863,7 +863,7 @@ static void testAlertCalm() {
   r.init(); r.load(tl);
   CHECK(memcmp(r.prof, m.prof, sizeof(ProfCell) * 3 * 672) == 0 && memcmp(r.dispSince, m.dispSince, 3 * 8) == 0,
         "v3 relu : cellules et dates de dispersion identiques");
-  // 6. Migration v2 (v1.0.9) et v1 (v1.0.8) : moyenne et n intacts, dispersion inconnue → formule fixe, dite
+  // 6. Migration v2 (branche prévision-météo, jamais publiée) et v1 (v1.0.8 et v1.0.9 publiées) : moyenne et n intacts, dispersion inconnue → formule fixe, dite
   for (int lv = 2; lv >= 1; lv--) {
     std::vector<uint8_t> old = legacyProf(v3, 3, lv);
     plat::fsWrite("/vn_prof.bin", old.data(), old.size());
@@ -1468,7 +1468,7 @@ static void testDecay() {
     CHECK(flat && worst <= N / 512.f + 1 / 256.f, "N = %d : 10 constant → a = 10 exactement ; puis 16 : a = 16 − 6·λ^k à %.4f vélo près (borne %.4f)",
           N, worst, N / 512.f + 1 / 256.f);
   }
-  // N = 24 : exactement la règle de la v1.0.9 (moyenne plafonnée à 24), relevé par relevé
+  // N = 24 : exactement la règle de la v1.0.8 (moyenne plafonnée à 24), relevé par relevé
   {
     g_pred = PredictOpts();
     static Model m;
@@ -1486,7 +1486,7 @@ static void testDecay() {
       else { int nn = n < 24 ? n + 1 : 24; float v = a + (x * 256.f - a) / nn; a = (uint16_t)fminf(65535.f, fmaxf(0.f, v + 0.5f)); n = nn; }
       same &= m.prof[C].a == a && m.prof[C].n == n;
     }
-    CHECK(same, "N = 24 (livré) : identique au bit près à la moyenne plafonnée de la v1.0.9 sur 90 relevés aléatoires");
+    CHECK(same, "N = 24 (livré) : identique au bit près à la moyenne plafonnée de la v1.0.8 sur 90 relevés aléatoires");
   }
   // Un fichier écrit avec une mémoire de 24 relu avec une autre : format inchangé (v3), n relu tel quel,
   // puis ramené au plafond de la nouvelle mémoire au premier relevé
@@ -2212,6 +2212,23 @@ static void testHorsLigne(const std::string & dir) {
   }
 }
 
+// ── Identité de version (revue B2) ───────────────────────────────────
+// Les 1.0.8 et 1.0.9 publiées écrivent /vn_prof.bin en version 1 et refusent toute autre version :
+// un micrologiciel qui écrit un format plus récent ne doit pas porter leur nom (écran, « ping » du
+// vidage, archives du banc réel, retour arrière).
+static void testVersion() {
+  static Model m; m.init();
+  m.n = 1; strcpy(m.st[0].sid, "1");
+  Model::Blob b;
+  CHECK(m.serialize(b), "sérialisation d'un modèle à une station");
+  uint16_t ver = 0;
+  if (b.prof) memcpy(&ver, b.prof + 4, sizeof(ver));
+  CHECK(ver > 1, "/vn_prof.bin écrit en version %d (> 1, illisible par les 1.0.x publiées)", ver);
+  CHECK(strcmp(VN_VERSION, "1.0.8") != 0 && strcmp(VN_VERSION, "1.0.9") != 0,
+        "VN_VERSION « %s » distinct des versions publiées qui écrivent le format 1", VN_VERSION);
+  plat::psFree(b.prof); plat::psFree(b.hist); plat::psFree(b.days);
+}
+
 int main(int argc, char ** argv) {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   testNames();
@@ -2241,6 +2258,7 @@ int main(int argc, char ** argv) {
   testRecurWorld();
   testDump();
   testHorsLigne(argc > 1 ? argv[1] : "");
+  testVersion();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;
 }

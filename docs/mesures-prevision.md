@@ -548,7 +548,7 @@ férié y est un dimanche par construction (voir la réserve de l'étape 5a).
 
 **≤ 5 épisodes faux par jour** (parc entier, tous les jours de la période mûre, j ≥ 57) **et ≥ 80 % de
 rappel** des incidents de la même période (un incident est rappelé si l'alerte sonne pendant ses 3 h), en
-moyenne sur 3 graines × 3 mondes (nul, moyen, fort). Référence (v1.0.9) : **155,0 fausses/jour, rappel
+moyenne sur 3 graines × 3 mondes (nul, moyen, fort). Référence (branche prévision-météo, profil v2, jamais publiée) : **155,0 fausses/jour, rappel
 88,4 %**. Le rappel « historique » du banc (toute la période, y compris les 8 premiers jours où l'alerte ne
 peut pas sonner) est donné en plus : 83,5 %.
 
@@ -681,7 +681,7 @@ même rappel (entre × 1,1 et × 1,25), en fait ≈ 109, sans retard.
 jour à 80 % de rappel (−24 %), là où il en faudrait 5. Aucun des deux ne bat le témoin à rappel égal : ils
 retirent du bruit **en perdant du signal**, exactement comme l'élargissement uniforme. Conformément à la règle
 du document, **ni l'un ni l'autre n'est activé** (`g_alertOpt` : `disp = false`, `persist = 1` ; la carte
-alerte comme la v1.0.9 — vérifié : fausses alertes et rappel identiques à la 2ᵉ décimale).
+alerte comme la branche prévision-météo — vérifié : fausses alertes et rappel identiques à la 2ᵉ décimale).
 
 Ce qui est livré quand même, et pourquoi :
 
@@ -702,7 +702,7 @@ de 143 stations (96 096 octets), pas pour la mémoire réservée.
 
 - v3 = en-tête, sid, cellules de **4** octets, `cellN`, statistiques météo (inchangées), puis la date du premier
   relevé de dispersion de chaque station (8 octets par station).
-- Une **v2** (v1.0.9) ou une **v1** (v1.0.8) est relue cellule par cellule : moyenne et n **identiques**,
+- Une **v2** (branche prévision-météo, jamais publiée) ou une **v1** (v1.0.8 et v1.0.9 publiées) est relue cellule par cellule : moyenne et n **identiques**,
   dispersion « inconnue » (dn = 0) — la tolérance retombe sur la formule fixe, l'écran le dit (« ± 5 par
   défaut : écart habituel de ce créneau pas encore mesuré »), et la dispersion se réapprend (testé : utilisable
   8 jours après la migration). Une v1 repart sans apprentissage météo, comme avant.
@@ -719,12 +719,12 @@ identique quel que soit le réglage de l'alerte ; inertie (attente, confirmation
 tranche, retour à la normale, écarts alternés jamais confirmés, trou dans l'historique, station agitée **vidée
 15 min : alerte** avec 1a + 1b) ; aller-retour v3 exact ; migrations v2 et v1 ; dispersion inconnue → formule
 fixe dite à l'écran, puis réapprise ; 5 fichiers corrompus refusés ; textes de la fiche et de la liste (chaque
-chiffre affiché = celui du calcul ; phrase de la v1.0.9 à l'identique sans dispersion connue ; « 0,0 » et non
+chiffre affiché = celui du calcul ; phrase de la branche prévision-météo à l'identique sans dispersion connue ; « 0,0 » et non
 « 0,1 » pour une dispersion nulle).
 
 ### Affichage (provenance de la tolérance)
 
-- **Réglage livré** (formule fixe) : phrases de la v1.0.9 **à l'identique** tant que la dispersion n'est pas
+- **Réglage livré** (formule fixe) : phrases de la branche prévision-météo **à l'identique** tant que la dispersion n'est pas
   connue (captures 35, 36, 42 identiques au pixel près) ; une fois connue, la fiche ajoute « · écart habituel à
   cette heure ± 2,6, mesuré sur 34 jours (pour information) » (capture `43_fiche_ecart_info.png`).
 - **1a activé** : fiche « Inhabituel : 1 vélo contre 12 attendus, écart de -11 · écart habituel à cette heure
@@ -919,7 +919,7 @@ un vendredi) en comparant les relevés réels aux profils du dimanche et du vend
 d'heure) : la constante de temps est N/3 semaines, la demi-vie N·ln 2/3 semaines. N = 24 (livré) : λ = 0,958,
 8 semaines, demi-vie 39 jours. Testé : poids exacts, valeur exacte a_k = x₁ + (x₀ − x₁)·λ^k après k relevés pour
 N = 2, 6, 12, 24, 48 (à N/512 vélo près, l'arrondi au 1/256), N < 2 traité comme 2, et **N = 24 identique au bit
-près à la règle de la v1.0.9** sur 90 relevés aléatoires (et sur le banc entier).
+près à la règle de la v1.0.8 (moyenne plafonnée à 24)** sur 90 relevés aléatoires (et sur le banc entier).
 
 **Balayage** (168 jours, 6 graines × 3 mondes météo, période mûre, écarts appariés à N = 24 ; absorption =
 biais **signé** du profil de la station agrandie contre sa jumelle, 7 h–22 h sur 7 jours, moyenne des 18 mondes) :
