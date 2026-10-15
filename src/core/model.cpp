@@ -1251,8 +1251,7 @@ bool Model::load(int64_t now) {
     uint8_t * b = (uint8_t *)plat::psAlloc(dsz);
     if (b && plat::fsRead(DAYS_PATH, b, dsz)) {
       DaysFileHdr h; memcpy(&h, b, sizeof(h));
-      if (h.magic == DAYS_MAGIC && h.ver == DAYS_VER && h.nSt <= VN_MAX_ST
-          && (size_t)dsz >= sizeof(h) + (size_t)h.nSt * 8) {
+      if (DayBook::check(b, (size_t)dsz)) {           // tout vérifié avant de créer la moindre station
         mapSids(*this, b + sizeof(h), h.nSt, map);
         if (days.load(b, (size_t)dsz, map, h.nSt, now)) any = true;
         else plat::logf("[model] %s illisible : r\xC3\xA9sum\xC3\xA9s par jour ignor\xC3\xA9s", DAYS_PATH);

@@ -13,15 +13,17 @@
 //      vide         : ouverte, aucun vélo louable (ST_EMPTY ; location suspendue = vide) ;
 //      pleine       : ouverte, aucune borne libre (ST_FULL ; retours suspendus = pleine) ;
 //      disponible   : tout le reste — ouverte, ≥ 1 vélo louable ET ≥ 1 borne libre.
-//    Un écart au profil (« inhabituel ») = l'état AN_HIGH / AN_LOW calculé pour ce relevé.
+//    Un écart au profil (« inhabituel ») = l'état AN_HIGH (au-dessus) ou AN_LOW (en dessous) calculé
+//    pour ce relevé — les deux sens sont comptés SÉPARÉMENT (une station tantôt au-dessus, tantôt en
+//    dessous de sa moyenne n'a pas « le même écart » deux jours de suite).
 //  • Réseau, par jour et par créneau : tranches relevées, station-tranches observées, hors service,
 //    vides, pleines, et entrées en rupture / saturation : passage à vide (à plein) entre deux
 //    tranches CONSÉCUTIVES relevées (5 min d'écart) — une station déjà vide au premier relevé après
 //    un trou n'est pas comptée comme une entrée (début inconnu).
 //  • Station, par jour : tranches observées / hors service / vides / pleines sur les heures de service,
-//    et quatre masques de 15 bits (un bit par créneau) : créneau relevé (≥ DAY_SEEN_SLOTS tranches
-//    observées dans l'heure), créneau touché par le vide, par le plein, par un écart au profil
-//    (≥ DAY_HIT_SLOTS tranches dans cet état). C'est sur ces masques que se lit le récurrent.
+//    et cinq masques de 15 bits (un bit par créneau) : créneau relevé (≥ DAY_SEEN_SLOTS tranches
+//    observées dans l'heure), créneau touché par le vide, par le plein, par un écart au-dessus, en
+//    dessous du profil (≥ DAY_HIT_SLOTS tranches dans cet état). C'est sur ces masques que se lit le récurrent.
 //  • Un jour férié légal (core/calendar) est marqué ; la vue Service le range avec le week-end.
 // Portable (aucun Arduino) : testé tel quel par sim/test_core.cpp.
 #pragma once
@@ -57,19 +59,22 @@ struct DayNet {
   uint16_t rsv;                  // réservé (0) : taille multiple de 4, explicite
 };
 
-// Une station, un jour (12 octets)
+// Une station, un jour (16 octets)
 struct DaySt {
   uint8_t  obs, closed, empty, full;   // tranches de 5 min sur les heures de service (≤ 180)
   uint16_t seen;                       // bit h : créneau h relevé
-  uint16_t hitE, hitF, hitA;           // bit h : créneau h touché par le vide / le plein / un écart au profil
+  uint16_t hitE, hitF;                 // bit h : créneau h touché par le vide / le plein
+  uint16_t hitH, hitL;                 // bit h : créneau h touché par un écart au-dessus / en dessous du profil
+  uint16_t rsv;                        // réservé (0)
 };
+static const int DAY_HC = 5;           // compteurs du créneau en cours : observée, vide, pleine, au-dessus, en dessous
 
 // Anneau des résumés + l'état de la tranche en cours
 struct DayBook {
   DayNet * net = nullptr;        // [VN_DAYS], net[head] = jour le plus récent (en cours)
   DaySt *  st = nullptr;         // [VN_DAYS][VN_MAX_ST]
   int      head = -1, count = 0;
-  uint8_t * hc = nullptr;        // [VN_MAX_ST][4] compteurs du créneau en cours : observée, vide, pleine, écart
+  uint8_t * hc = nullptr;        // [VN_MAX_ST][DAY_HC] compteurs du créneau en cours
   int32_t  hcKey = 0;            // jour × 100 + heure de ces compteurs (0 = aucun)
   uint8_t * prev = nullptr;      // [VN_MAX_ST] statut à la tranche précédente (255 = inconnu)
   int64_t  prevT = 0;            // tranche précédente versée (0 = aucune)
@@ -90,6 +95,9 @@ struct DayBook {
   // Relit un blob ; false (et rien de modifié) s'il est illisible. Les stations sont
   // réassociées par sid via `map` (index de station du fichier → index du modèle, ‑1 = ignorée).
   bool   load(const uint8_t * b, size_t len, const int16_t * map, int nStFile, int64_t now);
+  // En-tête et taille cohérents (à vérifier AVANT de réassocier les sid : un fichier faux ne crée
+  // aucune station)
+  static bool check(const uint8_t * b, size_t len);
 };
 
 // ── Dates locales ────────────────────────────────────────────────────

@@ -7,7 +7,7 @@
 namespace vn {
 
 static_assert(sizeof(DayNet) == 204, "format v1 de /vn_days.bin (DayNet)");
-static_assert(sizeof(DaySt) == 12, "format v1 de /vn_days.bin (DaySt)");
+static_assert(sizeof(DaySt) == 16, "format v1 de /vn_days.bin (DaySt)");
 static_assert(sizeof(DaysFileHdr) == 40, "en-tête de /vn_days.bin");
 
 // ── Dates locales (jours depuis le 01/01/1970, calendrier grégorien) ──
@@ -50,7 +50,7 @@ bool dayHoliday(int32_t day) {
 bool DayBook::init() {
   net  = (DayNet *)plat::psAlloc(sizeof(DayNet) * VN_DAYS);
   st   = (DaySt *)plat::psAlloc(sizeof(DaySt) * (size_t)VN_DAYS * VN_MAX_ST);
-  hc   = (uint8_t *)plat::psAlloc((size_t)VN_MAX_ST * 4);
+  hc   = (uint8_t *)plat::psAlloc((size_t)VN_MAX_ST * DAY_HC);
   prev = (uint8_t *)plat::psAlloc(VN_MAX_ST);
   if (!net || !st || !hc || !prev) return false;
   clear();
@@ -60,7 +60,7 @@ bool DayBook::init() {
 void DayBook::clear() {
   memset(net, 0, sizeof(DayNet) * VN_DAYS);
   memset(st, 0, sizeof(DaySt) * (size_t)VN_DAYS * VN_MAX_ST);
-  memset(hc, 0, (size_t)VN_MAX_ST * 4);
+  memset(hc, 0, (size_t)VN_MAX_ST * DAY_HC);
   memset(prev, 255, VN_MAX_ST);
   head = -1; count = 0; hcKey = 0; prevT = 0;
   version++;
@@ -104,7 +104,7 @@ void DayBook::addSlot(const Model & m, int64_t slotT) {
   const bool inHours = hour >= DAY_H0 && hour < DAY_H1;
   const int h = hour - DAY_H0;
   const int32_t key = day * 100 + hour;
-  if (key != hcKey) { memset(hc, 0, (size_t)VN_MAX_ST * 4); hcKey = key; }
+  if (key != hcKey) { memset(hc, 0, (size_t)VN_MAX_ST * DAY_HC); hcKey = key; }
   DayNet & dn = net[head];
   DaySt * row = st + (size_t)head * VN_MAX_ST;
   if (inHours) dn.slots[h] = inc8(dn.slots[h]);
@@ -114,13 +114,14 @@ void DayBook::addSlot(const Model & m, int64_t slotT) {
     const uint8_t cur = s.status;
     if (inHours) {
       DaySt & r = row[i];
-      uint8_t * c = hc + (size_t)i * 4;
+      uint8_t * c = hc + (size_t)i * DAY_HC;
       const uint16_t bit = (uint16_t)(1u << h);
       dn.obs[h] = inc16(dn.obs[h]); r.obs = inc8(r.obs); c[0] = inc8(c[0]);
       if (cur == ST_CLOSED) { dn.closed[h] = inc16(dn.closed[h]); r.closed = inc8(r.closed); }
       else if (cur == ST_EMPTY) { dn.empty[h] = inc16(dn.empty[h]); r.empty = inc8(r.empty); c[1] = inc8(c[1]); }
       else if (cur == ST_FULL) { dn.full[h] = inc16(dn.full[h]); r.full = inc8(r.full); c[2] = inc8(c[2]); }
-      if (s.anom == AN_HIGH || s.anom == AN_LOW) c[3] = inc8(c[3]);
+      if (s.anom == AN_HIGH) c[3] = inc8(c[3]);
+      else if (s.anom == AN_LOW) c[4] = inc8(c[4]);
       if (consecutive && prev[i] != 255) {
         if (cur == ST_EMPTY && prev[i] != ST_EMPTY) dn.evEmpty[h] = inc16(dn.evEmpty[h]);
         if (cur == ST_FULL && prev[i] != ST_FULL) dn.evFull[h] = inc16(dn.evFull[h]);
@@ -128,7 +129,8 @@ void DayBook::addSlot(const Model & m, int64_t slotT) {
       if (c[0] >= DAY_SEEN_SLOTS) r.seen |= bit;
       if (c[1] >= DAY_HIT_SLOTS) r.hitE |= bit;
       if (c[2] >= DAY_HIT_SLOTS) r.hitF |= bit;
-      if (c[3] >= DAY_HIT_SLOTS) r.hitA |= bit;
+      if (c[3] >= DAY_HIT_SLOTS) r.hitH |= bit;
+      if (c[4] >= DAY_HIT_SLOTS) r.hitL |= bit;
     }
     prev[i] = cur;
   }
@@ -141,7 +143,7 @@ void DayBook::addSlot(const Model & m, int64_t slotT) {
 // /vn_days.bin, version 1 :
 //   DaysFileHdr (40 octets) · sid des nSt stations (8 octets chacun, ordre des colonnes) ·
 //   nDays jours, du plus ancien au plus récent : DayNet (netSz octets) puis nSt × DaySt (stSz octets) ·
-//   compteurs du créneau en cours (nSt × 4) · statut de la tranche précédente (nSt).
+//   compteurs du créneau en cours (nSt × DAY_HC) · statut de la tranche précédente (nSt).
 // netSz et stSz sont ceux du fichier : un enregistrement plus court (format plus ancien) est relu
 // par son préfixe, le reste à zéro ; plus long (format plus récent de même version majeure), par
 // le préfixe connu. Version majeure inconnue, magic faux, taille incohérente : fichier ignoré.
@@ -151,7 +153,7 @@ bool DayBook::serialize(const Model & m, uint8_t *& out, size_t & len) const {
   if (!net || m.n <= 0) return false;
   const int nSt = m.n;
   size_t sz = sizeof(DaysFileHdr) + (size_t)nSt * 8 + (size_t)count * (sizeof(DayNet) + (size_t)nSt * sizeof(DaySt))
-              + (size_t)nSt * 5;
+              + (size_t)nSt * (DAY_HC + 1);
   uint8_t * b = (uint8_t *)plat::psAlloc(sz);
   if (!b) return false;
   DaysFileHdr h{};
@@ -166,7 +168,7 @@ bool DayBook::serialize(const Model & m, uint8_t *& out, size_t & len) const {
     memcpy(b + o, net + idx, sizeof(DayNet)); o += sizeof(DayNet);
     memcpy(b + o, st + (size_t)idx * VN_MAX_ST, sizeof(DaySt) * (size_t)nSt); o += sizeof(DaySt) * (size_t)nSt;
   }
-  memcpy(b + o, hc, (size_t)nSt * 4); o += (size_t)nSt * 4;
+  memcpy(b + o, hc, (size_t)nSt * DAY_HC); o += (size_t)nSt * DAY_HC;
   memcpy(b + o, prev, (size_t)nSt); o += (size_t)nSt;
   out = b; len = o;
   return true;
@@ -185,17 +187,24 @@ static bool dayStSane(const DaySt & r) {
   const int maxSlots = DAY_NH * DAY_SLOTS_H;
   if (r.obs > maxSlots || r.closed + r.empty + r.full > r.obs) return false;
   const uint16_t mask = (uint16_t)((1u << DAY_NH) - 1);
-  return !(r.seen & ~mask) && !(r.hitE & ~mask) && !(r.hitF & ~mask) && !(r.hitA & ~mask);
+  return !(r.seen & ~mask) && !(r.hitE & ~mask) && !(r.hitF & ~mask) && !(r.hitH & ~mask) && !(r.hitL & ~mask);
+}
+
+bool DayBook::check(const uint8_t * b, size_t len) {
+  if (!b || len < sizeof(DaysFileHdr)) return false;
+  DaysFileHdr h;
+  memcpy(&h, b, sizeof(h));
+  if (h.magic != DAYS_MAGIC || h.ver != DAYS_VER || h.nSt > VN_MAX_ST
+      || h.netSz < 8 || h.netSz > 4096 || h.stSz < 4 || h.stSz > 256 || h.nDays > 1000) return false;
+  size_t need = sizeof(h) + (size_t)h.nSt * 8 + (size_t)h.nDays * (h.netSz + (size_t)h.nSt * h.stSz) + (size_t)h.nSt * (DAY_HC + 1);
+  return len == need;
 }
 
 bool DayBook::load(const uint8_t * b, size_t len, const int16_t * map, int nStFile, int64_t now) {
-  if (!net || !b || len < sizeof(DaysFileHdr)) return false;
+  if (!net || !check(b, len)) return false;
   DaysFileHdr h;
   memcpy(&h, b, sizeof(h));
-  if (h.magic != DAYS_MAGIC || h.ver != DAYS_VER || h.nSt != nStFile || h.nSt > VN_MAX_ST
-      || h.netSz < 8 || h.netSz > 4096 || h.stSz < 4 || h.stSz > 256 || h.nDays > 1000) return false;
-  size_t need = sizeof(h) + (size_t)h.nSt * 8 + (size_t)h.nDays * (h.netSz + (size_t)h.nSt * h.stSz) + (size_t)h.nSt * 5;
-  if (len != need) return false;
+  if (h.nSt != nStFile) return false;
   clear();
   const int32_t maxDay = now > 0 ? localDay(now) : (h.savedAt > 0 ? localDay(h.savedAt) : 0x7FFFFFFF);
   const int skip = h.nDays > VN_DAYS ? h.nDays - VN_DAYS : 0;          // trop de jours : on garde les plus récents
@@ -227,10 +236,13 @@ bool DayBook::load(const uint8_t * b, size_t len, const int16_t * map, int nStFi
   bool cont = head >= 0 && h.prevT > 0 && localDay(h.prevT) == net[head].day && h.hcKey / 100 == net[head].day;
   if (cont) {
     const uint8_t * hcp = b + o;
-    const uint8_t * pv = hcp + (size_t)h.nSt * 4;
+    const uint8_t * pv = hcp + (size_t)h.nSt * DAY_HC;
     for (int j = 0; j < h.nSt; j++) {
       if (map[j] < 0 || map[j] >= VN_MAX_ST) continue;
-      for (int q = 0; q < 4; q++) hc[(size_t)map[j] * 4 + q] = hcp[(size_t)j * 4 + q] <= DAY_SLOTS_H ? hcp[(size_t)j * 4 + q] : 0;
+      for (int q = 0; q < DAY_HC; q++) {
+        const uint8_t v = hcp[(size_t)j * DAY_HC + q];
+        hc[(size_t)map[j] * DAY_HC + q] = v <= DAY_SLOTS_H ? v : 0;
+      }
       prev[map[j]] = pv[j] < ST_COUNT ? pv[j] : 255;
     }
     hcKey = h.hcKey;

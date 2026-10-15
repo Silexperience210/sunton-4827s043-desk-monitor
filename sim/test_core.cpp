@@ -7,6 +7,7 @@
 #include "../src/core/ops.h"
 #include "../src/core/wifiscan.h"
 #include "../src/core/calendar.h"
+#include "../src/core/service.h"
 #include "../src/platform/platform.h"
 #include "../src/hal/touch_api.h"
 #include <stdio.h>
@@ -1662,6 +1663,368 @@ static void testWifiScan() {
         "‑1 persistant → %d tentatives puis échec (%d)", VN_SCAN_TRIES, tries);
 }
 
+// ── Résumés par jour (core/days) et vue « Service » (core/service) ───
+// Une heure à la main : chaque compte est vérifiable sur les doigts
+static void testDayCounts() {
+  settingsDefaults(g_set);
+  static Model m;
+  CHECK(m.init(), "init résumés par jour");
+  InfoRec ir[3] = { mkInfo("A", 49.60f, 6.13f, 20), mkInfo("B", 49.61f, 6.14f, 20), mkInfo("C", 49.62f, 6.15f, 20) };
+  const int64_t d0 = lux(2026, 12, 1, 0, 0);                   // mardi 01/12/2026
+  m.applyInfo(ir, 3, d0);
+  StatusRec sr[3];
+  // 6:50 à 8:00 : A vide de 7:10 à 7:25 (4 tranches) ; B pleine 7:30–7:35 (2 tranches) ; C vide dès 6:55 jusqu'à 7:05
+  for (int64_t t = d0 + 6 * 3600 + 50 * 60; t <= d0 + 8 * 3600; t += 300) {
+    int mn = (int)((t - d0) / 60);
+    sr[0] = mkStat("A", mn >= 7 * 60 + 10 && mn <= 7 * 60 + 25 ? 0 : 10, 20);
+    sr[1] = mkStat("B", mn >= 7 * 60 + 30 && mn <= 7 * 60 + 35 ? 20 : 10, 20);
+    sr[2] = mkStat("C", mn >= 6 * 60 + 55 && mn <= 7 * 60 + 5 ? 0 : 10, 20);
+    m.applyStatus(sr, 3, t);
+  }
+  const DayNet * d = m.days.dayAt(0);
+  const DaySt * row = m.days.stAt(0);
+  CHECK(d && d->day == civilDay(2026, 12, 1) && d->dow == 2 && !(d->flags & DF_HOLIDAY), "jour du résumé : mardi 01/12, pas férié");
+  CHECK(d && d->slots[0] == 12 && d->slots[1] == 1, "7 h : 12 tranches relevées, 8 h : 1 (%d, %d)", d ? d->slots[0] : -1, d ? d->slots[1] : -1);
+  CHECK(d && d->obs[0] == 36 && d->empty[0] == 4 + 2 && d->full[0] == 2 && d->closed[0] == 0,
+        "7 h : 36 station-tranches, 6 vides (A 4 + C 2), 2 pleines (%d, %d, %d)", d ? d->obs[0] : -1, d ? d->empty[0] : -1, d ? d->full[0] : -1);
+  CHECK(d && d->evEmpty[0] == 1 && d->evFull[0] == 1,
+        "entrées : 1 rupture (A ; C était déjà vide à 6:55, avant les heures de service), 1 saturation (%d, %d)", d ? d->evEmpty[0] : -1, d ? d->evFull[0] : -1);
+  CHECK(row[0].hitE == 1 && row[1].hitF == 0 && row[2].hitE == 0 && row[0].seen == 1 && (row[1].seen & 2) == 0,
+        "créneau 7 h : A touché par le vide (4 tranches ≥ 3) ; B pleine 2 tranches et C vide 2 tranches : non touchés ; 8 h : 1 tranche, non relevé");
+  SvcCount c;
+  svcSum(m.days, d->day, d->day, 1, c);
+  CHECK(c.obs == 36 && c.avail() == 28 && c.days == 1 && c.slots == 12 && c.slotsMax == 12, "somme du créneau 7 h : 28 disponibles sur 36");
+  char t[96];
+  svcRateText(t, sizeof(t), c.avail(), c.obs);
+  CHECK(strcmp(t, "77,8\xC2\xA0% \xC2\xB7 2,3\xC2\xA0h sur 3,0\xC2\xA0h") == 0, "phrase du taux : numérateur et dénominateur (« %s »)", t);
+  svcPct(t, sizeof(t), 0, 0);
+  CHECK(strcmp(t, "\xE2\x80\x94") == 0, "dénominateur nul : « — », jamais 0 %% ni 100 %%");
+  svcHours(t, sizeof(t), 12 * 2431);
+  CHECK(strcmp(t, "2\xE2\x80\xAF" "431\xC2\xA0h") == 0, "heures : « %s »", t);
+  // Une tranche manquante : la suivante n'est pas une entrée (début inconnu)
+  sr[0] = mkStat("A", 0, 20);
+  m.applyStatus(sr, 3, d0 + 8 * 3600 + 600);                   // 8:10 après 8:00 : 8:05 manque
+  CHECK(m.days.dayAt(0)->evEmpty[1] == 0, "A vide après un trou de 5 min : pas comptée comme une entrée en rupture");
+  // Hors service : C non installée → « hors service », pas « vide »
+  sr[0] = mkStat("A", 10, 20); sr[2] = mkStat("C", 0, 20); sr[2].installed = 0;
+  m.applyStatus(sr, 3, d0 + 8 * 3600 + 900);
+  CHECK(m.days.dayAt(0)->closed[1] == 1 && m.days.dayAt(0)->empty[1] == 1, "station non installée : hors service (1), pas vide ; A vide à 8:10 compté (1)");
+  // Horloge revenue en arrière : ignorée
+  uint32_t v = m.days.version;
+  m.days.addSlot(m, d0 + 7 * 3600);
+  CHECK(m.days.version == v, "tranche antérieure à la dernière versée : ignorée");
+  // Jour suivant : nouvelle case ; svcDoneHours
+  m.applyStatus(sr, 3, d0 + 86400 + 9 * 3600);
+  CHECK(m.days.count == 2 && m.days.dayAt(0)->day == civilDay(2026, 12, 2) && m.days.find(civilDay(2026, 12, 1)) == 1, "mercredi : deuxième jour");
+  CHECK(svcDoneHours(d0 + 6 * 3600) == 0 && svcDoneHours(d0 + 7 * 3600 + 59 * 60) == 0 && svcDoneHours(d0 + 8 * 3600) == 1
+        && svcDoneHours(d0 + 23 * 3600) == DAY_NH, "créneaux complets : 0 avant 8 h, 1 à 8 h, 15 après 22 h");
+  CHECK(dayDow(civilDay(1970, 1, 1)) == 4 && dayDow(civilDay(2026, 12, 25)) == 5 && dayHoliday(civilDay(2026, 12, 25)), "01/01/1970 jeudi ; 25/12/2026 vendredi férié");
+  char dl[24];
+  svcDayLabel(civilDay(2026, 10, 8), dl, sizeof(dl));
+  CHECK(strcmp(dl, "jeu. 08/10") == 0, "libellé du jour : « %s »", dl);
+}
+
+// Règles du détecteur sur des résumés écrits à la main (comptes exacts)
+static void pushDay(DayBook & b, int32_t day, int nSt) {
+  b.head = (b.head + 1) % VN_DAYS;
+  if (b.count < VN_DAYS) b.count++;
+  DayNet & d = b.net[b.head];
+  memset(&d, 0, sizeof(d));
+  d.day = day; d.dow = (uint8_t)dayDow(day); d.flags = dayHoliday(day) ? DF_HOLIDAY : 0;
+  for (int h = 0; h < DAY_NH; h++) d.slots[h] = 12;
+  DaySt * row = b.st + (size_t)b.head * VN_MAX_ST;
+  memset(row, 0, sizeof(DaySt) * VN_MAX_ST);
+  for (int i = 0; i < nSt; i++) row[i].seen = 0x7FFF;
+}
+static void testRecurRules() {
+  settingsDefaults(g_set);
+  static Model m;
+  CHECK(m.init(), "init règles du récurrent");
+  InfoRec ir[4] = { mkInfo("1", 49.6f, 6.1f, 20), mkInfo("2", 49.6f, 6.1f, 20), mkInfo("3", 49.6f, 6.1f, 20), mkInfo("4", 49.6f, 6.1f, 20) };
+  m.applyInfo(ir, 4, lux(2026, 11, 1, 0, 0));
+  DayBook & b = m.days;
+  b.clear();
+  const int32_t today = civilDay(2026, 11, 30);                  // lundi
+  // 28 jours, du lundi 02/11 au dimanche 29/11 ; le 01/11 (dimanche, férié) hors fenêtre
+  int k = 0;
+  for (int32_t d = today - 28; d < today; d++, k++) {
+    pushDay(b, d, 4);
+    DaySt * row = b.st + (size_t)b.head * VN_MAX_ST;
+    const bool we = dayDow(d) == 0 || dayDow(d) == 6;
+    // station 0 : vide 8 h–10 h (créneaux 1 et 2) tous les jours ouvrables ; le 9 h manqué le 26/11
+    if (!we) { row[0].hitE = 0x6; if (d == civilDay(2026, 11, 26)) row[0].hitE = 0x2; }
+    // station 1 : en dessous du profil à 8 h ET vide à 8 h (même problème : dit une fois, comme « vide »),
+    // au-dessus du profil seul à 18 h ; station 3 : au-dessus un jour, en dessous le lendemain, à 12 h (sens
+    // alternés : jamais « le même écart »)
+    if (!we) { row[1].hitE = 0x2; row[1].hitL = 0x2; row[1].hitH = 1 << 11; }
+    if (!we) { if (d & 1) row[3].hitH = 1 << 5; else row[3].hitL = 1 << 5; }
+    // station 2 : vide à 8 h exactement 7 jours ouvrables sur les 10 derniers ; créneau 8 h non relevé le 27/11
+    // station 3 : vide à 8 h 6 sur 10 → silence
+    (void)k;
+  }
+  // 10 derniers jours ouvrables avant le 30/11 : 27, 26, 25, 24, 23, 20, 19, 18, 17, 16
+  int hits2[] = { 26, 25, 24, 20, 19, 18, 17 };            // 27 non relevé → fenêtre 26…13 : 7 touchés sur 10
+  int hits3[] = { 27, 25, 23, 19, 17, 16 };
+  for (int dd : hits2) b.st[(size_t)b.index(b.find(civilDay(2026, 11, dd))) * VN_MAX_ST + 2].hitE |= 0x2;
+  for (int dd : hits3) b.st[(size_t)b.index(b.find(civilDay(2026, 11, dd))) * VN_MAX_ST + 3].hitE |= 0x2;
+  b.st[(size_t)b.index(b.find(civilDay(2026, 11, 27))) * VN_MAX_ST + 2].seen &= ~0x2;
+  static Recur out[64];
+  int n = svcRecurrent(b, m, today, out, 64);
+  int f0 = -1, f1e = -1, f1a = -1, f2 = -1, others = 0;
+  for (int i = 0; i < n; i++) {
+    const Recur & r = out[i];
+    if (r.st == 0 && r.kind == RK_EMPTY && !r.weekend) f0 = i;
+    else if (r.st == 1 && r.kind == RK_EMPTY && !r.weekend) f1e = i;
+    else if (r.st == 1 && r.kind == RK_HIGH && !r.weekend) f1a = i;
+    else if (r.st == 2 && r.kind == RK_EMPTY && !r.weekend) f2 = i;
+    else others++;
+  }
+  CHECK(n == 4 && others == 0, "4 problèmes (station 0, station 1 ×2, station 2), aucun autre (%d, %d autres)", n, others);
+  CHECK(f0 >= 0 && out[f0].h0 == 1 && out[f0].h1 == 2 && out[f0].hits == 9 && out[f0].days == 10 && out[f0].streak == 1,
+        "station 0 : créneaux 8 h et 9 h fusionnés, chiffres du moins touché (9 h : 9 sur 10, série 1 j depuis le 26) (%d–%d, %d/%d, %d)",
+        f0 >= 0 ? out[f0].h0 : -1, f0 >= 0 ? out[f0].h1 : -1, f0 >= 0 ? out[f0].hits : -1, f0 >= 0 ? out[f0].days : -1, f0 >= 0 ? out[f0].streak : -1);
+  CHECK(f1e >= 0 && out[f1e].h0 == 1 && out[f1e].h1 == 1 && out[f1e].streak == 20 && out[f1e].hits == 10,
+        "station 1 : vide 8 h, série 20 j (au-delà de la fenêtre de 10) (série %d)", f1e >= 0 ? out[f1e].streak : -1);
+  CHECK(f1a >= 0 && out[f1a].h0 == 11 && out[f1a].h1 == 11, "station 1 : au-dessus du profil à 18 h seul (l'écart de 8 h est dit « vide ») ; station 3, écarts de sens alternés : rien");
+  CHECK(f2 >= 0 && out[f2].hits == 7 && out[f2].days == 10, "station 2 : 7 sur 10 — au seuil, signalée ; le 27 non relevé ne compte pas (%d/%d)",
+        f2 >= 0 ? out[f2].hits : -1, f2 >= 0 ? out[f2].days : -1);
+  CHECK(n > 1 && out[0].st == 1 && out[0].kind == RK_EMPTY, "tri : la plus longue série d'abord (station %d)", n ? out[0].st : -1);
+  char t[160];
+  if (f0 >= 0) {
+    svcRecurText(out[f0], t, sizeof(t));
+    CHECK(strcmp(t, "Vide 8\xC2\xA0h\xE2\x80\x93" "10\xC2\xA0h \xC2\xB7 9 jours ouvrables sur 10 \xC2\xB7 s\xC3\xA9rie 1\xC2\xA0j") == 0, "phrase : « %s »", t);
+  }
+  svcRecurRule(g_recur, t, sizeof(t));
+  CHECK(strstr(t, "7 des 10 derniers jours ouvrables") && strstr(t, "5 sur 6") && strstr(t, "15\xC2\xA0min"), "règle affichée : « %s »", t);
+  int wd, we;
+  svcRecurDays(b, today, g_recur, wd, we);
+  CHECK(wd == 20 && we == 8, "jours examinés : 20 ouvrables, 8 de week-end (%d, %d)", wd, we);
+  // Aujourd'hui exclu : un 11e jour touché aujourd'hui ne change rien
+  pushDay(b, today, 4);
+  b.st[(size_t)b.head * VN_MAX_ST + 3].hitE = 0x2;
+  CHECK(svcRecurrent(b, m, today, out, 64) == 4, "aujourd'hui exclu : la station 3 reste sous le seuil");
+  // Plafond de la liste : garde les plus graves
+  CHECK(svcRecurrent(b, m, today, out, 1) == 1 && out[0].st == 1 && out[0].kind == RK_EMPTY, "liste plafonnée à 1 : la plus grave gardée");
+  // Fériés : le 11/11 n'est pas férié au Luxembourg ; un vendredi férié (25/12) va avec le week-end
+  DayNet x{}; x.day = civilDay(2026, 12, 25); x.dow = 5; x.flags = DF_HOLIDAY;
+  CHECK(svcWeekendClass(x), "vendredi 25/12 férié : classe week-end et fériés");
+  x.flags = 0;
+  CHECK(!svcWeekendClass(x), "un vendredi ordinaire : jour ouvrable");
+  // Classement
+  b.clear();
+  for (int32_t d = today - 3; d < today; d++) {
+    pushDay(b, d, 4);
+    DaySt * row = b.st + (size_t)b.head * VN_MAX_ST;
+    row[0].obs = 180; row[0].empty = 36;                       // 20 %
+    row[1].obs = 180; row[1].full = 9;                         // 5 %
+    row[2].obs = 180;                                          // 0 %
+    row[3].obs = 60;  row[3].closed = 60;                      // observée trop peu : non classée
+  }
+  static StRank rk[VN_MAX_ST];
+  int nr = svcRank(b, m, today - 3, today - 1, rk, VN_MAX_ST);
+  CHECK(nr == 3, "classement : 3 stations (la 4e, observée 3 fois moins, écartée) (%d)", nr);
+  svcSortWorst(rk, nr);
+  CHECK(rk[0].st == 0 && rk[1].st == 1 && rk[2].st == 2 && fabsf(rk[0].bad() - 0.2f) < 1e-6f, "pires : 0 (20 %%), 1, 2");
+  svcSortBest(rk, nr);
+  CHECK(rk[0].st == 2 && rk[2].st == 0, "meilleures : 2 (0 %%) d'abord");
+  SvcCount c;
+  svcSum(b, today - 7, today - 1, DAY_NH, c);
+  CHECK(c.days == 3 && c.daysAsked == 7, "somme sur 7 jours demandés : 3 présents (dit à l'écran)");
+}
+
+// Le monde à vérité connue (sim/service_world.h) : le détecteur trouve-t-il les bonnes stations ?
+#include "service_world.h"
+static void runWorld(Model & m, const world::Role * roles, int n, int lastDay, int lastMin) {
+  static InfoRec ir[VN_MAX_ST];
+  static StatusRec sr[VN_MAX_ST];
+  char sid[8];
+  for (int i = 0; i < n; i++) { snprintf(sid, sizeof(sid), "W%d", i); ir[i] = mkInfo(sid, 49.6f + i * 0.001f, 6.13f, world::CAP); }
+  m.applyInfo(ir, n, lux(2026, 11, 30, 0, 0));
+  for (int dw = 0; dw <= lastDay; dw++) {
+    if (dw == world::OFF_DAY) continue;
+    const int64_t d0 = lux(2026, world::monthOf(dw), world::dateOf(dw), 0, 0);
+    for (int mn = 6 * 60; mn <= 22 * 60 + 30 && (dw < lastDay || mn <= lastMin); mn += 5) {
+      for (int i = 0; i < n; i++) {
+        bool closed;
+        int bk = world::bikes(roles[i], i, dw, mn, closed);
+        sr[i] = mkStat(ir[i].sid, bk, world::CAP);
+        if (closed) sr[i].installed = 0;
+      }
+      m.applyStatus(sr, n, d0 + mn * 60);
+    }
+  }
+}
+static void testRecurWorld() {
+  using namespace world;
+  settingsDefaults(g_set);
+  static Model m;
+  CHECK(m.init(), "init monde à vérité connue");
+  // 8 rôles nommés + 40 stations de bruit + 12 stations « pendulaires au hasard »
+  static Role roles[60];
+  const Role named[8] = { W_DRIFT, W_HEALTHY, W_ISOLATED, W_NOISE, W_WEEKEND, W_NEAR, W_COMMUTE, W_CLOSED };
+  for (int i = 0; i < 60; i++) roles[i] = i < 8 ? named[i] : i < 48 ? W_NOISE : W_COMMUTE;
+  runWorld(m, roles, 60, 28, 10 * 60);                           // jusqu'au lundi 28/12 10:00
+  const int32_t today = civilDay(2026, 12, 28);
+  CHECK(m.days.count == 28 && m.days.find(civilDay(2026, 12, 17)) < 0, "28 jours résumés, le 17/12 (carte éteinte) absent (%d)", m.days.count);
+  const DayNet * xm = m.days.dayAt(m.days.find(civilDay(2026, 12, 25)));
+  CHECK(xm && (xm->flags & DF_HOLIDAY), "25/12 marqué férié");
+  static Recur out[128];
+  int n = svcRecurrent(m.days, m, today, out, 128);
+  int drift = -1, weekend = -1, fpNamed = 0, fpNoise = 0, fpCommute = 0;
+  for (int i = 0; i < n; i++) {
+    const Recur & r = out[i];
+    if (r.st == 0 && r.kind == RK_EMPTY && !r.weekend) drift = i;
+    else if (r.st == 4 && r.kind == RK_FULL && r.weekend) weekend = i;
+    else if (r.st < 8 && r.st != 6) fpNamed++;
+    else if (roles[r.st] == W_NOISE) fpNoise++;
+    else fpCommute++;
+    char t[160]; svcRecurText(r, t, sizeof(t));
+    printf("  récurrent : %s %-4s %s\n", r.st < 8 ? "nommée " : roles[r.st] == W_NOISE ? "bruit  " : "pendul.", m.st[r.st].sid, t);
+  }
+  CHECK(drift >= 0 && out[drift].h0 == 1 && out[drift].h1 == 1 && out[drift].hits == 10 && out[drift].days == 10 && out[drift].streak == 12,
+        "la station qui dérive est trouvée : vide 8 h–9 h, 10 sur 10, série 12 j (carte éteinte le 17 : ni pour ni contre)");
+  CHECK(weekend >= 0 && out[weekend].h0 == 7 && out[weekend].h1 == 8 && out[weekend].hits == 6 && out[weekend].days == 6 && out[weekend].streak == 9,
+        "la saturation du week-end est trouvée, dans sa classe : pleine 14 h–16 h, 6 sur 6, série 9 j (Noël compris)");
+  CHECK(fpNamed == 0, "station saine, incident isolé, quasi-seuil (6/10 + Noël), hors service : aucun signalement (%d)", fpNamed);
+  CHECK(fpNoise == 0, "41 stations de bruit (épisodes de 15 à 60 min au hasard) : %d faux positif(s)", fpNoise);
+  printf("  monde : %d problème(s) ; pendulaires « 1 jour sur 3 » signalées : %d sur 13 (cas limite, mesuré)\n", n, fpCommute);
+  // Sans la règle « férié = week-end », la station quasi-seuil (W5) aurait été signalée : le compte refait à la
+  // main en rangeant le 25/12 avec les jours ouvrables donne 7 sur 10
+  {
+    int days = 0, hits = 0;
+    for (int k = 0; k < m.days.count && days < 10; k++) {
+      const DayNet * d = m.days.dayAt(k);
+      if (d->day >= today || d->dow == 0 || d->dow == 6) continue;
+      const DaySt & r = m.days.stAt(k)[5];
+      if (!(r.seen & 2)) continue;
+      days++; hits += (r.hitE & 2) != 0;
+    }
+    CHECK(days == 10 && hits == 7, "contre-épreuve : Noël compté comme un vendredi ordinaire, W5 aurait 7 sur 10 (%d sur %d) — signalée à tort", hits, days);
+  }
+  int wdn, wen;
+  svcRecurDays(m.days, today, g_recur, wdn, wen);
+  CHECK(wdn == 18 && wen == 9, "jours examinés : 18 ouvrables (17/12 éteint, 25/12 férié), 9 week-end et fériés (%d, %d)", wdn, wen);
+  // Disponibilité sur 30 jours : réconciliation avec les résumés par station
+  SvcCount c;
+  svcSum(m.days, today - 29, today - 1, DAY_NH, c);
+  uint32_t so = 0, sc = 0, se = 0, sf = 0;
+  for (int k = 0; k < m.days.count; k++) {
+    if (m.days.dayAt(k)->day >= today) continue;
+    const DaySt * row = m.days.stAt(k);
+    for (int i = 0; i < 60; i++) { so += row[i].obs; sc += row[i].closed; se += row[i].empty; sf += row[i].full; }
+  }
+  CHECK(c.obs == so && c.closed == sc && c.empty == se && c.full == sf,
+        "réseau = somme des stations (observées %u, hors service %u, vides %u, pleines %u)", c.obs, c.closed, c.empty, c.full);
+  CHECK(c.closed == 27u * 180 && c.days == 27 && c.daysAsked == 29, "hors service : 1 station × 27 jours × 180 tranches ; 27 jours présents sur 29 demandés");
+  char t[96];
+  svcRateText(t, sizeof(t), c.avail(), c.obs);
+  printf("  disponibilité 30 j : %s ; ruptures %u, saturations %u\n", t, c.evEmpty, c.evFull);
+  CHECK(c.evEmpty > 0 && c.evFull > 0, "entrées en rupture et saturation comptées");
+  // Classement : la hors service en tête des pires, une saine parmi les meilleures
+  static StRank rk[VN_MAX_ST];
+  int nr = svcRank(m.days, m, today - 29, today - 1, rk, VN_MAX_ST);
+  svcSortWorst(rk, nr);
+  CHECK(nr == 60 && rk[0].st == 7, "pires : la station hors service en tête (%d)", nr ? rk[0].st : -1);
+  svcSortBest(rk, nr);
+  CHECK(rk[0].bad() == 0.f && (rk[0].st == 1), "meilleure : la station saine, 0 %% indisponible (%d)", rk[0].st);
+
+  // Persistance : aller-retour exact, puis les fichiers abîmés
+  sim::g_fsDir = "/tmp/vn_test_days";
+  if (system("rm -rf /tmp/vn_test_days") != 0) {}
+  Model::Blob bl;
+  CHECK(m.serialize(bl) && bl.days && bl.daysLen == 40 + 60 * 8 + 28 * (204 + 60 * 16) + 60 * 6,
+        "/vn_days.bin : %zu octets pour 28 jours × 60 stations (en-tête 40 + sid + jours + tranche en cours)", bl.daysLen);
+  std::vector<uint8_t> v1(bl.days, bl.days + bl.daysLen);
+  Model::writeSaved(bl);
+  const int64_t tl = lux(2026, 12, 28, 10, 5);
+  static Model r;
+  r.init();
+  static InfoRec wi[60];
+  for (int i = 0; i < 60; i++) { char sid[8]; snprintf(sid, sizeof(sid), "W%d", i); wi[i] = mkInfo(sid, 49.6f + i * 0.001f, 6.13f, world::CAP); }
+  CHECK(r.load(tl) && r.days.count == m.days.count && r.days.prevT == m.days.prevT && r.days.hcKey == m.days.hcKey, "relu : 28 jours, tranche en cours reprise");
+  bool same = true;
+  for (int k = 0; k < m.days.count; k++) {
+    same &= memcmp(r.days.dayAt(k), m.days.dayAt(k), sizeof(DayNet)) == 0;
+    same &= memcmp(r.days.stAt(k), m.days.stAt(k), sizeof(DaySt) * 60) == 0;
+  }
+  CHECK(same, "relu : jours et stations identiques octet pour octet");
+  Recur o2[128];
+  r.applyInfo(wi, 60, tl);                                        // les stations relues deviennent actives avec station_information
+  CHECK(svcRecurrent(r.days, r, today, o2, 128) == n, "relu : mêmes problèmes récurrents");
+  // Ordre des stations changé (station_information réordonné) : réassociées par sid
+  {
+    std::vector<uint8_t> x = v1;
+    char a[8], b2[8]; memcpy(a, x.data() + 40, 8); memcpy(b2, x.data() + 48, 8);
+    memcpy(x.data() + 40, b2, 8); memcpy(x.data() + 48, a, 8);            // W0 ↔ W1 dans l'en-tête de colonnes
+    plat::fsWrite("/vn_days.bin", x.data(), x.size());
+    static Model q; q.init(); q.load(tl); q.applyInfo(wi, 60, tl);
+    Recur o3[128];
+    int n3 = svcRecurrent(q.days, q, today, o3, 128);
+    bool w1 = false;
+    for (int i = 0; i < n3; i++) w1 |= o3[i].st == 1 && o3[i].kind == RK_EMPTY && o3[i].streak == 12;
+    CHECK(w1, "colonnes permutées dans le fichier : la dérive suit le sid (W1 désormais)");
+  }
+  // Format plus récent de même version majeure (enregistrements plus longs) : relu par le préfixe connu
+  {
+    std::vector<uint8_t> x;
+    DaysFileHdr h; memcpy(&h, v1.data(), sizeof(h));
+    h.netSz = 204 + 8; h.stSz = 16 + 4;
+    x.insert(x.end(), (uint8_t *)&h, (uint8_t *)&h + sizeof(h));
+    x.insert(x.end(), v1.begin() + 40, v1.begin() + 40 + 60 * 8);
+    size_t o = 40 + 60 * 8;
+    for (int k = 0; k < h.nDays; k++) {
+      x.insert(x.end(), v1.begin() + o, v1.begin() + o + 204); x.insert(x.end(), 8, 0xAB); o += 204;
+      for (int j = 0; j < 60; j++) { x.insert(x.end(), v1.begin() + o, v1.begin() + o + 16); x.insert(x.end(), 4, 0xCD); o += 16; }
+    }
+    x.insert(x.end(), v1.begin() + o, v1.end());
+    plat::fsWrite("/vn_days.bin", x.data(), x.size());
+    static Model q; q.init();
+    CHECK(q.load(tl) && q.days.count == 28 && memcmp(q.days.stAt(3), m.days.stAt(3), sizeof(DaySt) * 60) == 0,
+          "format v1 étendu (champs ajoutés à la fin) : relu, champs connus identiques");
+  }
+  // Fichiers abîmés : ignorés (résumés vides), le reste chargé, jamais de plantage
+  struct Bad { const char * what; std::vector<uint8_t> data; };
+  std::vector<Bad> bads;
+  { auto x = v1; x[0] ^= 0xFF; bads.push_back({ "magic faux", x }); }
+  { auto x = v1; uint16_t v = 2; memcpy(x.data() + 4, &v, 2); bads.push_back({ "version 2 (inconnue)", x }); }
+  { auto x = v1; x.pop_back(); bads.push_back({ "tronqué d'un octet", x }); }
+  { auto x = v1; x.resize(41); bads.push_back({ "réduit à l'en-tête", x }); }
+  { auto x = v1; uint16_t v = 60000; memcpy(x.data() + 8, &v, 2); bads.push_back({ "nombre de jours aberrant", x }); }
+  { auto x = v1; uint16_t v = 2; memcpy(x.data() + 12, &v, 2); bads.push_back({ "taille d'enregistrement absurde", x }); }
+  { auto x = v1; uint16_t v = 61; memcpy(x.data() + 6, &v, 2); bads.push_back({ "stations annoncées ≠ présentes", x }); }
+  for (auto & bd : bads) {
+    plat::fsWrite("/vn_days.bin", bd.data.data(), bd.data.size());
+    Model & q = *new Model();
+    q.init();
+    q.load(tl);
+    CHECK(q.days.count == 0 && q.n == 60 && q.learnPct() == m.learnPct(), "%s : résumés ignorés, profils et stations chargés", bd.what);
+  }
+  { // un jour incohérent (date dans le futur, comptes impossibles) : écarté seul
+    auto x = v1;
+    size_t o = 40 + 60 * 8 + 5 * (204 + 60 * 16);                 // 6e jour
+    x[o + 4 + 2 + 2] = 200;                                       // slots[0] = 200 > 12
+    plat::fsWrite("/vn_days.bin", x.data(), x.size());
+    static Model q; q.init(); q.load(tl);
+    CHECK(q.days.count == 27, "un jour aux comptes impossibles : écarté, les 27 autres gardés (%d)", q.days.count);
+    plat::fsWrite("/vn_days.bin", v1.data(), v1.size());
+    static Model q2; q2.init(); q2.load(lux(2026, 12, 20, 12, 0));
+    CHECK(q2.days.count == 20 && q2.days.dayAt(0)->day == civilDay(2026, 12, 20) && q2.days.prevT == 0,
+          "horloge revenue au 20/12 : les jours « futurs » écartés, la tranche en cours oubliée (%d)", q2.days.count);
+  }
+  { // Migration depuis la v1.0.8 : aucun /vn_days.bin — résumés vides, le reste intact, et ils repartent
+    plat::fsRemove("/vn_days.bin");
+    static Model q; q.init();
+    CHECK(q.load(tl) && q.days.count == 0 && q.n == 60, "sans /vn_days.bin (v1.0.8) : résumés vides, stations et profils chargés");
+    static StatusRec sr[60];
+    for (int i = 0; i < 60; i++) sr[i] = mkStat(q.st[i].sid, 10, 20);
+    q.applyStatus(sr, 60, tl + 300);
+    CHECK(q.days.count == 1 && q.days.dayAt(0)->day == today, "premier relevé : le résumé du jour démarre");
+  }
+  // resetHistory efface aussi les résumés
+  r.resetHistory();
+  CHECK(r.days.count == 0 && plat::fsSize("/vn_days.bin") < 0, "réinitialisation : résumés effacés, fichier supprimé");
+}
+
 int main(int argc, char ** argv) {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   testNames();
@@ -1686,6 +2049,9 @@ int main(int argc, char ** argv) {
   testTouchCal();
   testNightDim();
   testWifiScan();
+  testDayCounts();
+  testRecurRules();
+  testRecurWorld();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;
 }
