@@ -155,6 +155,22 @@ esptool.py --chip esp32s3 --baud 460800 erase_flash
 esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.0.6.bin
 ```
 
+### Mise à jour d'une carte déjà en service (1.0.x → 1.1.0)
+
+La 1.1.0 relit sans perte les profils et l'historique d'une 1.0.x, puis les réécrit dans un format plus
+récent (`/vn_prof.bin` v3, `/vn_hist.bin` v2, nouveau `/vn_days.bin`) que **les 1.0.8 et 1.0.9 refusent**.
+Revenir en arrière sans sauvegarde, c'est repartir d'un profil vide. Donc :
+
+1. **Sauvegarder la partition de fichiers** (lecture seule ; refuse d'écraser une sauvegarde, et vérifie
+   la taille et le superbloc LittleFS — code de sortie ≠ 0 : ne pas flasher) :
+   ```bash
+   python3 tools/sauvegarde_littlefs.py sauver --port /dev/ttyUSB0 --sortie littlefs-avant.bin
+   ```
+2. Flasher **sans « Erase Flash »** : l'effacement détruit aussi la partition de fichiers. L'image fusionnée
+   s'arrête vers 1,5 Mo et ne touche pas la partition (0xC90000) ; `pio run -t upload` non plus.
+3. Retour arrière, si besoin : reflasher l'ancienne version, **puis**
+   `python3 tools/sauvegarde_littlefs.py restaurer --port /dev/ttyUSB0 littlefs-avant.bin`.
+
 ### B. Compilation PlatformIO
 
 ```bash
