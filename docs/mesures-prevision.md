@@ -469,7 +469,18 @@ mesuré deux contre-hypothèses (`--ferie-comme`, mêmes 6 graines) :
 | férié vécu comme un jour ouvré | **+11 %** | **+21 %** | **+2,3 %** | **+7 à +10 %** |
 
 (« prévoir en dimanche sans le verser au profil », 5a-i + 5a-ii, est moins bon que 5a-ii seul dans les trois
-mondes : −1,3 % / +7 % / +20 % de MAE +60 sur les fériés, respectivement.)
+mondes.) **Corrigé (revue finale, rejoué le 15/10/2026, 6 graines, effet moyen, MAE +60 des fériés)** : la
+phrase donnait « −1,3 % / +7 % / +20 % » sans dire contre quoi ; ce ne sont pas les chiffres du monde
+« dimanche » (la revue a obtenu −25,8 % et l'a noté non reproduit). Rejoué :
+
+| monde simulé | v1.0.8 | 5a-ii livré | 5a-i + 5a-ii (exclure + dimanche) | exclure, contre 5a-ii livré |
+|---|---|---|---|---|
+| férié = dimanche | 1,312 | 0,970 (−26,1 %) | 0,973 (**−25,8 %**) | +0,4 % |
+| mi-chemin | 1,199 | 1,141 (−4,8 %) | 1,185 (**−1,2 %**) | +3,8 % |
+| jour ouvré | 1,214 | 1,352 (+11,4 %) | 1,458 (**+20,1 %**) | +7,8 % |
+
+Le « −1,3 % » et le « +20 % » étaient ceux des mondes mi-chemin et ouvré ; la conclusion (exclure
+perd contre 5a-ii seul, dans les trois mondes) tient.
 
 Au Luxembourg, un jour férié légal ferme les écoles, les administrations et la plupart des bureaux et
 commerces : l'hypothèse « dimanche » est la plus plausible, et c'est pourquoi le levier est livré. Mais
@@ -902,8 +913,9 @@ personne ne les reçoit.
    invisible** sur les jours ordinaires (± 0,0 % dans le monde « dimanche ») : l'exclusion ne se paie pas en
    retard d'apprentissage — elle perd parce qu'elle prive le **dimanche** de relevés utiles.
 4. Le constat de l'étape 5a (« 5a-i + 5a-ii est moins bon que 5a-ii : −1,3 % contre −26 % ») **ne se reproduit
-   pas** : à prévision égale, exclure ou apprendre en dimanche ne diffère que de 0,2 %. Je n'ai pas d'explication
-   à ce chiffre de l'étape 5a (le code de 5a-i a été retiré au commit `6369c22`) ; celui-ci le remplace.
+   pas** : à prévision égale, exclure ou apprendre en dimanche ne diffère que de 0,2 %. (Explication trouvée
+   à la revue finale : le −1,3 % était le chiffre du monde « mi-chemin », comparé à tort au −26 % du monde
+   « dimanche » — voir le tableau rejoué à l'étape 5a.)
 
 **(c) — alerte détendue un jour férié** (`g_alertOpt.holidayScale`, tolérance × e ce jour-là seulement ;
 mêmes mondes, référence = (b) + dimanche livré) :
@@ -1105,6 +1117,18 @@ forme, pas de vérité.
 
   La fuite flatte la MAE de **10 %** et **renverse le signe** de la comparaison qui nous intéresse : un vidage
   unique ne dit rien du terme de tendance. Règle : le profil d'un vidage, l'historique des vidages suivants.
+
+  **Corrigé (revue finale, rejoué le 15/10/2026 au commit `f3162e0`, même journée 15/04, 9 semaines simulées,
+  vidages 43 et 44)** : le tableau ci-dessus ne se reproduit pas, ni ici ni au commit qui l'a écrit (la revue
+  l'a recompilé). Les chiffres rejoués :
+
+  | profil de départ | MAE +60 modèle | MAE +60 profil seul | tendance − profil seul |
+  |---|---|---|---|
+  | du **même** vidage (fuite) | **0,9877** | 0,9564 | +0,031 |
+  | du vidage **précédent** (propre) | **1,0653** | 1,0955 | **−0,030** |
+
+  La fuite flatte la MAE de **7,3 %** (pas 10 %) ; la conclusion tient : le signe de « tendance − profil
+  seul » s'inverse. `tools/test_bench_reel.py` vérifie le sens (propre > fuite × 1,03), pas les chiffres.
 - **Comparaisons appariées** : la variante (`--levier`, mêmes noms qu'au banc simulé) est rejouée sur les mêmes
   tranches ; l'écart est calculé **par jour**, avec son erreur-type entre jours (les stations d'un même jour
   partagent la météo et les évènements : elles ne sont pas indépendantes). Moins de 7 jours évaluables (≥ 12 h
