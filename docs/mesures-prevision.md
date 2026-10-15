@@ -530,7 +530,9 @@ férié y est un dimanche par construction (voir la réserve de l'étape 5a).
    créneau et de la station. Piste : apprendre l'**écart type par case** (un second moment dans `ProfCell`,
    +2 octets × 672 × 143 ≈ 190 Ko de PSRAM — **non vérifié sur la carte**) et sonner au-delà de k·σ. Le banc
    sait déjà mesurer fausses alertes et rappel ; c'est le premier levier à essayer.
-2. **Absorber un changement connu au lieu de raccourcir la mémoire de tout le parc** : quand
+2. *(Mesuré depuis : voir « Fériés et récence », levier 2 — le rajeunissement ciblé absorbe 3,5 × plus vite
+   mais dégrade la prévision +60 de la station ; non livré.)*
+   **Absorber un changement connu au lieu de raccourcir la mémoire de tout le parc** : quand
    `station_information` annonce une nouvelle capacité, remettre à l'échelle (ou rajeunir : n = min(n, 6)) le
    profil de **cette** station seulement. Le banc a déjà la station agrandie et sa jumelle. Attention : le monde
    simulé remplit à proportion, ce qui favoriserait une mise à l'échelle par construction ; mesurer les deux
@@ -759,7 +761,14 @@ incident de la dérive n'est pas *où* est la station mais *comment elle y est a
 ## Fériés et récence (branche `feat/feries-recense`) — deux leviers, mesurés l'un après l'autre
 
 Deux réglages du même apprentissage, **jamais dans le même chiffre** : d'abord les jours fériés (levier 1),
-puis la mémoire du profil (levier 2), chacun contre sa propre référence. Rejouable :
+puis la mémoire du profil (levier 2), chacun contre sa propre référence.
+
+**En bref.** Fériés : le profil du dimanche un jour férié (b, déjà livré à l'étape 5a-ii, re-mesuré ici) fait passer l'erreur à +1 h de ces jours de 1,23
+à 0,95 vélo (−22 %, enfin sous la persistance) ; l'apprendre comme un dimanche (a) bat l'exclure ; détendre
+l'alerte (c) ne fait que la rendre moins sensible — **non livré**. Récence : la mémoire est désormais une
+décroissance explicite et réglable, mais **aucune constante ne bat 8 semaines** sur tous les critères —
+**rien de changé**. Tout ce qui est livré par cette branche : le calendrier sourcé, le nom du férié à l'écran,
+les interrupteurs et le banc pour rejouer ces mesures. Rejouable :
 
 ```bash
 cd sim && make bench_prevision && cd ..
