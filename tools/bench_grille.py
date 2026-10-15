@@ -7,7 +7,7 @@
 
     python3 tools/bench_grille.py --config "N=12=profil_n=12" --config "N=24=" --ref N=24 --absorption
 
-Un réglage s'écrit « nom=leviers » (leviers séparés par des espaces, vide = réglages par défaut du
+Un réglage s'écrit « nom=leviers » (le nom sans « = ») (leviers séparés par des espaces, vide = réglages par défaut du
 modèle). Chaque réglage tourne sur les MÊMES mondes (graines × effets météo, options --extra) : la
 différence avec la référence est appariée. Les exécutions sont mises en cache (/tmp/vn_bench_cache.json)
 pour qu'un tableau se recompose sans tout relancer.

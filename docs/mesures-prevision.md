@@ -755,3 +755,148 @@ gagnait les fériés d'un monde où un férié est un dimanche. Sur le vrai parc
 zéro du flux GBFS ne ressemblent pas forcément à ça. C'est néanmoins la piste à mesurer en premier — **sur
 des relevés réels** (la carte les stocke) — parce que le diagnostic, lui, est solide : ce qui distingue un
 incident de la dérive n'est pas *où* est la station mais *comment elle y est arrivée*.
+
+## Fériés et récence (branche `feat/feries-recense`) — deux leviers, mesurés l'un après l'autre
+
+Deux réglages du même apprentissage, **jamais dans le même chiffre** : d'abord les jours fériés (levier 1),
+puis la mémoire du profil (levier 2), chacun contre sa propre référence. Rejouable :
+
+```bash
+cd sim && make bench_prevision && cd ..
+python3 tools/bench_grille.py --jours 365 --extra "--ferie-comme dimanche" --ref "b+dimanche" \
+  --config "rien=ferie_dimanche=0 ferie_appris=0" --config "b+dimanche=" --config "b+exclu=ferie_appris=2" \
+  --cles ferie_mur60,ferie_mur240,fausses_ferie_mur,rappel_ferie_mur,ordinaire60,ordinaire240
+python3 tools/bench_grille.py --jours 168 --graines 1,2,3,4,5,6 --ref N24 --absorption \
+  --config "N12=profil_n=12" --config "N24=" --config "N48=profil_n=48"      # (--extra "--derive 0.3")
+```
+
+**Ce qui existait déjà.** La branche `feat/prevision-meteo` avait mesuré (étape 5a) « férié exclu du profil »
+seul (perd) et « férié prévu et appris comme un dimanche » (gagne, livré), et (étape 5b) le plafond de la
+moyenne mobile (compromis, non livré). Cette branche ne les reprend pas tels quels : elle sépare les deux
+variantes d'apprentissage **à prévision égale** (toutes deux avec le profil du dimanche), ajoute l'alerte
+détendue (c), mesure sur **365 jours** (10 fériés dans la période mûre au lieu de 4 à 6 sur 168 jours), et
+pour la récence remplace le balayage de 4 plafonds par une décroissance explicite, 9 constantes de temps, une
+courbe d'absorption tirée du biais **signé** de la station agrandie contre sa jumelle, une mesure de
+nervosité et un monde qui dérive.
+
+### Le calendrier (vérifié, sourcé, testé)
+
+- **Source** : Code du travail, art. L.232-2 ; Journée de l'Europe (9 mai) ajoutée par la loi du 25 avril
+  2019. Liste reprise par l'ITM (« Quels sont au Luxembourg les jours qualifiés de jours fériés légaux ? ») et
+  par luxembourg.public.lu (« Jours fériés légaux », avec les dates 2026 et 2027), consultés le 15/10/2026.
+  **Onze jours** : Nouvel An, lundi de Pâques, 1er mai, Journée de l'Europe, Ascension, lundi de Pentecôte,
+  23 juin (célébration publique de l'anniversaire du Grand-Duc), Assomption, Toussaint, 25 et 26 décembre.
+  La liste de `src/core/calendar.cpp` était déjà juste ; elle est désormais **documentée avec sa source** dans
+  `calendar.h`, et chaque fête a un nom (`publicHolidayName`) que l'écran affiche.
+- **Fêtes mobiles** : Pâques par l'algorithme grégorien de Meeus / Jones / Butcher, puis +1, +39 et +50 jours.
+  Testé sur 12 années de 2000 à 2285 (dont la Pâques la plus précoce, 22 mars 2285, et des plus tardives,
+  25 avril 2038) contre un **second algorithme indépendant** (Knuth, TAOCP 1.3.2, calculé hors du code) ; cas
+  officiels pour chacune : lundi de Pâques 6/4/2026 et 29/3/2027, Ascension 14/5/2026 et 6/5/2027, lundi de
+  Pentecôte 25/5/2026 et 17/5/2027 (les 22 dates officielles 2026-2027 sont reconnues). 11 fériés par an de
+  2025 à 2040, **10 jours distincts** en 2008 et 2024 (l'Ascension tombe le 1er mai, le 9 mai).
+- **Hors calendrier** : le jour de congé compensatoire d'un férié tombé un dimanche est propre à chaque salarié
+  (à prendre dans les 3 mois) ; ce n'est pas un jour chômé collectif et la carte ne le connaît pas.
+
+**Jours d'apprentissage en jeu**, de 2026 à 2035 (calculé sur le calendrier) : 11 fériés par an, dont **8,7
+en semaine**, 1,2 le samedi, 1,1 le dimanche. Par jour : lundi **3,2 par an** (Pâques et Pentecôte, souvent le
+1er mai ou le 23 juin), jeudi 2,0, mardi et mercredi 1,3, vendredi 0,9. Dès que la prévision lit le dimanche
+un jour férié (b), ces ~10 jours **quittent de toute façon** les cases de leur jour de semaine ; la seule
+question de (a) est de savoir si le dimanche les reçoit (+19 % de relevés pour les cases du dimanche) ou si
+personne ne les reçoit.
+
+### Levier 1 — jours fériés : (b) gagne et reste livré ; (a) « appris comme un dimanche » gagne contre « exclu » ; (c) ne gagne pas, non livré
+
+365 jours (2 mars 2026 → 1er mars 2027), 3 graines × 3 mondes météo, 10 fériés dans la période mûre (dont
+3 un samedi et 1 un dimanche), écarts appariés. « fériés » et « ordinaires » = jours de la période mûre
+(j ≥ 57). Le rappel des fériés repose sur ~125 incidents par réglage (± 3 points).
+
+**Monde « férié = dimanche »** (l'hypothèse du levier, codée dans la vérité) — persistance +60 des fériés : 0,985
+
+| réglage | MAE +60 fériés | MAE +240 fériés | fausses / jour férié | rappel fériés | MAE +60 ordinaires | MAE +240 ordinaires |
+|---|---|---|---|---|---|---|
+| rien (v1.0.8 : férié prévu et appris comme son jour) | 1,226 | 2,604 | 165,4 | 88,1 % | 1,0635 | 2,1296 |
+| (a) exclu, **sans** (b) | 1,248 | 2,679 | 175,4 | 88,8 % | 1,0643 | 2,1279 |
+| **(b) + (a) appris comme un dimanche — livré** | **0,951 (−22,4 %)** | **2,046 (−21,4 %)** | **125,3 (−24 %)** | 91,7 % | 1,0640 | 2,1303 |
+| (b) + (a) exclu du profil | 0,953 | 2,068 | 135,0 | 90,9 % | 1,0643 | 2,1297 |
+| (b) + appris à son jour de semaine | 0,953 | 2,066 | 134,8 | 90,9 % | 1,0635 | 2,1314 |
+
+**Monde « férié à mi-chemin »** (½ week-end, ½ jour ouvré) — persistance : 1,156
+
+| réglage | MAE +60 fériés | MAE +240 fériés | fausses / jour férié | rappel fériés | MAE +60 ordinaires | MAE +240 ordinaires |
+|---|---|---|---|---|---|---|
+| rien | 1,168 | 2,392 | 168,2 | 87,2 % | 1,0646 | 2,1277 |
+| (a) exclu, sans (b) | 1,179 | 2,440 | 178,3 | 87,9 % | 1,0651 | 2,1286 |
+| **(b) + dimanche — livré** | **1,120 (−4,1 %)** | 2,395 (+0,1 %) | 159,0 | 84,7 % | 1,0672 (**+0,2 %**) | 2,1346 (**+0,3 %**) |
+| (b) + exclu | 1,163 | 2,538 | 175,1 | 87,0 % | 1,0651 | 2,1308 |
+| (b) + son jour | 1,159 | 2,525 | 173,7 | 87,0 % | 1,0646 | 2,1299 |
+
+**Monde « férié vécu comme un jour ouvré »** (l'hypothèse contraire) — persistance : 1,384
+
+| réglage | MAE +60 fériés | MAE +240 fériés | fausses / jour férié | rappel fériés | MAE +60 ordinaires | MAE +240 ordinaires |
+|---|---|---|---|---|---|---|
+| rien | 1,231 | 2,592 | 176,8 | 86,0 % | 1,0661 | 2,1270 |
+| (a) exclu, sans (b) | 1,239 | 2,635 | 186,9 | 86,9 % | 1,0649 | 2,1276 |
+| **(b) + dimanche — livré** | 1,332 (**+8,2 %**) | 2,982 (**+15 %**) | 187,7 | 86,5 % | 1,0713 (**+0,5 %**) | 2,1413 (**+0,7 %**) |
+| (b) + exclu | 1,442 | 3,309 | 205,2 | 87,3 % | 1,0649 | 2,1300 |
+| (b) + son jour | 1,432 | 3,279 | 203,0 | 87,3 % | 1,0661 | 2,1294 |
+
+**Lecture.**
+
+1. **(b) fait tout le gain**, et le fait mesuré de départ se confirme : sans rien, la prévision d'un férié
+   (1,226) est **pire que la persistance** (0,985) ; avec le profil du dimanche elle passe dessous (0,951),
+   −22 % d'erreur à +1 h, −24 % de fausses alertes ces jours-là. Le reste du temps : rien ne bouge
+   (± 0,0 % sur les jours ordinaires).
+2. **(a) — les deux variantes tranchées au banc, à prévision égale.** Dans le monde « dimanche », apprendre le
+   férié comme un dimanche bat l'exclure : MAE +60 des fériés −0,2 %, +240 −1,1 %, **fausses alertes des
+   fériés −7 %** (125 contre 135 : le dimanche, nourri de ~10 jours de plus par an, est mieux connu), jours
+   ordinaires identiques. Il le bat aussi dans les deux contre-hypothèses (−4 % et −8 % à +60 sur les fériés),
+   mais là il **se paie sur les jours ordinaires** : un férié qui ne ressemble pas à un dimanche pollue les
+   cases du dimanche, et les dimanches ordinaires suivants sont un peu moins bien prévus (+0,2 % et +0,5 % de
+   MAE +60 ordinaire, quand « exclu » ne coûte rien). **Verdict : « appris comme un dimanche » reste livré**
+   (il gagne sur le critère principal dans les trois mondes, et ne coûte rien dans le monde plausible) ;
+   **« exclu » n'est pas livré.** C'est l'assurance qu'il faudrait reprendre si le 25/12/2026 réel montre un
+   férié peu « dominical » : elle protège les jours ordinaires, au prix des fériés.
+3. **Le piège de l'exclusion, chiffré.** Exclure retire du profil les **11 fériés de l'année** : les ~10 qui ne
+   tombent pas un dimanche quittent les cases de leur jour (comme avec « dimanche » : le lundi perd 3,2 lundis
+   sur 52, 6 %), et le dimanche, au lieu de recevoir ces ~10 jours, perd même le sien (~1 par an).
+   Avec une mémoire de 24 relevés (8 jours d'observation par case), un jour manquant élargit la fenêtre d'une
+   semaine : la case est un peu plus vieille, pas moins juste. Sur la montée (un profil neuf), un férié dans
+   les 3 premières semaines retarde d'une semaine la confiance pleine de ce jour-là. **Mesuré, c'est
+   invisible** sur les jours ordinaires (± 0,0 % dans le monde « dimanche ») : l'exclusion ne se paie pas en
+   retard d'apprentissage — elle perd parce qu'elle prive le **dimanche** de relevés utiles.
+4. Le constat de l'étape 5a (« 5a-i + 5a-ii est moins bon que 5a-ii : −1,3 % contre −26 % ») **ne se reproduit
+   pas** : à prévision égale, exclure ou apprendre en dimanche ne diffère que de 0,2 %. Je n'ai pas d'explication
+   à ce chiffre de l'étape 5a (le code de 5a-i a été retiré au commit `6369c22`) ; celui-ci le remplace.
+
+**(c) — alerte détendue un jour férié** (`g_alertOpt.holidayScale`, tolérance × e ce jour-là seulement ;
+mêmes mondes, référence = (b) + dimanche livré) :
+
+| e | « dimanche » : fausses / jour férié | rappel fériés | « mi-chemin » : fausses | rappel | « ouvré » : fausses | rappel |
+|---|---|---|---|---|---|---|
+| **1 (livré)** | **125,3** | **91,7 %** | 159,0 | 84,7 % | 187,7 | 86,5 % |
+| 1,25 | 81,6 (−35 %) | 81,6 % | 111,1 (−30 %) | 78,0 % | 144,4 (−23 %) | 81,1 % |
+| 1,5 | 47,9 (−62 %) | 73,4 % | 71,6 (−55 %) | 70,3 % | 106,5 (−43 %) | 66,2 % |
+| 2 | 12,8 (−90 %) | 47,4 % | 25,1 (−84 %) | 47,5 % | 54,5 (−71 %) | 41,9 % |
+| 3 | 0,2 | 2,3 % | 1,2 | 3,7 % | 9,0 | 3,3 % |
+
+Témoin de l'alerte calme (formule fixe × e **tous les jours**, sans information) : × 1,25 → fausses −34 %,
+rappel 88,4 → 78,5 % ; × 1,5 → −61 %, 63,1 %. La détente des fériés **échange exactement au même taux** dans le
+monde plausible (× 1,25 : −35 % de fausses pour −10 points de rappel) : elle rend l'alerte moins sensible ce
+jour-là, elle n'apporte aucune information. Dans les mondes où le férié est mal prévu, le taux est un peu
+meilleur (−30 % pour −7 points, −23 % pour −5), dans l'erreur de mesure du rappel (± 3 points). Et l'enjeu
+est petit : ~10 fériés par an à ~125 fausses alertes, c'est **2,2 % des fausses alertes de l'année** ; même le
+silence total (e = 3) ne rapproche pas du critère de la mission « alerte calme » (≤ 5 par jour). **Non livré**
+(`holidayScale = 1`, la carte alerte un férié comme avant ; l'interrupteur reste pour le banc). Ce qui retire
+des fausses alertes un jour férié, c'est **(b)** : −24 % (165 → 125), en lisant le bon profil, sans rien
+perdre en rappel (88 → 92 %).
+
+**Écran** : la fiche et la courbe 24 h nomment désormais la fête — « · jour férié (Noël) : profil du
+dimanche », « Le 25/12 est férié (Noël) : profil du dimanche. » (captures `41_prevision_24h_ferie.png` et
+`42_fiche_ferie.png` mises à jour ; les autres captures du scénario ops sont identiques au pixel près).
+Aucun texte pour (c), non livré.
+
+**Réserve (inchangée depuis l'étape 5a, et c'est elle qui compte)** : le monde « dimanche » est celui où le
+levier gagne par construction. Les deux autres disent ce qu'il en coûte si l'hypothèse est fausse : à
+mi-chemin, encore −4 % sur les fériés et +0,2 % ailleurs ; vécu comme un jour ouvré, +8 % sur les fériés et
++0,5 % ailleurs. **À vérifier sur un vrai férié** (25/12/2026, un vendredi ; puis 26/12 un samedi et 1/1/2027
+un vendredi) en comparant les relevés réels aux profils du dimanche et du vendredi.
