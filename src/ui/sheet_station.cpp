@@ -201,7 +201,9 @@ static void fill() {
   fmtAgo(a1, sizeof(a1), s.lastChange, t);
   snprintf(b, sizeof(b), "Dernier mouvement d\xC3\xA9tect\xC3\xA9 %s", a1);
   lv_label_set_text(W.lastMove, b);
-  fmtAgo(a1, sizeof(a1), s.lastReported, t);
+  // 0 = horodatage absent ou rejeté par sanitizeReported (la source publie « 0001-01-01 »)
+  if (s.lastReported) fmtAgo(a1, sizeof(a1), s.lastReported, t);
+  else snprintf(a1, sizeof(a1), "inconnu (horodatage invalide)");
   snprintf(b, sizeof(b), "Dernier rapport de la borne (GBFS) %s", a1);
   lv_label_set_text(W.lastRep, b);
   lv_label_set_text(W.addr, s.addr[0] ? s.addr : "\xE2\x80\x94");

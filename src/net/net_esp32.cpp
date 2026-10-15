@@ -77,6 +77,9 @@ static int httpGetOnce(const char * url, size_t & len) {
   len = 0;
   WiFiClientSecure cli;
   cli.setInsecure();           // données publiques en lecture seule (voir README)
+  // Négociation TLS : 120 s par défaut dans le framework, sans un mot au port série
+  // (3 tentatives = 6 min de silence). 15 s suffisent largement à cyclocity.
+  cli.setHandshakeTimeout(15);
   HTTPClient http;
   http.useHTTP10(true);
   http.setReuse(false);
@@ -163,18 +166,30 @@ static void fetchCycle() {
     setStage("Disponibilit\xC3\xA9s en temps r\xC3\xA9" "el\xE2\x80\xA6");
     snprintf(url, sizeof(url), "%s/station_status.json", VN_GBFS_BASE);
     int64_t lastUpd = 0;
-    int n = -1;
+    int n = -1, bad = 0;
     uint32_t f0 = millis();
     bool got = httpGet(url, len, code);
-    if (got) n = vn::gbfsParseStatus(s_buf, len, s_stat, VN_MAX_ST, s_elec, &lastUpd);
+    if (got) n = vn::gbfsParseStatus(s_buf, len, s_stat, VN_MAX_ST, s_elec, &lastUpd, &bad);
     feedDone(vn::FEED_STATUS, n > 0, !got ? code : n == 0 ? vn::ING_E_EMPTY : vn::ING_E_PARSE, len, f0);
     if (n > 0) {
-      plat::LockGuard g;
-      g_model.elec = s_elec;
-      g_model.applyStatus(s_stat, n, plat::now());
-      g_model.feedUpdated = lastUpd;
-      g_model.fetchErrors = 0;
-      g_model.fetchMs = millis() - t0;
+      int bikes;
+      {
+        plat::LockGuard g;
+        g_model.elec = s_elec;
+        g_model.applyStatus(s_stat, n, plat::now());
+        g_model.feedUpdated = lastUpd;
+        g_model.fetchErrors = 0;
+        g_model.fetchMs = millis() - t0;
+        bikes = g_model.tot.bikes;
+      }
+      // Un relevé réussi le dit aussi : un port série muet ne doit plus être ambigu
+      plat::logf("[net] relev\xC3\xA9 ok : %d stations, %d v\xC3\xA9los dispo, %u octets, %u ms", n, bikes,
+                 (unsigned)len, (unsigned)(millis() - f0));
+      static int s_badSeen = -1;                 // la source en publie en permanence : une ligne par changement
+      if (bad != s_badSeen) {
+        s_badSeen = bad;
+        if (bad) plat::logf("[net] station_status : %d horodatage(s) last_reported invalide(s), ignor\xC3\xA9(s)", bad);
+      }
     } else ok = false;
   }
   if (!ok) { plat::LockGuard g; g_model.fetchErrors++; g_model.version++; }
@@ -272,7 +287,20 @@ static void serviceScan() {
   doScan();
 }
 
+// ── Association : raison de la dernière déconnexion ──────────────────
+// L'évènement arrive sur la tâche d'évènements Wi-Fi : on ne fait que noter le code,
+// la tâche réseau le journalise (le framework, lui, le dit en « warning », filtré).
+static volatile uint8_t s_discReason = 0;
+static volatile uint32_t s_discCount = 0;
+static void onDisconnect(WiFiEvent_t, WiFiEventInfo_t info) {
+  uint8_t r = info.wifi_sta_disconnected.reason;
+  if (r == WIFI_REASON_ASSOC_LEAVE) return;      // notre propre WiFi.disconnect() (wifiStart)
+  s_discReason = r;
+  s_discCount++;
+}
+
 static void wifiStart(const char * ssid, const char * pass) {
+  s_discReason = 0;
   WiFi.disconnect(false, true);
   delay(100);
   if (ssid && *ssid) {
@@ -289,17 +317,25 @@ static void task(void *) {
   WiFi.persistent(false);
   WiFi.setAutoReconnect(true);
   WiFi.setHostname("velohnav-ops");
+  WiFi.onEvent(onDisconnect, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   configTzTime(VN_TZ, VN_NTP1, VN_NTP2);
-  if (g_set.ssid[0]) { setStage("Connexion Wi-Fi\xE2\x80\xA6"); wifiStart(g_set.ssid, g_set.pass); }
-  else setStage("Wi-Fi \xC3\xA0 configurer");
+  if (g_set.ssid[0]) {
+    setStage("Connexion Wi-Fi\xE2\x80\xA6");
+    plat::logf("[wifi] association \xC2\xAB %s \xC2\xBB\xE2\x80\xA6", g_set.ssid);
+    wifiStart(g_set.ssid, g_set.pass);
+  } else {
+    setStage("Wi-Fi \xC3\xA0 configurer");
+    plat::logf("[wifi] aucun r\xC3\xA9seau enregistr\xC3\xA9 : rien ne sera r\xC3\xA9" "cup\xC3\xA9r\xC3\xA9");
+  }
 
-  bool loaded = false;
-  uint32_t lastFetch = 0, lastSave = millis(), wifiSince = millis();
+  bool loaded = false, wasUp = false, timeLogged = false;
+  uint32_t lastFetch = 0, lastSave = millis(), wifiSince = millis(), lastWait = 0, discSeen = 0, discLogAt = 0;
   uint8_t lastBl = 255;
   for (;;) {
     if (s_connectReq) {
       s_connectReq = false;
       setStage("Connexion Wi-Fi\xE2\x80\xA6");
+      plat::logf("[wifi] association \xC2\xAB %s \xC2\xBB\xE2\x80\xA6 (demand\xC3\xA9" "e depuis l'\xC3\xA9" "cran)", s_newSsid);
       wifiStart(s_newSsid, s_newPass);
       wifiSince = millis();
     }
@@ -321,7 +357,27 @@ static void task(void *) {
       strncpy(ip, WiFi.localIP().toString().c_str(), sizeof(ip) - 1);
       rssi = WiFi.RSSI();
     }
+    // Journal d'association : ok, refus (avec la raison), échec définitif, perte
+    uint8_t reason = s_discReason;
+    uint32_t disc = s_discCount;
+    WifiState before = s_status.wifi;              // écrit par cette seule tâche : lecture sans verrou
+    if (up && !wasUp)
+      plat::logf("[wifi] association ok : \xC2\xAB %s \xC2\xBB, IP %s, %d dBm, canal %d, en %u ms", ssid, ip, rssi,
+                 (int)WiFi.channel(), (unsigned)(millis() - wifiSince));
+    else if (!up && wasUp)
+      plat::logf("[wifi] d\xC3\xA9" "connexion de \xC2\xAB %s \xC2\xBB : %s (code %d)", s_status.ssid,
+                 vn::assocCauseText(vn::assocCause(reason)), reason);
+    else if (!up && disc != discSeen && (!discLogAt || millis() - discLogAt >= 30000)) {
+      // L'auto-reconnexion du framework réessaie sans fin : une ligne toutes les 30 s au plus
+      plat::logf("[wifi] association \xC2\xAB %s \xC2\xBB refus\xC3\xA9" "e : %s (code %d, %u refus)", s_status.ssid,
+                 vn::assocCauseText(vn::assocCause(reason)), reason, (unsigned)disc);
+      discLogAt = millis();
+    }
+    discSeen = disc;
+    wasUp = up;
+
     portENTER_CRITICAL(&s_mux);
+    s_status.wifiReason = reason;
     if (up) {
       s_status.wifi = W_CONNECTED;
       strncpy(s_status.ssid, ssid, sizeof(s_status.ssid) - 1);
@@ -337,7 +393,15 @@ static void task(void *) {
     }
     s_status.timeOk = timeOk;
     if (timeOk && !s_status.timeSyncAt) s_status.timeSyncAt = now;
+    WifiState after = s_status.wifi;
     portEXIT_CRITICAL(&s_mux);
+    if (after == W_FAILED && before != W_FAILED)
+      plat::logf("[wifi] association \xC2\xAB %s \xC2\xBB \xC3\xA9" "chou\xC3\xA9" "e apr\xC3\xA8s 20 s : %s (code %d) \xE2\x80\x94 aucune r\xC3\xA9" "cup\xC3\xA9ration tant que le Wi-Fi manque",
+                 s_status.ssid, vn::assocCauseText(vn::assocCause(reason)), reason);
+    if (timeOk && !timeLogged) {
+      timeLogged = true;
+      plat::logf("[net] heure NTP synchronis\xC3\xA9" "e");
+    }
 
     // Historique / profils : chargés une fois l'heure connue
     if (timeOk && !loaded) {
@@ -348,6 +412,18 @@ static void task(void *) {
     }
 
     if (up && !timeOk) setStage("Synchronisation de l'heure\xE2\x80\xA6");
+    // Aucune récupération possible : on le dit toutes les 30 s (avant, le port série se taisait)
+    if (!(up && timeOk && loaded) && (!lastWait || millis() - lastWait >= 30000)) {
+      lastWait = millis();
+      char why[112];
+      vn::FeedStat st;
+      portENTER_CRITICAL(&s_mux);
+      WifiState w = s_status.wifi;
+      st = s_status.feed[vn::FEED_STATUS];
+      portEXIT_CRITICAL(&s_mux);
+      vn::offlineCause(why, sizeof(why), w, s_status.ssid, reason, timeOk, st);
+      plat::logf("[net] en attente, aucune r\xC3\xA9" "cup\xC3\xA9ration : %s", why);
+    }
     if (up && timeOk && loaded) {
       bool due = s_refreshReq || !lastFetch || millis() - lastFetch >= (uint32_t)g_set.refreshSec * 1000;
       if (due) {

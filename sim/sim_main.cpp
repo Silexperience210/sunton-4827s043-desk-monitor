@@ -26,9 +26,10 @@
 #include <string>
 #include <time.h>
 
-namespace ui { lv_obj_t * debugToast(); int debugTab(); }
+namespace ui { lv_obj_t * debugToast(); int debugTab(); const char * debugDashText(int w);
+               int debugDashCurvePoints(); int debugDashCurveLastX(); int debugDashForecastPoints(); }
 namespace sim { extern int64_t g_epoch0; extern uint32_t g_ms; extern bool g_fetching; extern const char * g_fsDir;
-                extern int g_wifiState; extern bool g_timeOk; extern const char * g_stage;
+                extern int g_wifiState; extern bool g_timeOk; extern const char * g_stage; extern int g_wifiReason;
                 extern vn::FeedStat g_feed[vn::FEED_COUNT]; extern int64_t g_timeSyncAt; }
 using namespace vn;
 
@@ -599,6 +600,201 @@ static int opsScenario(const std::string & in, StatusRec * recs, int ns) {
   return fails ? 4 : 0;
 }
 
+// ── Scénario « hors-ligne » : la carte n'a rien reçu (constat v1.0.8) ─────
+// Heure connue (comme sur la photo), réseau enregistré mais association refusée,
+// puis NTP absent, flux en échec, premier relevé, perte du Wi-Fi, flux en retard,
+// horodatage de station invalide, retour à la normale. Chaque étape vérifie les
+// TEXTES réellement affichés ; code de sortie ≠ 0 au premier écart.
+// Labels visibles valant exactement « 0 », « 0% »… sous un objet (les axes des
+// graphiques sont dessinés, pas des labels : ils ne comptent pas).
+static int zeroLabels(lv_obj_t * o, std::string & which) {
+  if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return 0;
+  int n = 0;
+  if (lv_obj_check_type(o, &lv_label_class)) {
+    const char * t = lv_label_get_text(o);
+    if (!strcmp(t, "0") || !strcmp(t, "0%") || !strcmp(t, "0 %") || !strcmp(t, "rempli \xC3\xA0 0 %") || !strcmp(t, "0 borne HS")) { n++; which += " \xC2\xAB"; which += t; which += "\xC2\xBB"; }
+  }
+  for (uint32_t i = 0; i < lv_obj_get_child_cnt(o); i++) n += zeroLabels(lv_obj_get_child(o, i), which);
+  return n;
+}
+static lv_obj_t * labelWithPrefix(lv_obj_t * o, const char * prefix) {
+  if (lv_obj_check_type(o, &lv_label_class) && strncmp(lv_label_get_text(o), prefix, strlen(prefix)) == 0) return o;
+  for (uint32_t i = 0; i < lv_obj_get_child_cnt(o); i++) { lv_obj_t * r = labelWithPrefix(lv_obj_get_child(o, i), prefix); if (r) return r; }
+  return nullptr;
+}
+static int horsLigneScenario(const std::string & in) {
+  s_namedShots = true;
+  int fails = 0;
+  auto expect = [&](bool c, const char * what, const char * got = nullptr) {
+    printf("  %s %s%s%s%s\n", c ? "\xE2\x9C\x93" : "\xC3\x89" "CHEC", what, got ? " \xE2\x80\x94 lu : \xC2\xAB" : "", got ? got : "", got ? "\xC2\xBB" : "");
+    if (!c) fails++;
+  };
+  auto D = [](int w) { return ui::debugDashText(w); };
+  const char * DASH = "\xE2\x80\x94";
+  auto info = readFile(in + "/station_information.json");
+  auto status = readFile(in + "/station_status.json");
+  auto types = readFile(in + "/vehicle_types.json");
+  auto wx = readFile(in + "/weather.json");
+  static StatusRec recs[VN_MAX_ST];
+  static InfoRec irecs[VN_MAX_ST];
+  ElecTypes et;
+  gbfsParseTypes(types.data(), types.size(), et);
+  int64_t lastUpd = 0;
+  int bad = 0;
+  int ns = gbfsParseStatus(status.data(), status.size(), recs, VN_MAX_ST, et, &lastUpd, &bad);
+  int ni = gbfsParseInfo(info.data(), info.size(), irecs, VN_MAX_ST);
+
+  sim::g_epoch0 = lastUpd ? lastUpd : 1791894641;   // heure connue, comme sur la photo de la carte
+  sim::g_timeOk = true;
+  settingsDefaults(g_set);
+  strcpy(g_set.ssid, "BUREAU");
+  sim::g_wifiState = net::W_CONNECTING; sim::g_stage = "Connexion Wi-Fi\xE2\x80\xA6";
+  if (!g_model.init()) { fprintf(stderr, "init mod\xC3\xA8le\n"); return 1; }
+  lv_init();
+  static lv_disp_draw_buf_t db;
+  lv_disp_draw_buf_init(&db, s_buf, nullptr, 480 * 40);
+  static lv_disp_drv_t dd;
+  lv_disp_drv_init(&dd);
+  dd.hor_res = 480; dd.ver_res = 272; dd.flush_cb = flush; dd.draw_buf = &db;
+  lv_disp_t * disp = lv_disp_drv_register(&dd);
+  static lv_indev_drv_t id;
+  lv_indev_drv_init(&id);
+  id.type = LV_INDEV_TYPE_POINTER; id.read_cb = readTouch;
+  lv_indev_drv_register(&id);
+  ui::init(disp);
+  run(2000);
+
+  // 1. Association refusée (mot de passe : code 15), aucun relevé — le cas de la photo
+  printf("1. association en \xC3\xA9" "chec, aucun relev\xC3\xA9\n");
+  sim::g_wifiReason = 15;
+  run(18000);
+  sim::g_wifiState = net::W_FAILED; sim::g_stage = "Wi-Fi injoignable";
+  run(1500);
+  ui::sheetClose(); run(400);
+  ui::showTab(ui::TAB_DASH); run(6000);                // les toasts s'effacent
+  shot("hl_01_aucune_donnee_wifi_echec");
+  for (int k = 0; k < 4; k++) expect(!strcmp(D(k), DASH), "tuile : \xC2\xAB \xE2\x80\x94 \xC2\xBB, pas 0", D(k));
+  expect(!strcmp(D(4), DASH), "jauge d'\xC3\xA9quilibre : \xC2\xAB \xE2\x80\x94 \xC2\xBB", D(4));
+  expect(!strcmp(D(8), DASH), "compteurs d'\xC3\xA9quilibre : \xC2\xAB \xE2\x80\x94 \xC2\xBB", D(8));
+  expect(!strcmp(D(5), DASH), "pr\xC3\xA9vision +1 h : \xC2\xAB \xE2\x80\x94 \xC2\xBB", D(5));
+  expect(ui::debugDashForecastPoints() == 0, "aucun point de pr\xC3\xA9vision dessin\xC3\xA9 (pas de pointill\xC3\xA9s \xC3\xA0 0)");
+  expect(!strcmp(D(6), "Aucune donn\xC3\xA9" "e"), "bandeau \xC2\xAB Aucune donn\xC3\xA9" "e \xC2\xBB", D(6));
+  expect(strstr(D(7), "mot de passe refus\xC3\xA9") && strstr(D(7), "code 15"), "bandeau : cause de l'\xC3\xA9" "chec d'association", D(7));
+  expect(!strcmp(D(9), "Aucune donn\xC3\xA9" "e"), "priorit\xC3\xA9s : pas de \xC2\xAB R\xC3\xA9seau \xC3\xA9quilibr\xC3\xA9 \xC2\xBB sans relev\xC3\xA9", D(9));
+  { std::string w; int z = zeroLabels(lv_scr_act(), w); expect(z == 0, "aucun z\xC3\xA9ro affich\xC3\xA9 \xC3\xA0 l'\xC3\xA9" "cran", w.c_str()); }
+
+  // 2. Associé, heure NTP absente
+  printf("2. associ\xC3\xA9, NTP non synchronis\xC3\xA9\n");
+  sim::g_wifiState = net::W_CONNECTED; sim::g_wifiReason = 0; sim::g_timeOk = false;
+  run(1200);
+  shot("hl_02_aucune_donnee_ntp");
+  expect(!strcmp(D(6), "Aucune donn\xC3\xA9" "e") && strstr(D(7), "NTP"), "bandeau : NTP nomm\xC3\xA9", D(7));
+  expect(!strcmp(D(0), DASH), "tuile toujours \xC2\xAB \xE2\x80\x94 \xC2\xBB", D(0));
+
+  // 3. Associé, heure OK, station_status en échec (aucun flux reçu)
+  printf("3. aucun flux re\xC3\xA7u (station_status en \xC3\xA9" "chec)\n");
+  sim::g_timeOk = true;
+  vn::ingestErr(sim::g_feed[vn::FEED_STATUS], plat::now(), 503, 0, 900);
+  vn::ingestErr(sim::g_feed[vn::FEED_STATUS], plat::now(), 503, 0, 900);
+  run(1200);
+  shot("hl_03_aucun_flux");
+  expect(strstr(D(7), "station_status") && strstr(D(7), "503"), "bandeau : flux et code d'\xC3\xA9" "chec", D(7));
+  { std::string w; int z = zeroLabels(lv_scr_act(), w); expect(z == 0, "toujours aucun z\xC3\xA9ro", w.c_str()); }
+
+  // 4. Premier relevé : en direct
+  printf("4. relev\xC3\xA9 re\xC3\xA7u : en direct\n");
+  int64_t t4 = plat::now();
+  {
+    plat::LockGuard g;
+    g_model.applyInfo(irecs, ni, t4);
+    synthHistory(g_model, t4, recs, ns);
+    g_model.applyStatus(recs, ns, t4);
+    wxParse(wx.data(), wx.size(), g_model.wx);
+    g_model.wx.fetchedAt = t4;
+    g_model.lastUpdate = t4;
+    g_model.feedUpdated = lastUpd;
+    g_model.recompute(t4);
+    g_model.nEv = 0;
+    g_model.version++;
+  }
+  vn::ingestOk(sim::g_feed[vn::FEED_STATUS], t4, (uint32_t)status.size(), 800);
+  run(1500);
+  shot("hl_04_en_direct");
+  char exp[32]; ui::fmtInt(exp, sizeof(exp), g_model.tot.bikes);
+  expect(!strcmp(D(0), exp), "v\xC3\xA9los dispo = total du flux", D(0));
+  expect(!strcmp(D(6), ""), "aucun bandeau en direct", D(6));
+  expect(strcmp(D(5), DASH) != 0 && ui::debugDashForecastPoints() == VN_FC_STEPS, "pr\xC3\xA9vision affich\xC3\xA9" "e", D(5));
+  expect(ui::debugDashCurveLastX() == VN_RING_SLOTS - 1, "courbe jusqu'\xC3\xA0 maintenant");
+  std::string k0 = D(0), k2 = D(2), k3 = D(3), arc = D(4);
+  char hm[8]; ui::fmtClock(hm, sizeof(hm), t4);
+
+  // 5. Wi-Fi perdu (borne introuvable), 10 min plus tard : dernières valeurs + « hors ligne depuis »
+  printf("5. Wi-Fi perdu depuis 10 min\n");
+  sim::g_wifiState = net::W_FAILED; sim::g_wifiReason = 201;
+  sim::g_ms += 10 * 60 * 1000;
+  run(1500);
+  shot("hl_05_hors_ligne");
+  expect(k0 == D(0) && k2 == D(2) && k3 == D(3), "tuiles : derni\xC3\xA8res valeurs gard\xC3\xA9" "es (ni 0 ni \xE2\x80\x94)", D(0));
+  expect(arc == D(4), "jauge : derni\xC3\xA8re valeur gard\xC3\xA9" "e", D(4));
+  std::string want = std::string("Hors ligne depuis ") + hm;
+  expect(want == D(6), "bandeau \xC2\xAB Hors ligne depuis HH:MM \xC2\xBB (heure du dernier relev\xC3\xA9)", D(6));
+  expect(strstr(D(7), "introuvable") != nullptr, "bandeau : cause (r\xC3\xA9seau introuvable)", D(7));
+  expect(!strcmp(D(5), DASH) && !strcmp(D(11), "hors ligne") && ui::debugDashForecastPoints() == 0, "pr\xC3\xA9vision : \xC2\xAB \xE2\x80\x94 hors ligne \xC2\xBB, sans pointill\xC3\xA9s", D(5));
+  expect(ui::debugDashCurveLastX() == VN_RING_SLOTS - 1 - 2, "courbe : dernier point \xC3\xA0 SON heure (2 tranches en arri\xC3\xA8re), pas \xC3\xA0 maintenant");
+  // autre onglet : le bandeau global le dit aussi
+  ui::showTab(ui::TAB_LIST); run(600);
+  shot("hl_05b_hors_ligne_stations");
+  expect(textVisible(lv_scr_act(), "depuis ") , "onglet Stations : \xC2\xAB Hors ligne \xC2\xB7 depuis HH:MM \xC2\xBB");
+  ui::showTab(ui::TAB_DASH); run(600);
+
+  // 6. Wi-Fi revenu mais flux en retard (20 min, seuil 3 min)
+  printf("6. flux en retard\n");
+  sim::g_wifiState = net::W_CONNECTED; sim::g_wifiReason = 0;
+  sim::g_ms += 10 * 60 * 1000;
+  run(1500);
+  shot("hl_06_flux_en_retard");
+  expect(strstr(D(6), "vieilles de 20 min") != nullptr, "bandeau \xC2\xAB Donn\xC3\xA9" "es vieilles de 20 min \xC2\xBB", D(6));
+  expect(k0 == D(0), "tuiles : derni\xC3\xA8res valeurs", D(0));
+  expect(!strcmp(D(5), DASH) && !strcmp(D(11), "en retard"), "pr\xC3\xA9vision : \xC2\xAB \xE2\x80\x94 en retard \xC2\xBB", D(11));
+
+  // 7. Horodatage de station invalide (« 0001-01-01 » publié par la source)
+  printf("7. horodatage de station invalide\n");
+  expect(bad == 2, "instantan\xC3\xA9 : 2 horodatages invalides rep\xC3\xA9r\xC3\xA9s");
+  // 148 et 149 publient l'an 1 mais n'ont pas de nom : écartées comme fantômes, jamais affichées.
+  // Pour éprouver l'affichage, on injecte la même valeur sur la première station publique du flux.
+  expect(g_model.find("148") < 0 && g_model.find("149") < 0, "148 et 149 (sans nom) : hors du mod\xC3\xA8le");
+  std::string js(status.begin(), status.end());
+  size_t q = js.find("\"last_reported\":\"");
+  size_t q2 = q == std::string::npos ? q : js.find('"', q + 17);
+  if (q2 != std::string::npos) js.replace(q + 17, q2 - (q + 17), "0001-01-01T00:00:00Z");
+  static StatusRec r2[VN_MAX_ST];
+  int bad2 = 0;
+  int n2 = gbfsParseStatus(js.data(), js.size(), r2, VN_MAX_ST, et, &lastUpd, &bad2);
+  int victim = -1;
+  for (int k = 0; k < n2 && victim < 0; k++) if (r2[k].lastReported == 0) victim = g_model.find(r2[k].sid);
+  { plat::LockGuard g; g_model.applyStatus(r2, n2, plat::now()); g_model.lastUpdate = plat::now(); g_model.version++; }
+  run(600);
+  expect(bad2 == 3 && victim >= 0 && g_model.st[victim].lastReported == 0, "station publique \xC3\xA0 l'an 1 : horodatage inconnu (0)");
+  if (victim >= 0) {
+    ui::openStation(victim); run(600);
+    lv_obj_t * l = labelWithPrefix(lv_layer_top(), "Dernier rapport de la borne");
+    if (l) { lv_obj_scroll_to_view_recursive(l, LV_ANIM_OFF); run(300); }
+    shot("hl_07_station_horodatage_invalide");
+    expect(l && strstr(lv_label_get_text(l), "inconnu"), "fiche : \xC2\xAB inconnu (horodatage invalide) \xC2\xBB", l ? lv_label_get_text(l) : "absent");
+    ui::sheetClose(); run(400);
+  }
+
+  // 8. Retour à la normale : nouveau relevé
+  printf("8. retour \xC3\xA0 la normale\n");
+  { plat::LockGuard g; g_model.applyStatus(recs, ns, plat::now()); g_model.lastUpdate = plat::now(); g_model.version++; }
+  run(1500);
+  shot("hl_08_retour");
+  expect(!strcmp(D(6), "") && strcmp(D(5), DASH) != 0, "bandeau effac\xC3\xA9, pr\xC3\xA9vision revenue", D(6));
+
+  printf("Sc\xC3\xA9nario hors-ligne : %d \xC3\xA9" "cart(s)\n", fails);
+  return fails ? 3 : 0;
+}
+
 static int realMain(int argc, char ** argv) {
   if (argc < 3) { fprintf(stderr, "usage : sim <json_dir> <out_dir>\n"); return 1; }
   std::string in = argv[1];
@@ -609,6 +805,7 @@ static int realMain(int argc, char ** argv) {
   bool ops = argc > 3 && strcmp(argv[3], "ops") == 0;
   if (argc > 3 && !ops) {
     if (strcmp(argv[3], "totaux") == 0) return totauxScenario(in);
+    if (strcmp(argv[3], "hors-ligne") == 0) return horsLigneScenario(in);
     return bootScenario(in, argv[3]);
   }
 

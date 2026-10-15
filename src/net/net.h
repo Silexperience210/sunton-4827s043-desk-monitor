@@ -8,13 +8,14 @@
 
 namespace net {
 
-enum WifiState : uint8_t { W_NONE, W_CONNECTING, W_CONNECTED, W_FAILED };
+enum WifiState : uint8_t { W_NONE, W_CONNECTING, W_CONNECTED, W_FAILED };   // valeurs reprises par vn::offlineCause
 
 struct Status {
   WifiState wifi;
   char      ssid[33];
   char      ip[16];
   int       rssi;
+  uint8_t   wifiReason;    // dernière raison de déconnexion (wifi_err_reason_t), 0 = aucune
   bool      fetching;      // cycle de récupération en cours
   bool      timeOk;        // heure NTP synchronisée
   int64_t   timeSyncAt;    // première synchronisation NTP constatée (epoch), 0 = jamais
