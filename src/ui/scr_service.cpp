@@ -402,7 +402,8 @@ static void fillKRows(KRow * rows, const vn::StRank * r, int n, bool worst) {
   }
 }
 static void refreshRank(int32_t today) {
-  static vn::StRank r[VN_MAX_ST];
+  vn::StRank * r = (vn::StRank *)plat::psAlloc(sizeof(vn::StRank) * VN_MAX_ST);   // PSRAM, le temps du rafraîchissement
+  if (!r) return;
   int n = vn::svcRank(g_model.days, g_model, today - 30, today - 1, r, VN_MAX_ST);
   char x[220];
   vn::SvcCount mo;
@@ -415,6 +416,7 @@ static void refreshRank(int32_t today) {
   fillKRows(s_worst, r, n, true);
   vn::svcSortBest(r, n);
   fillKRows(s_best, r, n, false);
+  plat::psFree(r);
 }
 
 // ── La carte : les chiffres sont-ils frais ? ─────────────────────────

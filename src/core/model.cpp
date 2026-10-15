@@ -1176,21 +1176,22 @@ bool Model::load(int64_t now) {
         memcpy(cellN, wp, PROF_STRIDE); wp += PROF_STRIDE;
         if (h.ver >= 2) {
           // Statistiques relues seulement si toutes finies et de signe plausible ; sinon on repart de zéro
+          // (vérifiées sur place dans le tampon lu : pas de copie de 6 Ko en RAM interne)
           WxClimate c; memcpy(&c, wp, sizeof(c));
-          static WxStats tmp[VN_MAX_ST + 1];
-          memcpy(tmp, wp + sizeof(WxClimate), sizeof(WxStats) * (1 + (size_t)h.nSt));
+          const uint8_t * ws = wp + sizeof(WxClimate);
           wp += sizeof(WxClimate) + sizeof(WxStats) * (1 + (size_t)h.nSt);
           bool sane = true;
           for (int k = 0; k < 24; k++) sane &= isfinite(c.sx[k]) && isfinite(c.sw[k]) && c.sw[k] >= 0;
           for (int j = 0; j <= h.nSt; j++) {
-            const float * f = (const float *)&tmp[j];
+            WxStats t; memcpy(&t, ws + (size_t)j * sizeof(WxStats), sizeof(t));
+            const float * f = (const float *)&t;
             for (size_t k = 0; k < sizeof(WxStats) / sizeof(float); k++) sane &= isfinite(f[k]);
-            sane &= tmp[j].sdd >= 0 && tmp[j].szz >= 0 && tmp[j].sgg >= 0 && tmp[j].sn >= 0;
+            sane &= t.sdd >= 0 && t.szz >= 0 && t.sgg >= 0 && t.sn >= 0;
           }
           if (sane) {
             wxClim = c;
-            wxG = tmp[0];
-            for (int j = 0; j < h.nSt; j++) if (map[j] >= 0) wxS[map[j]] = tmp[1 + j];
+            memcpy(&wxG, ws, sizeof(WxStats));
+            for (int j = 0; j < h.nSt; j++) if (map[j] >= 0) memcpy(&wxS[map[j]], ws + (size_t)(1 + j) * sizeof(WxStats), sizeof(WxStats));
           }
           updateWxCoef();
         }

@@ -152,8 +152,9 @@ int svcRecurrent(const DayBook & b, const Model & m, int32_t today, Recur * out,
 
 // ── Classement ───────────────────────────────────────────────────────
 int svcRank(const DayBook & b, const Model & m, int32_t dayFrom, int32_t dayTo, StRank * out, int max) {
-  static StRank acc[VN_MAX_ST];
-  memset(acc, 0, sizeof(acc));
+  // Cumuls en PSRAM le temps de l'appel (4 Ko de RAM interne de moins qu'un tableau statique)
+  StRank * acc = (StRank *)plat::psAlloc(sizeof(StRank) * VN_MAX_ST);
+  if (!acc) return 0;
   uint32_t best = 0;
   for (int k = 0; k < b.count; k++) {
     const DayNet * d = b.dayAt(k);
@@ -167,12 +168,12 @@ int svcRank(const DayBook & b, const Model & m, int32_t dayFrom, int32_t dayTo, 
   }
   for (int i = 0; i < m.n && i < VN_MAX_ST; i++) if (m.st[i].active && acc[i].obs > best) best = acc[i].obs;
   int n = 0;
-  if (!best) return 0;
-  for (int i = 0; i < m.n && i < VN_MAX_ST && n < max; i++) {
+  for (int i = 0; best && i < m.n && i < VN_MAX_ST && n < max; i++) {
     if (!m.st[i].active || acc[i].obs * 2 < best) continue;
     acc[i].st = (int16_t)i;
     out[n++] = acc[i];
   }
+  plat::psFree(acc);
   return n;
 }
 
