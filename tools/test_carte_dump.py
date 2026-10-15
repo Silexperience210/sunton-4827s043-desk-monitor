@@ -186,6 +186,15 @@ def main():
     fs[k] = parts[0] + b"crc=DEADBEEF\n"               # somme de FICHIER fausse
     code, txt, o = depuis(b"".join(fs), "somme_fichier.txt")
     check(code == 1 and "somme" in txt, "somme de fichier fausse : (%d, %s)" % (code, txt.strip()))
+    # Somme du FICHIER fausse mais cohérente entre FICHIER et FIN, blocs justes un à un : seule la somme
+    # du fichier entier le voit (revue, mutation BR2)
+    fe = lines[:]
+    for pre in (b"VNDUMP FICHIER 1 ", b"VNDUMP FIN 1 "):
+        k = next(i for i, ln in enumerate(fe) if ln.startswith(pre))
+        fe[k] = fe[k].split(b"crc=")[0] + b"crc=DEADBEEF\n"
+    code, txt, o = depuis(b"".join(fe), "somme_entiere.txt")
+    check(code == 1 and "somme du fichier fausse" in txt, "somme du fichier entier fausse, blocs justes : (%d, %s)" % (code, txt.strip()))
+    check(archives(o) == [], "somme du fichier entier fausse : rien écrit")
     code, txt, o = depuis(b"[net] cycle 800 ms\n" * 10, "rien.txt")
     check(code == 1 and "aucun début" in txt, "aucun vidage dans la capture : (%d, %s)" % (code, txt.strip()))
     ab = lines[:200] + [b"VNDUMP ABANDON stop demande\n"]

@@ -737,6 +737,9 @@ static void acLearn(Model & m, int days) {
 }
 
 static void testAlertCalm() {
+  { AlertOpts d;                                   // réglage livré (revue, mutation AC4) : la règle de la v1.0.8
+    CHECK(!d.disp && d.persist == 1 && d.scale == 1.f && d.holidayScale == 1.f,
+          "alerte livrée : formule fixe, aussitôt, sans élargissement (1a et 1b éteints)"); }
   settingsDefaults(g_set);
   g_alertOpt = AlertOpts();
   static Model m;
@@ -1104,9 +1107,15 @@ static void testWxLearn() {
     g_pred.wxFlow = false;
     m.recompute(tq + 120);
     bool same = memcmp(on, m.st[0].fc, sizeof(on)) == 0;
+    float off24[97], on24[97], cc24[97];
+    m.project(0, tq + 120, 15, 97, off24, cc24);
     g_pred.wxFlow = true;
     m.recompute(tq + 120);
+    m.project(0, tq + 120, 15, 97, on24, cc24);
     CHECK(same && m.wxUse == (mode ? WXU_STALE : WXU_NONE), "météo %s : prévision identique octet pour octet au modèle sans météo",
+          mode ? "périmée" : "absente");
+    // la courbe 24 h aussi : au-delà de 2 h, c'est la météo PRÉVUE qui corrigerait (revue, mutation PM3b)
+    CHECK(memcmp(on24, off24, sizeof(on24)) == 0, "météo %s : courbe 24 h identique octet pour octet au modèle sans météo",
           mode ? "périmée" : "absente");
   }
   // 3. Courbe 24 h : même règle, part météo seulement sur l'horizon connu (2 h avec la météo actuelle)
@@ -2212,6 +2221,43 @@ static void testHorsLigne(const std::string & dir) {
   }
 }
 
+// ── Station fermée : rien n'entre dans son profil (revue, mutation PM6) ──
+static void testClosedNotLearned() {
+  settingsDefaults(g_set);
+  g_pred = PredictOpts();
+  static Model m;
+  CHECK(m.init(), "init station fermée");
+  const int64_t T0 = 1791842400 - 86400 * 7;                    // mardi 06/10/2026 00:00
+  InfoRec ir[2] = { mkInfo("1", 49.60f, 6.13f, 20), mkInfo("2", 49.61f, 6.14f, 20) };
+  m.applyInfo(ir, 2, T0);
+  auto cells = [&](int s, long & nsum, int & minA, int & maxA) {
+    nsum = 0; minA = 1 << 30; maxA = -1;
+    for (int q = 0; q < 7 * 96; q++) {
+      const ProfCell & c = m.prof[(size_t)s * 7 * 96 + q];
+      if (!c.n) continue;
+      nsum += c.n; minA = std::min(minA, (int)c.a); maxA = std::max(maxA, (int)c.a);
+    }
+  };
+  // 4 jours : la station 2 est fermée (non installée) et publie 13 vélos ; la 1 est ouverte à 5
+  StatusRec sr[2];
+  for (int64_t t = T0; t < T0 + 4 * 86400; t += 300) {
+    sr[0] = mkStat("1", 5, 20);
+    sr[1] = mkStat("2", 13, 20); sr[1].installed = 0;
+    m.applyStatus(sr, 2, t);
+  }
+  long n1, n2; int lo, hi, lo2, hi2;
+  cells(0, n1, lo, hi); cells(1, n2, lo2, hi2);
+  CHECK(m.st[1].status == ST_CLOSED, "station 2 vue fermée (statut %d)", m.st[1].status);
+  CHECK(n1 > 0 && n2 == 0, "4 jours fermée : aucun relevé dans son profil (n = %ld), l'ouverte apprend (n = %ld)", n2, n1);
+  // Réouverte à 7 vélos : elle apprend, et jamais les 13 vélos publiés pendant la fermeture
+  for (int64_t t = T0 + 4 * 86400; t < T0 + 5 * 86400; t += 300) {
+    sr[0] = mkStat("1", 5, 20); sr[1] = mkStat("2", 7, 20);
+    m.applyStatus(sr, 2, t);
+  }
+  cells(1, n2, lo2, hi2);
+  CHECK(n2 > 0 && lo2 == 7 * 256 && hi2 == 7 * 256, "réouverte : profil appris à 7 vélos seulement (min %d, max %d /256)", lo2, hi2);
+}
+
 // ── Identité de version (revue B2) ───────────────────────────────────
 // Les 1.0.8 et 1.0.9 publiées écrivent /vn_prof.bin en version 1 et refusent toute autre version :
 // un micrologiciel qui écrit un format plus récent ne doit pas porter leur nom (écran, « ping » du
@@ -2259,6 +2305,7 @@ int main(int argc, char ** argv) {
   testDump();
   testHorsLigne(argc > 1 ? argv[1] : "");
   testVersion();
+  testClosedNotLearned();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;
 }
