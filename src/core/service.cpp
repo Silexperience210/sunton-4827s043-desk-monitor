@@ -232,14 +232,6 @@ void svcHours(char * out, size_t n, uint32_t slots) {
   snprintf(out, n, "%s\xC2\xA0h", a);
 }
 
-void svcRateText(char * out, size_t n, uint32_t num, uint32_t den) {
-  char p[16], a[24], b[24];
-  svcPct(p, sizeof(p), num, den);
-  svcHours(a, sizeof(a), num);
-  svcHours(b, sizeof(b), den);
-  snprintf(out, n, "%s \xC2\xB7 %s sur %s", p, a, b);
-}
-
 const char * svcKindName(uint8_t kind) {
   return kind == RK_EMPTY ? "Vide" : kind == RK_FULL ? "Pleine" : kind == RK_HIGH ? "Au-dessus du profil" : "En dessous du profil";
 }

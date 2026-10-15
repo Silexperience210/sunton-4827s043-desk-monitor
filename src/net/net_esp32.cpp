@@ -21,7 +21,7 @@ namespace net {
 
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static Status s_status;
-static volatile bool s_refreshReq = false, s_scanReq = false, s_saveReq = false, s_connectReq = false;
+static volatile bool s_refreshReq = false, s_scanReq = false, s_connectReq = false;
 static char s_newSsid[33], s_newPass[65];
 static volatile int s_scanCount = -2;            // ‑2 : rien, ‑1 : échec, ≥ 0 : terminé
 static vn::WifiList s_scan;                      // écrit par doScan() AVANT s_scanCount
@@ -70,7 +70,6 @@ void connect(const char * ssid, const char * pass) {
   s_newPass[sizeof(s_newPass) - 1] = 0;
   s_connectReq = true;
 }
-void requestSave() { s_saveReq = true; }
 
 // ── HTTP GET → s_buf (HTTP/1.0 : pas d'encodage « chunked ») ──────────
 static int httpGetOnce(const char * url, size_t & len) {
@@ -436,8 +435,7 @@ static void task(void *) {
         if (!fetchWeather()) s_wxAt -= VN_WX_REFRESH_S - 120;   // nouvel essai dans 2 min
       }
     }
-    if (loaded && (s_saveReq || millis() - lastSave >= VN_SAVE_PERIOD_S * 1000UL)) {
-      s_saveReq = false;
+    if (loaded && millis() - lastSave >= VN_SAVE_PERIOD_S * 1000UL) {
       lastSave = millis();
       if (g_model.dirty) saveHistory();
     }

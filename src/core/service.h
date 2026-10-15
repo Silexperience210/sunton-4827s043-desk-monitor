@@ -89,8 +89,6 @@ void svcSortBest(StRank * r, int n);   // part indisponible croissante (à égal
 void svcPct(char * out, size_t n, uint32_t num, uint32_t den);
 // Station-tranches → station·heures (« 2 431 h » ; au dixième sous 10 h : « 1,5 h »)
 void svcHours(char * out, size_t n, uint32_t slots);
-// « 91,2 % · 2 431 h sur 2 665 h » (numérateur ET dénominateur, jamais un pourcentage seul)
-void svcRateText(char * out, size_t n, uint32_t num, uint32_t den);
 // « Vide 8 h–9 h · 9 jours ouvrables sur 10 · série 9 j » (« série interrompue » si le dernier jour relevé est sain)
 void svcRecurText(const Recur & r, char * out, size_t n);
 const char * svcKindName(uint8_t kind);    // « Vide », « Pleine », « Au-dessus du profil », « En dessous du profil »

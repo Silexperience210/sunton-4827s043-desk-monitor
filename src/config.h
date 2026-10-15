@@ -6,10 +6,6 @@
 #define VN_VERSION      "1.1.0"
 #define VN_NAME         "VelohNav Ops"
 
-// ── Écran ────────────────────────────────────────────────────────────
-#define VN_SCREEN_W     480
-#define VN_SCREEN_H     272
-
 // ── Données ──────────────────────────────────────────────────────────
 // GBFS v3 public (sans clé) — mêmes flux que l'app VelohNav (src/utils/gbfs.js)
 #define VN_GBFS_BASE    "https://api.cyclocity.fr/contracts/luxembourg/gbfs/v3"

@@ -223,7 +223,6 @@ struct Model {
   WxClimate wxClim{};                    // x̄ₕ
   float     wxAlpha = 0;                 // α global appliqué (0 si non significatif)
   float     wxAlphaRaw = 0, wxAlphaSE = 0; // estimation brute et son erreur-type
-  float     wxXbar = 0;                  // x̄ₕ de l'heure courante (affichage)
   uint8_t   wxSrc = WXC_DEFAULT;         // WxCoefSrc
   float     wxNow = 0;                   // pénalité météo actuelle x (0…1), 0 sans météo
   Alert *   alerts = nullptr;            // [VN_MAX_ALERTS]
@@ -239,7 +238,6 @@ struct Model {
   ElecTypes elec;
   int64_t   lastUpdate = 0;              // dernier station_status réussi (horloge locale)
   int64_t   feedUpdated = 0;             // last_updated du flux
-  int64_t   infoAt = 0;
   int       fetchErrors = 0;             // échecs consécutifs
   uint32_t  fetchMs = 0;                 // durée du dernier cycle
   uint32_t  version = 0;                 // incrémenté à chaque mise à jour

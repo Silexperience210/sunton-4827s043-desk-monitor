@@ -52,6 +52,5 @@ bool scanDone(int & count) {
 }
 void scanResults(vn::WifiList & out) { vn::buildWifiList(RAW, 7, out); }
 void connect(const char * ssid, const char *) { printf("[sim] connect %s\n", ssid); }
-void requestSave() {}
 
 } // namespace net

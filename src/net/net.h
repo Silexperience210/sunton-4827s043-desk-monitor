@@ -30,6 +30,5 @@ void   requestScan();
 bool   scanDone(int & count);                    // count = ‑1 si échec, sinon lignes à afficher
 void   scanResults(vn::WifiList & out);          // copie de la dernière liste (vide si échec)
 void   connect(const char * ssid, const char * pass);
-void   requestSave();                            // sauvegarde historique / profils
 
 } // namespace net

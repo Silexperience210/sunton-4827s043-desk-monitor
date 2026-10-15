@@ -164,7 +164,6 @@ void Model::applyInfo(const InfoRec * r, int cnt, int64_t now) {
     s.lat = r[k].lat; s.lon = r[k].lon; s.cap = r[k].cap;
     s.active = true;
   }
-  infoAt = now;
   version++;
 }
 
@@ -831,7 +830,6 @@ void Model::recompute(int64_t now) {
   // Météo : utilisée seulement si reçue et fraîche (3 périodes de VN_WX_REFRESH_S, comme le bandeau)
   wxUse = wxUseAt(now);
   wxNow = wxUse == WXU_OK ? wxPenalty(wx.temp, wx.rain, wx.wind, wx.code) : 0;
-  wxXbar = wxClimAt(now);
   updateWxCoef();
 
   Totals t;

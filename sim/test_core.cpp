@@ -1649,9 +1649,10 @@ static void testDayCounts() {
   SvcCount c;
   svcSum(m.days, d->day, d->day, 1, c);
   CHECK(c.obs == 36 && c.avail() == 28 && c.days == 1 && c.slots == 12 && c.slotsMax == 12, "somme du créneau 7 h : 28 disponibles sur 36");
-  char t[96];
-  svcRateText(t, sizeof(t), c.avail(), c.obs);
-  CHECK(strcmp(t, "77,8\xC2\xA0% \xC2\xB7 2,3\xC2\xA0h sur 3,0\xC2\xA0h") == 0, "phrase du taux : numérateur et dénominateur (« %s »)", t);
+  char t[96], ta[24], tb[24];
+  svcPct(t, sizeof(t), c.avail(), c.obs); svcHours(ta, sizeof(ta), c.avail()); svcHours(tb, sizeof(tb), c.obs);
+  CHECK(strcmp(t, "77,8\xC2\xA0%") == 0 && strcmp(ta, "2,3\xC2\xA0h") == 0 && strcmp(tb, "3,0\xC2\xA0h") == 0,
+        "taux, numérateur et dénominateur (« %s », « %s » sur « %s »)", t, ta, tb);
   svcPct(t, sizeof(t), 0, 0);
   CHECK(strcmp(t, "\xE2\x80\x94") == 0, "dénominateur nul : « — », jamais 0 %% ni 100 %%");
   svcHours(t, sizeof(t), 12 * 2431);
@@ -1875,9 +1876,9 @@ static void testRecurWorld() {
   CHECK(c.obs == so && c.closed == sc && c.empty == se && c.full == sf,
         "réseau = somme des stations (observées %u, hors service %u, vides %u, pleines %u)", c.obs, c.closed, c.empty, c.full);
   CHECK(c.closed == 27u * 180 && c.days == 27 && c.daysAsked == 29, "hors service : 1 station × 27 jours × 180 tranches ; 27 jours présents sur 29 demandés");
-  char t[96];
-  svcRateText(t, sizeof(t), c.avail(), c.obs);
-  printf("  disponibilité 30 j : %s ; ruptures %u, saturations %u\n", t, c.evEmpty, c.evFull);
+  char t[24], ta[24], tb[24];
+  svcPct(t, sizeof(t), c.avail(), c.obs); svcHours(ta, sizeof(ta), c.avail()); svcHours(tb, sizeof(tb), c.obs);
+  printf("  disponibilité 30 j : %s · %s sur %s ; ruptures %u, saturations %u\n", t, ta, tb, c.evEmpty, c.evFull);
   CHECK(c.evEmpty > 0 && c.evFull > 0, "entrées en rupture et saturation comptées");
   // Classement : la hors service en tête des pires, une saine parmi les meilleures
   static StRank rk[VN_MAX_ST];
