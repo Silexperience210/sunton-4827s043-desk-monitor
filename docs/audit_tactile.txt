@@ -2,11 +2,12 @@ Audit tactile — tap simulé au centre (ou dans un coin*) de chaque élément c
 écran     res. taille  centre      élément
 reseau     OK    73x24  @(328, 17)  LIVE
 reseau     OK    53x24  @(397, 17)  13°
-reseau     OK    59x47  @( 30, 60)  Réseau
-reseau     OK    59x47  @( 30,107)  Carte
-reseau     OK    59x47  @( 30,154)  Stations
-reseau     OK    59x47  @( 30,201)  Alertes
-reseau     OK    59x47  @( 30,248)  Réglages
+reseau     OK    59x39  @( 30, 56)  Réseau
+reseau     OK    59x39  @( 30, 95)  Carte
+reseau     OK    59x39  @( 30,134)  Stations
+reseau     OK    59x39  @( 30,173)  Alertes
+reseau     OK    59x39  @( 30,212)  Service
+reseau     OK    59x39  @( 30,251)  Réglages
 reseau     OK   420x236 @(269,153)  [icône]
 reseau     OK    96x74  @(115, 80)  VÉLOS DISPO
 reseau     OK    96x74  @(217, 80)  EN TRAJET
@@ -23,11 +24,12 @@ reseau     OK   402x30  @(269,248)  Belle Etoile
 reseau     OK   156x30  @(145,248)  Toutes les alertes
 carte      OK    73x24  @(328, 17)  LIVE
 carte      OK    53x24  @(397, 17)  13°
-carte      OK    59x47  @( 30, 60)  Réseau
-carte      OK    59x47  @( 30,107)  Carte
-carte      OK    59x47  @( 30,154)  Stations
-carte      OK    59x47  @( 30,201)  Alertes
-carte      OK    59x47  @( 30,248)  Réglages
+carte      OK    59x39  @( 30, 56)  Réseau
+carte      OK    59x39  @( 30, 95)  Carte
+carte      OK    59x39  @( 30,134)  Stations
+carte      OK    59x39  @( 30,173)  Alertes
+carte      OK    59x39  @( 30,212)  Service
+carte      OK    59x39  @( 30,251)  Réglages
 carte      OK   420x236 @(269,153)  
 carte      OK    74x26  @(104, 56)  Tout
 carte      OK    73x26  @(183, 56)  Vides
@@ -41,11 +43,12 @@ carte      OK    32x32  @(455,209)  [icône]
 carte      OK    32x32  @(455,247)  [icône]
 stations   OK    73x24  @(328, 17)  LIVE
 stations   OK    53x24  @(397, 17)  13°
-stations   OK    59x47  @( 30, 60)  Réseau
-stations   OK    59x47  @( 30,107)  Carte
-stations   OK    59x47  @( 30,154)  Stations
-stations   OK    59x47  @( 30,201)  Alertes
-stations   OK    59x47  @( 30,248)  Réglages
+stations   OK    59x39  @( 30, 56)  Réseau
+stations   OK    59x39  @( 30, 95)  Carte
+stations   OK    59x39  @( 30,134)  Stations
+stations   OK    59x39  @( 30,173)  Alertes
+stations   OK    59x39  @( 30,212)  Service
+stations   OK    59x39  @( 30,251)  Réglages
 stations   OK    79x32  @(107, 57)  Priorité
 stations   OK    79x32  @(180, 57)  Nom
 stations   OK    80x32  @(253, 57)  Remplissage
@@ -196,11 +199,12 @@ stations   OK   402x40  @(269,250)  Gare Mamer
 stations   OK   402x40  @(269,250)  Walferdange Gare
 alertes    OK    73x24  @(328, 17)  LIVE
 alertes    OK    53x24  @(397, 17)  13°
-alertes    OK    59x47  @( 30, 60)  Réseau
-alertes    OK    59x47  @( 30,107)  Carte
-alertes    OK    59x47  @( 30,154)  Stations
-alertes    OK    59x47  @( 30,201)  Alertes
-alertes    OK    59x47  @( 30,248)  Réglages
+alertes    OK    59x39  @( 30, 56)  Réseau
+alertes    OK    59x39  @( 30, 95)  Carte
+alertes    OK    59x39  @( 30,134)  Stations
+alertes    OK    59x39  @( 30,173)  Alertes
+alertes    OK    59x39  @( 30,212)  Service
+alertes    OK    59x39  @( 30,251)  Réglages
 alertes    OK   110x30  @(407, 68)  Transferts
 alertes    OK    85x32  @(110,111)  Toutes 76
 alertes    OK    85x32  @(189,111)  Ruptures 12
@@ -284,13 +288,27 @@ alertes    OK   402x44  @(269,248)  [icône]
 alertes    OK   402x44  @(269,248)  [icône]
 alertes    OK   402x44  @(269,248)  [icône]
 alertes    OK   402x44  @(269,248)  [icône]
+service    OK    73x24  @(328, 17)  LIVE
+service    OK    53x24  @(397, 17)  13°
+service    OK    59x39  @( 30, 56)  Réseau
+service    OK    59x39  @( 30, 95)  Carte
+service    OK    59x39  @( 30,134)  Stations
+service    OK    59x39  @( 30,173)  Alertes
+service    OK    59x39  @( 30,212)  Service
+service    OK    59x39  @( 30,251)  Réglages
+service    OK   105x30  @(120, 56)  Synthèse
+service    OK   105x30  @(219, 56)  Récurrents 0
+service    OK   106x30  @(318, 56)  Classement
+service    OK   106x30  @(418, 56)  La carte
+service    OK   404x194 @(269,174)  AUJOURD'HUI · 7 H–14 H
 reglages   OK    73x24  @(328, 17)  LIVE
 reglages   OK    53x24  @(397, 17)  13°
-reglages   OK    59x47  @( 30, 60)  Réseau
-reglages   OK    59x47  @( 30,107)  Carte
-reglages   OK    59x47  @( 30,154)  Stations
-reglages   OK    59x47  @( 30,201)  Alertes
-reglages   OK    59x47  @( 30,248)  Réglages
+reglages   OK    59x39  @( 30, 56)  Réseau
+reglages   OK    59x39  @( 30, 95)  Carte
+reglages   OK    59x39  @( 30,134)  Stations
+reglages   OK    59x39  @( 30,173)  Alertes
+reglages   OK    59x39  @( 30,212)  Service
+reglages   OK    59x39  @( 30,251)  Réglages
 reglages   OK   420x236 @(269,153)  RÉSEAU & DONNÉES
 reglages   OK   402x57  @(269, 72)  [icône]
 reglages   OK    48x30  @(307,196)  30 s
@@ -375,4 +393,4 @@ tactile    OK   104x30  @(153,242)  Étalonner
 tactile    OK    56x30  @(241,242)  Usine
 tactile    OK   100x30  @(327,242)  Terminer
 
-Bilan : 374 éléments joignables, 0 injoignables, 0 petites cibles (< 24 px)
+Bilan : 392 éléments joignables, 0 injoignables, 0 petites cibles (< 24 px)

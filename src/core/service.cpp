@@ -43,23 +43,31 @@ static uint16_t hitMask(const DaySt & r, int kind) {
   return kind == RK_EMPTY ? r.hitE : kind == RK_FULL ? r.hitF : kind == RK_HIGH ? r.hitH : r.hitL;
 }
 
-static Cell evalCell(const DayBook & b, int st, int kind, bool weekend, int h, int32_t today, const RecurOpts & o) {
-  Cell c{};
-  const int win = weekend ? o.weWin : o.wdWin, need = weekend ? o.weNeed : o.wdNeed;
-  const uint16_t bit = (uint16_t)(1u << h);
-  bool open = true;
-  // La fenêtre (win jours relevés) fait le compte ; la série, elle, peut remonter au-delà (lookback)
-  for (int k = 0; k < b.count && (c.days < win || open); k++) {
+// Jours examinés d'une classe, du plus récent au plus ancien (calculés une fois par appel, pas par cellule)
+struct DayList { const DaySt * rows[VN_DAYS]; int32_t day[VN_DAYS]; int n; };
+static void dayList(const DayBook & b, int32_t today, bool weekend, const RecurOpts & o, DayList & l) {
+  l.n = 0;
+  for (int k = 0; k < b.count && l.n < VN_DAYS; k++) {
     const DayNet * d = b.dayAt(k);
     if (d->day >= today) continue;             // jours COMPLETS seulement : aujourd'hui relève des alertes
     if (d->day < today - o.lookback) break;
     if (svcWeekendClass(*d) != weekend) continue;
-    const DaySt & r = b.stAt(k)[st];
+    l.rows[l.n] = b.stAt(k); l.day[l.n] = d->day; l.n++;
+  }
+}
+
+static Cell evalCell(const DayList & l, int st, int kind, int h, int win, int need) {
+  Cell c{};
+  const uint16_t bit = (uint16_t)(1u << h);
+  bool open = true;
+  // La fenêtre (win jours relevés) fait le compte ; la série, elle, peut remonter au-delà (lookback)
+  for (int k = 0; k < l.n && (c.days < win || open); k++) {
+    const DaySt & r = l.rows[k][st];
     if (!(r.seen & bit)) continue;             // créneau non relevé ce jour-là : ni pour ni contre
     bool hit = hitMask(r, kind) & bit;
     if (c.days < win) {
       c.days++;
-      if (hit) { c.hits++; if (!c.last) c.last = d->day; }
+      if (hit) { c.hits++; if (!c.last) c.last = l.day[k]; }
     }
     if (open) { if (hit && c.streak < 255) c.streak++; else open = false; }
   }
@@ -91,12 +99,16 @@ static bool recBefore(const Recur & a, const Recur & b) {
 int svcRecurrent(const DayBook & b, const Model & m, int32_t today, Recur * out, int max, const RecurOpts & o) {
   int n = 0;
   if (!b.net || b.count == 0 || max <= 0) return 0;
+  static DayList lists[2];
+  dayList(b, today, false, o, lists[0]);
+  dayList(b, today, true, o, lists[1]);
   for (int i = 0; i < m.n && i < VN_MAX_ST; i++) {
     if (!m.st[i].active) continue;
     for (int we = 0; we < 2; we++) {
+      const int win = we ? o.weWin : o.wdWin, need = we ? o.weNeed : o.wdNeed;
       Cell cell[RK_COUNT][DAY_NH];
       for (int kd = 0; kd < RK_COUNT; kd++)
-        for (int h = 0; h < DAY_NH; h++) cell[kd][h] = evalCell(b, i, kd, we, h, today, o);
+        for (int h = 0; h < DAY_NH; h++) cell[kd][h] = evalCell(lists[we], i, kd, h, win, need);
       // Un écart au profil au créneau où la station est déjà signalée vide ou pleine : même problème,
       // dit une seule fois (par l'état, plus parlant que « écart »)
       for (int h = 0; h < DAY_NH; h++)

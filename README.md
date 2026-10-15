@@ -26,6 +26,7 @@ tout le reste est réorienté exploitation.
 | **Carte** | Carte dessinée (sans tuiles) : quadrillage métrique, tracé du tram T1, quartiers, stations colorées sur l'axe *vide → pleine* · horizon **Live / +30 min / +1 h** (la carte montre où le réseau *sera* en tension) · filtres Tout / Vides / Pleines / Tension · glisser pour déplacer, double-tap ou +/− pour zoomer (au zoom : nombre de vélos dans chaque pastille) · anneau ambre = station sans mouvement suspect |
 | **Stations** | Les 143 stations, triables par priorité, nom, remplissage ou échéance de rupture · vélos / bornes, barre de composition, prévision à +1 h |
 | **Alertes** | Plan de régulation (vélos à livrer / à retirer), transferts suggérés, filtres Ruptures / Prévisions / Maintenance · badge rouge sur le rail = stations vides ou pleines · notification à chaque nouvelle rupture |
+| **Service** | La vue du directeur de service : disponibilité du jour et sur 30 jours (« 97,3 % · 54 671 h sur 56 211 h », parts vide / pleine / hors service nommées — une station vide n'est pas hors service), ruptures et saturations par jour sur 30 jours, comparaison à la semaine précédente et au même jour de la semaine dernière · **problèmes récurrents** (« Vide 8 h–9 h · 10 jours ouvrables sur 10 · série 12 j », règle affichée, fériés rangés avec le week-end) · 5 pires et 5 meilleures stations · état de la carte (fraîcheur des flux, Wi-Fi, mémoire, apprentissage). Définitions et mesures : [`docs/vue-service.md`](docs/vue-service.md) |
 | **Réglages** | Wi-Fi (recherche + clavier), fréquence de rafraîchissement, seuils d'alerte, luminosité et atténuation nocturne, état de l'apprentissage, test et étalonnage du tactile, mémoire / stockage / redémarrage |
 
 Un tap sur une station (carte, liste, alerte) ouvre sa **fiche** : statut, vélos / élec / bornes / HS,
@@ -308,6 +309,10 @@ Les trois corps tiennent sur un plateau de 220 × 220 mm. Glisser la carte par l
 - **« Aucun mouvement »** : le champ `last_reported` du flux n'est pas fiable (la plupart des bornes y
   indiquent ~1 h du matin) ; la détection repose donc sur nos propres relevés (aucune variation pendant
   N heures, entre 7 h et 22 h).
+- **Semaines** : au-delà des 24 h d'historique, la carte garde **un résumé par jour** (60 jours,
+  `/vn_days.bin`) : par heure de service, le temps observé vide / plein / hors service et les entrées en
+  rupture ou saturation, et par station les créneaux touchés. Les jours où la carte était éteinte ne
+  comptent ni pour ni contre — l'écran Service dit combien de jours sont réellement relevés.
 - **TLS** : les certificats ne sont pas vérifiés (`setInsecure`) — données publiques en lecture seule,
   aucun identifiant transmis.
 - Les données internes JCDecaux (tickets de maintenance, trajets, parc exact) ne sont pas publiques.
@@ -323,19 +328,23 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision
-./test_core ../docs/donnees     # 787 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 855 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2 → v3),
                                  # alerte calme (dispersion apprise, inertie, textes de l'écart),
                                  # jours fériés (calendrier sourcé, Pâques sur 12 années, profil du dimanche),
                                  # mémoire du profil (décroissance exacte, relecture d'un profil d'une autre mémoire),
-                                 # liste Wi-Fi (tri, dédoublonnage, masqués, réessais)
+                                 # liste Wi-Fi (tri, dédoublonnage, masqués, réessais),
+                                 # vue Service (résumés par jour, disponibilité, détecteur de récurrent sur un monde
+                                 # à vérité connue, /vn_days.bin : migration et fichiers abîmés)
 ./sim ../docs/donnees /tmp/captures   # scénario tactile, captures, audit des zones tactiles, étalonnage
 ./sim ../docs/donnees /tmp/boot boot              # premier démarrage : sans heure, sans Wi-Fi, sans données
 ./sim ../docs/donnees /tmp/boot2 boot-wifi-ko     # réseau enregistré mais injoignable
 ./sim ../docs/donnees /tmp/totaux totaux          # totaux du tableau de bord, sans historique (audit des chiffres)
 ./sim ../docs/donnees /tmp/ops ops                # écrans d'exploitation : fraîcheur, provenance, ingestion, 24 h, « inhabituel »
                                  # ces écrans sont archivés dans docs/captures/ (24_…47_)
+./sim ../docs/donnees /tmp/svc service            # vue Service : 4 semaines d'un monde à vérité connue sur les vraies
+                                 # stations ; imprime vrais trouvés / faux positifs ; captures 48_…58_
 ./bench_prevision                # banc de la prévision : 143 stations et une météo simulées sur 168 jours,
                                  # MAE à +15…+120 min, alertes par jour de pluie / sec, maturation du profil
                                  # (méthode et chiffres : docs/mesures-prevision.md)
@@ -349,7 +358,7 @@ validité : c'est l'outil d'audit des chiffres affichés — à confronter à un
 le **même** instantané de flux (`docs/donnees/`, ou un relevé frais du GBFS).
 
 `docs/donnees/` contient l'instantané des flux utilisé pour les captures.
-`docs/audit_tactile.txt` liste les 374 éléments cliquables de tous les écrans et fiches : pour
+`docs/audit_tactile.txt` liste les 392 éléments cliquables de tous les écrans et fiches : pour
 chacun, un tap simulé à son emplacement doit atteindre cet élément (0 masqué, aucune cible
 de moins de 24 px). Le simulateur éprouve aussi l'étalonnage sur un panneau résistif aux axes
 échangés et en miroir (erreur résiduelle : 1 px).
