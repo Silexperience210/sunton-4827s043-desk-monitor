@@ -161,6 +161,10 @@ La 1.1.0 relit sans perte les profils et l'historique d'une 1.0.x, puis les ré�
 récent (`/vn_prof.bin` v4, `/vn_hist.bin` v2, nouveau `/vn_days.bin`) que **les 1.0.8 et 1.0.9 refusent**.
 Revenir en arrière sans sauvegarde, c'est repartir d'un profil vide. Donc :
 
+> **1.1.0 → 1.2.0 : aucune migration.** La 1.2.0 n'ajoute aucun format de fichier (`/vn_hist.bin`
+> reste en v2) : elle se flashe par-dessus et retrouve l'historique, les profils et les résumés tels
+> quels. C'est la 1.1.0 qui a introduit les formats actuels.
+
 1. **Sauvegarder la partition de fichiers** (lecture seule ; refuse d'écraser une sauvegarde, et vérifie
    la taille et le superbloc LittleFS — code de sortie ≠ 0 : ne pas flasher) :
    ```bash
