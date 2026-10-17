@@ -195,25 +195,33 @@ bool provenance(const Model & m, int kpi, Provenance & p) {
       p.name = use ? "V\xC3\xA9los en trajet" : "Parc estim\xC3\xA9";
       p.kind = SRC_CALC; p.source = "calcul interne"; p.feed = "station_status";
       p.estimate = true;
-      p.rule = use ? "Parc estim\xC3\xA9 \xE2\x88\x92 (v\xC3\xA9los en station + v\xC3\xA9los HS) du dernier relev\xC3\xA9 : "
-                     "num_vehicles_available + num_vehicles_disabled, toutes stations."
-                   : "Plus grand total (v\xC3\xA9los en station + v\xC3\xA9los HS) relev\xC3\xA9 dans l'historique "
-                     "5 min des derni\xC3\xA8res 24 h.";
-      p.validity = "Estimation valable apr\xC3\xA8s un creux de nuit observ\xC3\xA9 : maximum relev\xC3\xA9 entre "
-                   "01 h et 05 h, avec au moins 6 h d'historique.";
+      p.rule = use ? "Parc estim\xC3\xA9 \xE2\x88\x92 (v\xC3\xA9los en station + v\xC3\xA9los HS) du relev\xC3\xA9 "
+                     "courant. Ce sont les v\xC3\xA9los ABSENTS des bornes : en trajet, mais aussi "
+                     "\xC3\xA0 l'atelier, dans la camionnette ou perdus."
+                   : "Plus grand total (v\xC3\xA9los en station + v\xC3\xA9los HS) relev\xC3\xA9 dans "
+                     "l'historique 5 min des derni\xC3\xA8res 24 h, sur les tranches o\xC3\xB9 autant de "
+                     "stations r\xC3\xA9pondaient qu'aujourd'hui.";
+      p.validity = "Valid\xC3\xA9 : au moins 6 h d'historique ET un creux observ\xC3\xA9 (tranche de "
+                   "r\xC3\xA9f\xC3\xA9rence parmi le quart le moins actif). Avant le creux, la valeur est "
+                   "affich\xC3\xA9e en provisoire.";
       p.validityMet = t.inUseValid;
       p.refAt = t.fleetAt;
       status();
-      if (gbfs && !t.inUseValid) { p.available = false; p.missing = "aucun creux de nuit observ\xC3\xA9 : l'estimation serait fausse"; }
       p.value = (float)(use ? t.inUse : t.fleet);
       char hh[8];
+      if (gbfs && !t.inUseValid && !t.inUseProvisional) {
+        p.available = false;
+        p.missing = "moins de 6 h d'historique : pas encore de quoi situer le parc";
+      }
       if (t.fleetAt) {
         hhmm(hh, sizeof(hh), t.fleetAt);
-        snprintf(p.detail, sizeof(p.detail), "Maximum retenu \xC3\xA0 %s \xC2\xB7 historique %d h %02d (6 h requises).",
-                 hh, histMin / 60, histMin % 60);
+        snprintf(p.detail, sizeof(p.detail), "R\xC3\xA9f. %s \xC2\xB7 hist. %dh%02d \xC2\xB7 %d st. couv.%s",
+                 hh, t.histMinutes / 60, t.histMinutes % 60, t.refCover,
+                 t.inUseValid ? "" : " \xC2\xB7 provisoire");
       } else {
-        snprintf(p.detail, sizeof(p.detail), "Le maximum est le relev\xC3\xA9 actuel \xC2\xB7 historique %d h %02d (6 h requises).",
-                 histMin / 60, histMin % 60);
+        snprintf(p.detail, sizeof(p.detail), "Maximum = relev\xC3\xA9 actuel \xC2\xB7 hist. %dh%02d%s",
+                 t.histMinutes / 60, t.histMinutes % 60,
+                 t.inUseValid ? "" : " \xC2\xB7 provisoire");
       }
       break;
     }

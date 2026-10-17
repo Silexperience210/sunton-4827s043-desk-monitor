@@ -158,10 +158,13 @@ struct Totals {
   int bikes, elec, docks, bikesDis, docksDis, cap, bikesRaw;
   int byStatus[ST_COUNT];
   int frozen, maint;
-  int fleet;                   // parc estimé (max 24 h des vélos en station)
-  int inUse;                   // vélos en circulation (estimation)
-  bool inUseValid;
-  int64_t fleetAt;             // instant du maximum retenu (creux de nuit observé)
+  int fleet;                   // parc estimé (max 24 h des vélos en station, à couverture égale)
+  int inUse;                   // vélos ABSENTS des stations : en trajet, à l'atelier, perdus
+  bool inUseValid;             // validé : 6 h d'historique ET un creux observé (quart le plus calme)
+  bool inUseProvisional;       // provisoire : 6 h d'historique mais aucun creux encore observé
+  int histMinutes;             // historique réellement disponible, en minutes (trous exclus)
+  int refCover;                // stations couvertes par la tranche de référence
+  int64_t fleetAt;             // instant du maximum retenu (0 = le relevé courant)
   int dep1h, ret1h;            // activité sur 60 min glissantes
   bool actValid;               // au moins 1 h de relevés (sinon les compteurs sont vides)
   int delta1h;                 // variation des vélos dispo sur 1 h (‑ = sorties nettes)

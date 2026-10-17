@@ -894,29 +894,77 @@ void Model::recompute(int64_t now) {
   t.fillPct = (t.bikes + t.docks) ? 100.f * t.bikes / (t.bikes + t.docks) : 0;
   t.balancePct = t.open ? 100.f * t.byStatus[ST_OK] / t.open : 0;
 
-  // Parc estimé + vélos en circulation.
-  // Le parc ne peut se lire que sur le creux de la nuit : c'est le seul moment
-  // où la quasi-totalité des vélos est en station. Un maximum pris en pleine
-  // journée ne mesure que le trafic du moment, d'où une validité qui dépend de
-  // l'HEURE du pic retenu, pas seulement de la profondeur d'historique.
-  int fleet = t.bikesRaw + t.bikesDis, span = 0;
-  int64_t fleetAt = now;                         // le relevé courant peut être lui-même le maximum (en pleine nuit)
+  // Parc estimé + vélos ABSENTS des stations.
+  //
+  // Le libellé compte : « parc − vélos en station » donne les vélos absents des bornes — en trajet,
+  // mais aussi à l'atelier, dans la camionnette ou perdus. L'appeler « en trajet » sans le dire
+  // serait un chiffre qu'on ne peut pas réconcilier.
+  //
+  // Le parc ne se lit qu'au moment où le réseau est le plus PLEIN. Deux exigences, mesurées :
+  //  1. la MÊME population de stations qu'à l'instant courant. La ligne par station de l'anneau
+  //     (255 = pas de donnée) donne la couverture de chaque tranche ; on ne retient que les
+  //     tranches où autant de stations répondaient. Sans ça, une tranche de nuit moins couverte
+  //     qu'une tranche de jour fabriquait un maximum de journée — et la tuile se taisait pour
+  //     toujours (constaté : deux jours sans aucune estimation).
+  //  2. un moment CALME (départs + retours dans le quart le plus bas de l'historique). L'heure de
+  //     l'horloge ne prouve rien : un creux tombe à 00 h 30 comme à 05 h 30, et « entre 1 h et 5 h »
+  //     n'était qu'un substitut fragile.
+  //
+  // Ce qui n'est pas encore tranché s'affiche quand même : « provisoire » dès 6 h d'historique,
+  // « validé » au premier creux observé. Un tiret muet n'apprend rien à l'exploitant.
+  int liveNow = 0, curPark = 0;
+  for (int i = 0; i < n; i++) {
+    const Station & s = st[i];
+    if (!s.active || !s.live) continue;   // même définition que la ligne d'anneau
+    liveNow++;
+    curPark += s.bikes + s.bikesDis;
+  }
+  const int tolCover = 1;                       // une station peut manquer le temps d'un relevé
+  int fleet = curPark, refCover = liveNow, actN = 0;
+  int64_t fleetAt = 0, oldestValid = 0;
   for (int b = 0; b < count; b++) {
     const NetSample & ns = net[ringIndex(b)];
     if (ns.avail == 0xFFFF) continue;
+    oldestValid = ns.t;                         // b va du plus récent au plus ancien
+    actN++;
+    const uint8_t * row = ring + (size_t)ringIndex(b) * VN_MAX_ST;
+    int cov = 0;
+    for (int i = 0; i < n; i++) if (row[i] != 255) cov++;
+    if (cov + tolCover < liveNow) continue;     // population différente : non comparable
     int v = ns.bikesRaw + ns.dis;
-    if (v > fleet) { fleet = v; fleetAt = ns.t; }
-    span = b;
+    if (v > fleet) { fleet = v; fleetAt = ns.t; refCover = cov; }
   }
   t.fleet = fleet;
   t.histSlots = count;
-  t.inUse = fleet - (t.bikesRaw + t.bikesDis);
+  t.inUse = fleet - curPark;
   if (t.inUse < 0) t.inUse = 0;
-  struct tm ltf;
-  plat::localTime(fleetAt, &ltf);
-  bool nightPeak = fleetAt > 0 && ltf.tm_hour >= 1 && ltf.tm_hour < 5;
   t.fleetAt = fleetAt;
-  t.inUseValid = (span >= 72) && nightPeak;      // ≥ 6 h d'historique ET un creux de nuit observé
+  // Historique réellement disponible (des tranches manquantes ne comptent pas).
+  const int64_t histS = (oldestValid > 0 && oldestValid < now) ? (now - oldestValid) : 0;
+  // « Calme » : la tranche de référence doit être dans le quart le moins actif de l'historique.
+  bool quiet = false;
+  if (fleetAt) {
+    int actRef = -1, below = 0;
+    for (int b = 0; b < count; b++) {
+      const NetSample & ns = net[ringIndex(b)];
+      if (ns.avail == 0xFFFF) continue;
+      const int act = ns.dep + ns.ret;
+      if (ns.t == fleetAt) actRef = act;
+      else if (actRef >= 0 && act < actRef) below++;
+    }
+    if (actRef < 0) {                          // référence rencontrée en dernier : second passage
+      for (int b = 0; b < count; b++) {
+        const NetSample & ns = net[ringIndex(b)];
+        if (ns.avail == 0xFFFF) continue;
+        if (ns.t != fleetAt && (ns.dep + ns.ret) < actRef) below++;
+      }
+    }
+    quiet = (actN > 0) && (below * 4 <= actN); // dans le quart le plus bas
+  }
+  t.inUseValid = (histS >= 6 * 3600) && quiet;
+  t.inUseProvisional = !t.inUseValid && (histS >= 6 * 3600);
+  t.histMinutes = (int)(histS / 60);
+  t.refCover = refCover;
 
   // Activité sur 1 h glissante + variation
   for (int b = 0; b < 12 && b < count; b++) {
