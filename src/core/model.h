@@ -17,9 +17,14 @@ enum StStatus : uint8_t { ST_EMPTY, ST_LOW, ST_OK, ST_HIGH, ST_FULL, ST_CLOSED, 
 enum AlertType : uint8_t {
   AL_EMPTY, AL_FULL, AL_SOON_EMPTY, AL_SOON_FULL,
   AL_MAINT_BIKES, AL_MAINT_DOCKS, AL_FROZEN, AL_CLOSED,
+  AL_FLEET_MAINT,              // part de vélos hors service sur l'ENSEMBLE du parc (st = ‑1)
   AL_UNUSUAL,                  // écart au profil appris (voir Model::recompute)
   AL_TYPE_COUNT
 };
+// Seuil réseau : les stations sont déjà signalées une par une (AL_MAINT_BIKES) ; ici on parle du
+// parc entier. 15 % = un vélo sur sept non louable, déjà anormal pour un service public.
+static const int FLEET_MAINT_PCT = 15;
+static const int FLEET_MAINT_PCT_HIGH = 30;   // sévérité haute : un vélo sur trois
 
 // État de la comparaison « valeur courante ↔ profil appris » d'une station
 enum AnomState : uint8_t {

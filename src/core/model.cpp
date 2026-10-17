@@ -986,6 +986,19 @@ void Model::recompute(int64_t now) {
     alerts[nAlerts++] = { type, sev, (int16_t)i, (int16_t)minutes, (int16_t)value };
     alertCount[type]++;
   };
+  // Réseau : part de vélos hors service. Chaque station a déjà son alerte (AL_MAINT_BIKES), mais
+  // un parc entier à 20 % HS ne se voit nulle part — c'est un signal d'exploitation (atelier,
+  // pièces, arbitrage), pas le défaut d'une station. Placée avant la boucle : une liste saturée
+  // ne doit pas pouvoir l'évincer. st = ‑1 (aucune station à ouvrir), minutes = pourcentage,
+  // value = nombre de vélos HS.
+  {
+    const int present = t.bikesRaw + t.bikesDis;
+    if (present > 0) {
+      const int pct = 100 * t.bikesDis / present;
+      if (pct >= vn::FLEET_MAINT_PCT)
+        add(AL_FLEET_MAINT, pct >= vn::FLEET_MAINT_PCT_HIGH ? 2 : 1, -1, pct, t.bikesDis);
+    }
+  }
   for (int i = 0; i < n; i++) {
     const Station & s = st[i];
     if (!s.active || !s.live) continue;

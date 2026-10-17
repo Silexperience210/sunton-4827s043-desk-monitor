@@ -10,8 +10,13 @@ namespace ui {
 
 void alertWhy(const vn::Alert & a, char * out, size_t n) {
   char d[24];
-  const vn::Station & s = g_model.st[a.st];
+  // Alerte de RÉSEAU (st = ‑1) : aucune station à lire, on retombe sur la première pour les types
+  // qui n'en ont pas besoin.
+  const vn::Station & s = g_model.st[a.st >= 0 ? a.st : 0];
   switch (a.type) {
+    case vn::AL_FLEET_MAINT:
+      snprintf(out, n, "%d v\xC3\xA9los hors service \xC2\xB7 %d %% du parc", a.value, a.minutes);
+      break;
     case vn::AL_EMPTY:
       if (a.minutes >= 0) { fmtDur(d, sizeof(d), a.minutes); snprintf(out, n, "Vide depuis %s", d); }
       else snprintf(out, n, "Plus aucun v\xC3\xA9lo");
@@ -51,7 +56,7 @@ const lv_img_dsc_t * alertIcon16(uint8_t t) {
     case vn::AL_FULL: return &ic_dock_16;
     case vn::AL_SOON_EMPTY: return &ic_trend_down_16;
     case vn::AL_SOON_FULL: return &ic_trend_up_16;
-    case vn::AL_MAINT_BIKES: case vn::AL_MAINT_DOCKS: return &ic_wrench_16;
+    case vn::AL_MAINT_BIKES: case vn::AL_MAINT_DOCKS: case vn::AL_FLEET_MAINT: return &ic_wrench_16;
     case vn::AL_FROZEN: return &ic_clock_16;
     case vn::AL_UNUSUAL: return &ic_activity_16;
     default: return &ic_ban_16;
@@ -64,7 +69,7 @@ Tone alertTone(const vn::Alert & a) {
     case vn::AL_FULL: return T_TRANSIT;
     case vn::AL_SOON_EMPTY: return T_WARN;
     case vn::AL_SOON_FULL: return T_ELEC;
-    case vn::AL_MAINT_BIKES: case vn::AL_MAINT_DOCKS: case vn::AL_FROZEN: return T_WARN;
+    case vn::AL_MAINT_BIKES: case vn::AL_MAINT_DOCKS: case vn::AL_FLEET_MAINT: case vn::AL_FROZEN: return T_WARN;
     case vn::AL_UNUSUAL: return T_ELEC;
     default: return T_CLOSED;
   }
@@ -88,7 +93,8 @@ static bool match(const vn::Alert & a) {
   switch (s_filter) {
     case 1: return a.type == vn::AL_EMPTY || a.type == vn::AL_FULL;
     case 2: return a.type == vn::AL_SOON_EMPTY || a.type == vn::AL_SOON_FULL;
-    case 3: return a.type >= vn::AL_MAINT_BIKES && a.type <= vn::AL_CLOSED;
+    case 3: return (a.type >= vn::AL_MAINT_BIKES && a.type <= vn::AL_CLOSED)
+                   || a.type == vn::AL_FLEET_MAINT;
     case 4: return a.type == vn::AL_UNUSUAL;
     default: return true;
   }
@@ -156,8 +162,8 @@ static void refresh() {
     lv_obj_set_style_bg_color(r.flash, t == T_CLOSED ? C(HX_CLOSED) : tc, 0);
     lv_img_set_src(r.ic, alertIcon16(a.type));
     iconColor(r.ic, tc);
-    const vn::Station & s = g_model.st[a.st];
-    snprintf(b, sizeof(b), "%s", s.name);
+    const vn::Station & s = g_model.st[a.st >= 0 ? a.st : 0];
+    snprintf(b, sizeof(b), "%s", a.st >= 0 ? s.name : "R\xC3\xA9seau");
     lv_label_set_text(r.name, b);
     alertWhy(a, b, sizeof(b));
     lv_label_set_text(r.why, b);
