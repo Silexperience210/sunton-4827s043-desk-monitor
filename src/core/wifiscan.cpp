@@ -44,8 +44,17 @@ void buildWifiList(const WifiRaw * raw, int nRaw, WifiList & out) {
 
 ScanStep scanVerdict(int code, int attempt) {
   if (code >= 0) return SCAN_OK;
-  if (code == -1 && attempt + 1 < VN_SCAN_TRIES) return SCAN_RETRY;
-  return SCAN_FAIL;
+  // -1 (balayage précédent pas rendu la main) et -2 (refus du pilote, typiquement parce
+  // que la station s'associait) se réessaient : l'association est suspendue entre-temps,
+  // donc un refus ne dure pas. Au-delà du budget, on rend l'échec au lieu de boucler.
+  return attempt + 1 < VN_SCAN_TRIES ? SCAN_RETRY : SCAN_FAIL;
+}
+
+ScanPlan scanPlan(bool connected, bool hasSsid) {
+  ScanPlan p;
+  p.suspend = !connected;             // associée : le balayage d'arrière-plan est accepté
+  p.resume = !connected && hasSsid;   // à froid (aucun réseau enregistré), rien à relancer
+  return p;
 }
 
 } // namespace vn

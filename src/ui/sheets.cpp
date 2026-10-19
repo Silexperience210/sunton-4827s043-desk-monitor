@@ -101,14 +101,14 @@ static void kbClose() {
 static void doConnect() {
   if (!s_selSsid[0]) return;
   const char * pass = s_wTa ? lv_textarea_get_text(s_wTa) : "";
-  snprintf(g_set.ssid, sizeof(g_set.ssid), "%s", s_selSsid);
-  snprintf(g_set.pass, sizeof(g_set.pass), "%s", pass);
-  vn::settingsSave();
-  net::connect(g_set.ssid, g_set.pass);
+  // Rien n'est enregistré ici : une faute de frappe deviendrait le réseau du démarrage et la
+  // carte resterait à s'associer sans pouvoir en balayer un autre. La tâche réseau enregistre
+  // le réseau une fois l'association réussie.
+  net::connect(s_selSsid, pass);
   kbClose();
   sheetClose();
   char m[64];
-  snprintf(m, sizeof(m), "Connexion \xC3\xA0 %s en cours\xE2\x80\xA6", g_set.ssid);
+  snprintf(m, sizeof(m), "Connexion \xC3\xA0 %s en cours\xE2\x80\xA6", s_selSsid);
   toast("Wi-Fi", m, T_ACCENT, &ic_wifi_16);
 }
 
