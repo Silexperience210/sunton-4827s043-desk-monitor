@@ -395,9 +395,14 @@ static void task(void *) {
         plat::logf("[wifi] r\xC3\xA9seau enregistr\xC3\xA9 : \xC2\xAB %s \xC2\xBB (%s)", g_set.ssid, ok ? "ok" : "\xC3\xA9" "chec");
       }
     }
-    else if (!up && wasUp)
-      plat::logf("[wifi] d\xC3\xA9" "connexion de \xC2\xAB %s \xC2\xBB : %s (code %d)", s_status.ssid,
-                 vn::assocCauseText(vn::assocCause(reason)), reason);
+    else if (!up && wasUp) {
+      // Code 0 = raison non spécifiée : c'est notre propre changement de réseau
+      // (WiFi.disconnect de wifiStart), pas une perte. Le journaliser comme un « délai
+      // dépassé » faisait croire à une panne à chaque fois qu'on changeait volontairement.
+      if (reason)
+        plat::logf("[wifi] d\xC3\xA9" "connexion de \xC2\xAB %s \xC2\xBB : %s (code %d)", s_status.ssid,
+                   vn::assocCauseText(vn::assocCause(reason)), reason);
+    }
     else if (!up && disc != discSeen && (!discLogAt || millis() - discLogAt >= 30000)) {
       // L'auto-reconnexion du framework réessaie sans fin : une ligne toutes les 30 s au plus
       plat::logf("[wifi] association \xC2\xAB %s \xC2\xBB refus\xC3\xA9" "e : %s (code %d, %u refus)", s_status.ssid,

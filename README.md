@@ -178,8 +178,18 @@ du pilote est réessayé au lieu d'être pris pour un échec définitif. Deux co
 
 - le réseau saisi à l'écran n'est **enregistré qu'une fois l'association réussie** : une faute de
   frappe ne devient plus le réseau du démarrage ;
+- **plus de plantage à la validation du mot de passe** : la feuille et son clavier étaient détruits
+  par deux suppressions différées, dans un ordre qui laissait le clavier écrire dans un objet déjà
+  libéré — l'écran redémarrait avant toute tentative d'association, ce qui interdisait de changer de
+  réseau ;
+- le journal série ne dit plus « déconnexion … délai dépassé » quand la carte coupe elle-même pour
+  changer de réseau ;
 - le journal série dit ce qui s'est passé : `association suspendue`, `réseau enregistré : « X »`,
   `réseau « X » NON enregistré : l'ancien réseau reste celui du démarrage`.
+
+Recette faite sur la carte : recherche associée (5 réseaux), changement pour « Bitcoin » avec
+enregistrement après succès, mot de passe refusé (code 15) puis **recherche non associée réussie**
+(`5 bornes, 4 réseaux listés … association suspendue puis reprise`), et retour au réseau enregistré.
 
 1. **Sauvegarder la partition de fichiers** (lecture seule ; refuse d'écraser une sauvegarde, et vérifie
    la taille et le superbloc LittleFS — code de sortie ≠ 0 : ne pas flasher) :
@@ -366,7 +376,11 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision dump_sim
-./test_core ../docs/donnees     # 954 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 954 vérifications — ATTENTION : une vérification préexistante échoue
+                                 # (« nuit en cours, relevé courant maximal », test_core.cpp:359), héritée
+                                 # du changement de règle de validité de 46a944a : le test affirme l'ancienne
+                                 # règle (nuit ⇒ valide), que « le quart le moins actif » a remplacée. À trancher,
+                                 # pas à contourner. Les 953 autres passent.
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2, v3 → v4),
                                  # écart habituel (dispersion apprise, affichée pour information, textes de l'écart),
