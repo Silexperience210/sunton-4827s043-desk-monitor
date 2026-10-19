@@ -51,10 +51,14 @@ version.
 - retour au réseau enregistré : association en 3,4 s, relevés `148 stations` repris ;
 - aucun `Guru Meditation`, aucun incident au démarrage sur toute la session.
 
-## Limite connue, dite telle quelle
+## Banc de tests : dette réglée juste après le tag
 
-Le banc du simulateur compte **954 vérifications, dont une en échec préexistant** :
-« nuit en cours, relevé courant maximal » (`sim/test_core.cpp:359`). Ce test date de la 1.0.6 et
-affirme l'ancienne règle de validité (creux de nuit dans une plage horaire), que la règle « quart le
-moins actif » a remplacée en `46a944a`. Il est vérifié en échec sur `main` **sans** les changements de
-cette version : c'est une dette de test, pas une régression de la 1.2.1. Les 953 autres passent.
+Le tag porte le binaire **inchangé**, mais son commit avait encore un test obsolète en échec :
+« nuit en cours, relevé courant maximal » (`sim/test_core.cpp:359`). Ce test datait de la 1.0.6 et
+affirmait l'ancienne règle de validité (creux de nuit dans une plage horaire), que la règle « quart le
+moins actif » a remplacée en `46a944a` — la CI était donc rouge depuis ce commit, 1.2.0 comprise.
+
+Corrigé **sur `main`, après le tag** (on ne déplace pas un tag publié) : le test fige maintenant la
+règle réelle — dans ce scénario, la valeur s'affiche **provisoire** et n'est pas validée, puisqu'aucun
+instant de référence n'est plus calme que le relevé courant. Banc : **955 vérifications, 0 échec**.
+Aucun fichier du firmware n'est touché : les deux binaires de cette release restent ceux à flasher.

@@ -341,8 +341,11 @@ static void testParc() {
     CHECK(m.tot.actValid, "activité sur 1 h disponible");
   }
 
-  // (d) en pleine nuit, le relevé courant EST le maximum (les vélos rentrent encore) :
-  //     il doit compter comme creux de nuit, sinon la tuile afficherait « — » chaque nuit.
+  // (d) en pleine nuit, le relevé courant EST le maximum : aucun instant de référence n'est
+  //     alors PLUS CALME que lui. La valeur s'affiche quand même, marquée « provisoire » (une
+  //     tuile muette n'apprend rien), mais elle ne peut pas être validée. Ce test fige la règle
+  //     de 46a944a — la validité vient d'un creux d'activité RÉELLEMENT observé, plus d'une
+  //     plage horaire (l'ancienne règle « entre 01 h et 05 h » datait de la 1.0.6).
   {
     static Model m;
     CHECK(m.init(), "init parc (nuit en cours)");
@@ -356,7 +359,8 @@ static void testParc() {
       for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, last, 20);
       m.applyStatus(sr, 3, t);
     }
-    CHECK(m.tot.inUseValid, "nuit en cours, relevé courant maximal : en-trajet VALIDE");
+    CHECK(!m.tot.inUseValid && m.tot.inUseProvisional,
+          "nuit en cours, relevé courant maximal : valeur affichée, marquée provisoire");
     CHECK(m.tot.fleet == 3 * last, "parc = relevé courant (%d), obtenu %d", 3 * last, m.tot.fleet);
   }
 }

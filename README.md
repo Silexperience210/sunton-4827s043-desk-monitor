@@ -376,11 +376,7 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision dump_sim
-./test_core ../docs/donnees     # 954 vérifications — ATTENTION : une vérification préexistante échoue
-                                 # (« nuit en cours, relevé courant maximal », test_core.cpp:359), héritée
-                                 # du changement de règle de validité de 46a944a : le test affirme l'ancienne
-                                 # règle (nuit ⇒ valide), que « le quart le moins actif » a remplacée. À trancher,
-                                 # pas à contourner. Les 953 autres passent.
+./test_core ../docs/donnees     # 955 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2, v3 → v4),
                                  # écart habituel (dispersion apprise, affichée pour information, textes de l'écart),
