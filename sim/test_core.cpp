@@ -1607,15 +1607,27 @@ static void testWifiScan() {
     buildWifiList(&r, 1, L);
     CHECK(L.n == 1 && strlen(L.net[0].ssid) == 32, "SSID de 32 octets intact");
   }
-  // Codes du framework : ‑1 (WIFI_SCAN_RUNNING) se réessaie, ‑2 (WIFI_SCAN_FAILED) échoue.
+  // Codes du framework : ‑1 (balayage précédent pas rendu la main) ET ‑2 (refus du pilote
+  // pendant une association) se réessaient ; au-delà du budget, échec.
   CHECK(scanVerdict(0, 0) == SCAN_OK && scanVerdict(12, 0) == SCAN_OK, "≥ 0 → terminé");
   CHECK(scanVerdict(-1, 0) == SCAN_RETRY, "‑1 à la 1ʳᵉ tentative → réessai");
-  CHECK(scanVerdict(-2, 0) == SCAN_FAIL, "‑2 → échec immédiat, sans réessai");
-  CHECK(scanVerdict(-1, 0) != scanVerdict(-2, 0), "‑1 et ‑2 traités différemment");
-  int tries = 1;                                   // radio toujours « en cours » : boucle de doScan()
-  for (int a = 0; scanVerdict(-1, a) == SCAN_RETRY; a++) tries++;
-  CHECK(tries == VN_SCAN_TRIES && scanVerdict(-1, VN_SCAN_TRIES - 1) == SCAN_FAIL,
-        "‑1 persistant → %d tentatives puis échec (%d)", VN_SCAN_TRIES, tries);
+  CHECK(scanVerdict(-2, 0) == SCAN_RETRY, "‑2 (association en cours) → réessai, pas échec immédiat");
+  CHECK(scanVerdict(-1, VN_SCAN_TRIES - 1) == SCAN_FAIL && scanVerdict(-2, VN_SCAN_TRIES - 1) == SCAN_FAIL,
+        "‑1 et ‑2 au dernier essai → échec");
+  int tries = 1;                                   // refus permanent : boucle de doScan()
+  for (int a = 0; scanVerdict(-2, a) == SCAN_RETRY; a++) tries++;
+  CHECK(tries == VN_SCAN_TRIES, "‑2 persistant → %d tentatives puis échec (%d)", VN_SCAN_TRIES, tries);
+  // Plan de balayage : le pilote refuse de balayer pendant une association, on la suspend
+  // donc quand la carte n'est pas associée — et on ne la relance que s'il y a un réseau.
+  {
+    ScanPlan a = scanPlan(true, true);
+    CHECK(!a.suspend && !a.resume, "associée → rien à suspendre, rien à relancer");
+    ScanPlan b = scanPlan(false, true);
+    CHECK(b.suspend && b.resume, "non associée avec réseau enregistré → suspendre puis relancer");
+    ScanPlan c = scanPlan(false, false);
+    CHECK(c.suspend && !c.resume, "à froid (aucun réseau) → suspendre, rien à relancer");
+    CHECK(scanPlan(true, false).suspend == false, "associée sans réseau enregistré → pas de suspension");
+  }
 }
 
 // ── Résumés par jour (core/days) et vue « Service » (core/service) ───

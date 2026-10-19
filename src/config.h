@@ -3,7 +3,7 @@
 // Cible : Sunton ESP32-4827S043 (ESP32-S3 N16R8, dalle RGB 480×272, tactile)
 #pragma once
 
-#define VN_VERSION      "1.2.0"
+#define VN_VERSION      "1.2.1"
 #define VN_NAME         "VelohNav Ops"
 
 // ── Données ──────────────────────────────────────────────────────────
@@ -38,5 +38,8 @@
 
 // ── Recherche Wi-Fi (voir core/wifiscan.h) ───────────────────────────
 #define VN_SCAN_MAX        40   // réseaux affichés (après dédoublonnage et tri ; au-delà, les plus faibles)
-#define VN_SCAN_TRIES       4   // tentatives quand la radio répond « balayage déjà en cours » (‑1)
-#define VN_SCAN_RETRY_MS 1500   // attente entre deux tentatives
+#define VN_SCAN_TRIES       5   // tentatives quand la radio répond « en cours » (‑1) ou « refusé » (‑2) :
+                                // 4 × 1,5 s couvrent le délai interne du framework (6 s) après lequel
+                                // scanComplete() libère un drapeau « en cours » resté levé
+#define VN_SCAN_RETRY_MS 1500   // attente entre deux tentatives « en cours »
+#define VN_SCAN_SETTLE_MS  150  // délai après la suspension de l'association (la radio doit rendre la main)

@@ -24,6 +24,10 @@ static Status s_status;
 static volatile bool s_refreshReq = false, s_scanReq = false, s_connectReq = false;
 static char s_newSsid[33], s_newPass[65];
 static volatile int s_scanCount = -2;            // ‑2 : rien, ‑1 : échec, ≥ 0 : terminé
+// Le réseau saisi à l'écran n'est enregistré qu'une fois l'association RÉUSSIE : l'écrire
+// d'emblée faisait d'une faute de frappe le réseau du démarrage, et la carte bouclait en
+// association sans pouvoir en découvrir un autre (voir connect()).
+static volatile bool s_persistReq = false;
 static vn::WifiList s_scan;                      // écrit par doScan() AVANT s_scanCount
 
 static char * s_buf = nullptr;                   // réponse HTTP (PSRAM)
@@ -68,6 +72,7 @@ void connect(const char * ssid, const char * pass) {
   s_newSsid[sizeof(s_newSsid) - 1] = 0;
   strncpy(s_newPass, pass ? pass : "", sizeof(s_newPass) - 1);
   s_newPass[sizeof(s_newPass) - 1] = 0;
+  s_persistReq = true;            // enregistré seulement si l'association réussit
   s_connectReq = true;
 }
 
@@ -227,28 +232,45 @@ static void saveHistory() {
 }
 
 // ── Recherche des réseaux ────────────────────────────────────────────
-// Balayage ACTIF sur la connexion en place : ESP-IDF le prévoit (« background scan »,
-// la station quitte son canal entre deux canaux balayés puis y revient) ; se
-// déconnecter d'abord serait pire, car l'auto-reconnexion remettrait la station
-// « en cours de connexion », état où esp_wifi_scan_start() échoue d'emblée.
+// Le pilote REFUSE tout balayage pendant qu'une association est en cours
+// (ESP_ERR_WIFI_STATE, « wifi still connecting »), et l'auto-reconnexion du framework
+// relance `disconnect + begin` à chaque raison reconnectable : tant que le réseau
+// enregistré est injoignable (borne absente, mot de passe erroné), la station passe son
+// temps à s'associer et la recherche échouait à chaque fois — la carte ne pouvait plus
+// découvrir un autre réseau, donc plus en changer. On suspend donc l'association le temps
+// du balayage (voir vn::scanPlan) : une déconnexion volontaire donne ASSOC_LEAVE, que le
+// framework ne reconnecte pas, et la reprise se fait juste après.
 // show_hidden = true : les bornes masquées remontent avec un SSID vide ; elles sont
 // comptées, pas listées (voir core/wifiscan.h).
 static void doScan() {
   uint32_t t0 = millis();
+  vn::ScanPlan plan = vn::scanPlan(WiFi.status() == WL_CONNECTED, g_set.ssid[0] != 0);
+  if (plan.suspend) {
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, false);        // interrompt la tentative, garde la configuration
+    delay(VN_SCAN_SETTLE_MS);             // la radio doit rendre la main avant le balayage
+  }
   int tries = 1;
   int n = WiFi.scanNetworks(false, true);
-  // ‑1 = un balayage précédent n'a pas rendu la main (typiquement : l'attente bloquante
-  // de 10 s du framework a expiré avant l'événement de fin, et son drapeau « en cours »
-  // est resté levé). scanComplete() rend alors ses résultats s'ils sont arrivés, ou
-  // abaisse le drapeau périmé et rend ‑2 : on relance. ‑2 d'emblée = vrai échec.
+  // ‑1 = un balayage précédent n'a pas rendu la main (l'attente bloquante de 10 s du
+  // framework a expiré, son drapeau « en cours » est resté levé) ; ‑2 = le pilote a
+  // refusé. Les deux se réessaient : scanComplete() rend les résultats s'ils sont
+  // arrivés, ou abaisse le drapeau périmé et rend ‑2, et on relance.
   for (int a = 0; vn::scanVerdict(n, a) == vn::SCAN_RETRY; a++) {
-    delay(VN_SCAN_RETRY_MS);
+    delay(n == WIFI_SCAN_RUNNING ? VN_SCAN_RETRY_MS : 200);
     tries++;
     n = WiFi.scanComplete();
-    if (n == WIFI_SCAN_FAILED) n = WiFi.scanNetworks(false, true);
+    if (n < 0) n = WiFi.scanNetworks(false, true);
+  }
+  if (plan.suspend) {
+    WiFi.setAutoReconnect(true);          // rendue à l'auto-reconnexion dans tous les cas : à froid
+                                          // (aucun réseau) il n'y a rien à relancer, mais la carte ne
+                                          // doit pas rester sans reconnexion une fois un réseau choisi
+    if (plan.resume) WiFi.begin();        // reprend l'association avec la configuration du pilote
   }
   if (n < 0) {
-    plat::logf("[wifi] recherche : \xC3\xA9" "chec %d apr\xC3\xA8s %d tentative(s), %u ms", n, tries, (unsigned)(millis() - t0));
+    plat::logf("[wifi] recherche : \xC3\xA9" "chec %d apr\xC3\xA8s %d tentative(s), %u ms%s", n, tries,
+               (unsigned)(millis() - t0), plan.suspend ? ", association suspendue" : "");
     s_scanCount = -1;
     return;
   }
@@ -270,9 +292,10 @@ static void doScan() {
   vn::buildWifiList(raw, n, s_scan);
   if (raw) heap_caps_free(raw);
   // Chiffres à relever sur la carte : bornes brutes, réseaux, masqués, durée, tentatives
-  plat::logf("[wifi] recherche : %d bornes, %d r\xC3\xA9seaux list\xC3\xA9s, %d masqu\xC3\xA9" "es, %d \xC3\xA9" "cart\xC3\xA9s, %u ms, %d tentative(s), %s",
+  plat::logf("[wifi] recherche : %d bornes, %d r\xC3\xA9seaux list\xC3\xA9s, %d masqu\xC3\xA9" "es, %d \xC3\xA9" "cart\xC3\xA9s, %u ms, %d tentative(s), %s%s",
              n, s_scan.n, s_scan.hidden, s_scan.dropped, (unsigned)(millis() - t0), tries,
-             WiFi.status() == WL_CONNECTED ? "associ\xC3\xA9" : "non associ\xC3\xA9");
+             WiFi.status() == WL_CONNECTED ? "associ\xC3\xA9" : "non associ\xC3\xA9",
+             plan.suspend ? (plan.resume ? ", association suspendue puis reprise" : ", association suspendue") : "");
   s_scanCount = s_scan.n;
 }
 
@@ -360,12 +383,26 @@ static void task(void *) {
     uint8_t reason = s_discReason;
     uint32_t disc = s_discCount;
     WifiState before = s_status.wifi;              // écrit par cette seule tâche : lecture sans verrou
-    if (up && !wasUp)
+    if (up && !wasUp) {
       plat::logf("[wifi] association ok : \xC2\xAB %s \xC2\xBB, IP %s, %d dBm, canal %d, en %u ms", ssid, ip, rssi,
                  (int)WiFi.channel(), (unsigned)(millis() - wifiSince));
-    else if (!up && wasUp)
-      plat::logf("[wifi] d\xC3\xA9" "connexion de \xC2\xAB %s \xC2\xBB : %s (code %d)", s_status.ssid,
-                 vn::assocCauseText(vn::assocCause(reason)), reason);
+      // Réseau choisi à l'écran : c'est seulement maintenant qu'il est enregistré.
+      if (s_persistReq) {
+        s_persistReq = false;
+        snprintf(g_set.ssid, sizeof(g_set.ssid), "%s", s_newSsid);
+        snprintf(g_set.pass, sizeof(g_set.pass), "%s", s_newPass);
+        bool ok = vn::settingsSave();
+        plat::logf("[wifi] r\xC3\xA9seau enregistr\xC3\xA9 : \xC2\xAB %s \xC2\xBB (%s)", g_set.ssid, ok ? "ok" : "\xC3\xA9" "chec");
+      }
+    }
+    else if (!up && wasUp) {
+      // Code 0 = raison non spécifiée : c'est notre propre changement de réseau
+      // (WiFi.disconnect de wifiStart), pas une perte. Le journaliser comme un « délai
+      // dépassé » faisait croire à une panne à chaque fois qu'on changeait volontairement.
+      if (reason)
+        plat::logf("[wifi] d\xC3\xA9" "connexion de \xC2\xAB %s \xC2\xBB : %s (code %d)", s_status.ssid,
+                   vn::assocCauseText(vn::assocCause(reason)), reason);
+    }
     else if (!up && disc != discSeen && (!discLogAt || millis() - discLogAt >= 30000)) {
       // L'auto-reconnexion du framework réessaie sans fin : une ligne toutes les 30 s au plus
       plat::logf("[wifi] association \xC2\xAB %s \xC2\xBB refus\xC3\xA9" "e : %s (code %d, %u refus)", s_status.ssid,
@@ -394,9 +431,12 @@ static void task(void *) {
     if (timeOk && !s_status.timeSyncAt) s_status.timeSyncAt = now;
     WifiState after = s_status.wifi;
     portEXIT_CRITICAL(&s_mux);
-    if (after == W_FAILED && before != W_FAILED)
+    if (after == W_FAILED && before != W_FAILED) {
       plat::logf("[wifi] association \xC2\xAB %s \xC2\xBB \xC3\xA9" "chou\xC3\xA9" "e apr\xC3\xA8s 20 s : %s (code %d) \xE2\x80\x94 aucune r\xC3\xA9" "cup\xC3\xA9ration tant que le Wi-Fi manque",
                  s_status.ssid, vn::assocCauseText(vn::assocCause(reason)), reason);
+      if (s_persistReq)
+        plat::logf("[wifi] r\xC3\xA9seau \xC2\xAB %s \xC2\xBB NON enregistr\xC3\xA9 : l'ancien r\xC3\xA9seau reste celui du d\xC3\xA9marrage", s_newSsid);
+    }
     if (timeOk && !timeLogged) {
       timeLogged = true;
       plat::logf("[net] heure NTP synchronis\xC3\xA9" "e");

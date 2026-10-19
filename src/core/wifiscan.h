@@ -43,11 +43,29 @@ void buildWifiList(const WifiRaw * raw, int nRaw, WifiList & out);
 
 // Que faire du code rendu par WiFi.scanNetworks() / scanComplete() ?
 //  ≥ 0 : nombre de bornes → SCAN_OK ;
-//  ‑1 (WIFI_SCAN_RUNNING) : un balayage précédent n'a pas fini → SCAN_RETRY tant
-//        que attempt + 1 < VN_SCAN_TRIES, puis SCAN_FAIL ;
-//  ‑2 (WIFI_SCAN_FAILED) ou autre négatif : la radio a refusé → SCAN_FAIL tout de suite.
+//  ‑1 (WIFI_SCAN_RUNNING) : un balayage précédent n'a pas fini ; ‑2 (WIFI_SCAN_FAILED) :
+//        le pilote a refusé — typiquement parce que la station était en train de
+//        s'associer (ESP_ERR_WIFI_STATE, « wifi still connecting »). Les deux se
+//        réessaient tant que le budget de tentatives n'est pas épuisé, puis SCAN_FAIL.
 // attempt : numéro de la tentative qui vient de rendre ce code (0 = la première).
 enum ScanStep : uint8_t { SCAN_OK, SCAN_RETRY, SCAN_FAIL };
 ScanStep scanVerdict(int code, int attempt);
+
+// Faut-il suspendre l'association avant de balayer, et la relancer ensuite ?
+// Le pilote REFUSE tout balayage pendant qu'une association est en cours, et le framework
+// relance `disconnect + begin` à chaque raison reconnectable : quand le réseau enregistré
+// est injoignable (ou dès qu'un mot de passe a été saisi de travers), la station passe son
+// temps à s'associer et le balayage échoue à chaque fois — la carte ne peut alors plus
+// découvrir un autre réseau, donc plus en changer. On met donc l'association en pause le
+// temps du balayage ; une déconnexion volontaire donne ASSOC_LEAVE, que le framework ne
+// reconnecte pas.
+//   connected = la carte est associée (WL_CONNECTED) : le balayage d'arrière-plan est
+//               accepté tel quel, rien à toucher ;
+//   hasSsid   = un réseau est enregistré : il faut le relancer après le balayage.
+struct ScanPlan {
+  bool suspend;   // couper l'auto-reconnexion et déconnecter avant de balayer
+  bool resume;    // relancer l'association après le balayage
+};
+ScanPlan scanPlan(bool connected, bool hasSsid);
 
 } // namespace vn

@@ -165,6 +165,32 @@ Revenir en arrière sans sauvegarde, c'est repartir d'un profil vide. Donc :
 > reste en v2) : elle se flashe par-dessus et retrouve l'historique, les profils et les résumés tels
 > quels. C'est la 1.1.0 qui a introduit les formats actuels.
 
+> **1.2.0 → 1.2.1 : aucune migration.** La 1.2.1 ne change que la recherche Wi-Fi (voir plus bas) :
+> même flash par-dessus, mêmes fichiers relus à l'identique.
+
+#### 1.2.1 — la recherche Wi-Fi fonctionne aussi sans réseau
+
+Le pilote refuse tout balayage **pendant qu'une association est en cours**, et la carte, quand son
+réseau enregistré est injoignable, passait son temps à s'associer : la recherche échouait alors
+systématiquement, si bien qu'on ne pouvait plus découvrir — donc plus choisir — un autre réseau.
+La recherche **suspend maintenant l'association le temps du balayage** puis la relance, et un refus
+du pilote est réessayé au lieu d'être pris pour un échec définitif. Deux corrections liées :
+
+- le réseau saisi à l'écran n'est **enregistré qu'une fois l'association réussie** : une faute de
+  frappe ne devient plus le réseau du démarrage ;
+- **plus de plantage à la validation du mot de passe** : la feuille et son clavier étaient détruits
+  par deux suppressions différées, dans un ordre qui laissait le clavier écrire dans un objet déjà
+  libéré — l'écran redémarrait avant toute tentative d'association, ce qui interdisait de changer de
+  réseau ;
+- le journal série ne dit plus « déconnexion … délai dépassé » quand la carte coupe elle-même pour
+  changer de réseau ;
+- le journal série dit ce qui s'est passé : `association suspendue`, `réseau enregistré : « X »`,
+  `réseau « X » NON enregistré : l'ancien réseau reste celui du démarrage`.
+
+Recette faite sur la carte : recherche associée (5 réseaux), changement pour « Bitcoin » avec
+enregistrement après succès, mot de passe refusé (code 15) puis **recherche non associée réussie**
+(`5 bornes, 4 réseaux listés … association suspendue puis reprise`), et retour au réseau enregistré.
+
 1. **Sauvegarder la partition de fichiers** (lecture seule ; refuse d'écraser une sauvegarde, et vérifie
    la taille et le superbloc LittleFS — code de sortie ≠ 0 : ne pas flasher) :
    ```bash
@@ -190,7 +216,9 @@ Ensuite l'écran de configuration **Wi-Fi** s'ouvre : choisir le réseau, saisir
 valider (✓). Pour pré-remplir les identifiants, copier `include/secrets.h.example` en
 `include/secrets.h`. L'heure est synchronisée par NTP (fuseau Luxembourg, heure d'été gérée), puis
 les stations s'affichent en quelques secondes. Si le réseau enregistré est injoignable, l'écran Wi-Fi
-se rouvre de lui-même.
+se rouvre de lui-même. La recherche fonctionne **même sans aucune association** (carte neuve, réseau
+absent, mot de passe erroné) : l'association est suspendue le temps du balayage puis reprise, donc on
+peut toujours découvrir un autre réseau et en changer.
 
 ## Boîtier imprimé 3D (bureau ou mural)
 
@@ -348,13 +376,17 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision dump_sim
-./test_core ../docs/donnees     # 951 vérifications : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 954 vérifications — ATTENTION : une vérification préexistante échoue
+                                 # (« nuit en cours, relevé courant maximal », test_core.cpp:359), héritée
+                                 # du changement de règle de validité de 46a944a : le test affirme l'ancienne
+                                 # règle (nuit ⇒ valide), que « le quart le moins actif » a remplacée. À trancher,
+                                 # pas à contourner. Les 953 autres passent.
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2, v3 → v4),
                                  # écart habituel (dispersion apprise, affichée pour information, textes de l'écart),
                                  # jours fériés (calendrier sourcé, Pâques sur 12 années, profil du dimanche),
                                  # mémoire du profil (décroissance exacte, relecture d'un profil d'une autre mémoire),
-                                 # liste Wi-Fi (tri, dédoublonnage, masqués, réessais),
+                                 # liste Wi-Fi (tri, dédoublonnage, masqués, réessais, suspension de l'association),
                                  # vue Service (résumés par jour, disponibilité, détecteur de récurrent sur un monde
                                  # à vérité connue, /vn_days.bin : migration et fichiers abîmés),
                                  # vidage série « dump » (CRC32, base64, émetteur, lecteur de commandes)
