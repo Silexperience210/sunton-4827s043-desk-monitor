@@ -105,7 +105,11 @@ static void doConnect() {
   // carte resterait à s'associer sans pouvoir en balayer un autre. La tâche réseau enregistre
   // le réseau une fois l'association réussie.
   net::connect(s_selSsid, pass);
-  kbClose();
+  // Ne PAS appeler kbClose() avant sheetClose() : les deux passent par lv_obj_del_async, et
+  // LVGL empile les minuteurs en tête (lv_timer.c:171) — la feuille, créée en second, est donc
+  // détruite la PREMIÈRE, avec le clavier dans ses enfants. Le rappel différé du clavier
+  // s'exécute ensuite sur un objet déjà libéré : Guru Meditation (LoadProhibited) garanti.
+  // La feuille emporte le clavier ; son rappel LV_EVENT_DELETE remet s_kb à zéro.
   sheetClose();
   char m[64];
   snprintf(m, sizeof(m), "Connexion \xC3\xA0 %s en cours\xE2\x80\xA6", s_selSsid);
