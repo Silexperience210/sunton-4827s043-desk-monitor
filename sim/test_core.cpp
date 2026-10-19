@@ -363,6 +363,27 @@ static void testParc() {
           "nuit en cours, relevé courant maximal : valeur affichée, marquée provisoire");
     CHECK(m.tot.fleet == 3 * last, "parc = relevé courant (%d), obtenu %d", 3 * last, m.tot.fleet);
   }
+
+  // (e) coupure de courant : trois relevés espacés de 6 h ne font PAS 18 h d'historique.
+  //     C'est le défaut qui a été signalé — « le device était hors tension 12 h » — et il venait
+  //     de mesurer l'ÉCART d'horloge au lieu de la profondeur observée. Ici : 3 tranches = 15 min
+  //     → ni validé, ni même provisoire, et histMinutes dit 15, pas 1080.
+  {
+    static Model m;
+    CHECK(m.init(), "init parc (coupure)");
+    const int64_t t0 = 1791842400 + 8 * 3600;             // 08:00
+    m.applyInfo(ir, 3, t0);
+    for (int k = 0; k < 3; k++) {
+      const int64_t t = t0 + k * 6 * 3600;                 // 08:00, 14:00, 20:00
+      for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, 8 + k * 4, 20);
+      m.applyStatus(sr, 3, t);
+    }
+    CHECK(!m.tot.inUseValid && !m.tot.inUseProvisional,
+          "3 relevés espacés de 6 h : ni validé ni provisoire (un écart d'horloge n'est pas un historique)");
+    CHECK(m.tot.histMinutes == 3 * (VN_RING_STEP_S / 60),
+          "profondeur observée = 3 tranches (%d min attendues, %d obtenues)",
+          3 * (VN_RING_STEP_S / 60), m.tot.histMinutes);
+  }
 }
 
 

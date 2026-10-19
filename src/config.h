@@ -29,6 +29,11 @@
 // ── Historique / prédiction ──────────────────────────────────────────
 #define VN_RING_SLOTS     288   // 24 h au pas de 5 min
 #define VN_RING_STEP_S    300
+// Profondeur d'historique RÉELLEMENT OBSERVÉE (tranches valides × 5 min, trous exclus) exigée
+// pour publier « vélos en trajet ». Une carte éteinte 12 h ne doit pas compter 12 h d'historique
+// sur trois relevés : un écart d'horloge n'est pas une observation.
+#define VN_INUSE_MIN_MIN  360   // validé : 6 h de tranches observées ET un creux (quart le moins actif)
+#define VN_INUSE_PROV_MIN  60   // provisoire : la valeur s'affiche dès 1 h observée, sans être validée
 #define VN_RECENT_SLOTS    60   // 60 min au pas de 1 min (tendance court terme)
 #define VN_PROFILE_DECAY_N 24   // constante de temps du profil en relevés (3 par semaine et par créneau) : 8 semaines
 #define VN_FC_STEPS        25   // prévision 0…120 min au pas de 5 min

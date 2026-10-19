@@ -921,11 +921,10 @@ void Model::recompute(int64_t now) {
   }
   const int tolCover = 1;                       // une station peut manquer le temps d'un relevé
   int fleet = curPark, refCover = liveNow, actN = 0;
-  int64_t fleetAt = 0, oldestValid = 0;
+  int64_t fleetAt = 0;
   for (int b = 0; b < count; b++) {
     const NetSample & ns = net[ringIndex(b)];
     if (ns.avail == 0xFFFF) continue;
-    oldestValid = ns.t;                         // b va du plus récent au plus ancien
     actN++;
     const uint8_t * row = ring + (size_t)ringIndex(b) * VN_MAX_ST;
     int cov = 0;
@@ -939,8 +938,11 @@ void Model::recompute(int64_t now) {
   t.inUse = fleet - curPark;
   if (t.inUse < 0) t.inUse = 0;
   t.fleetAt = fleetAt;
-  // Historique réellement disponible (des tranches manquantes ne comptent pas).
-  const int64_t histS = (oldestValid > 0 && oldestValid < now) ? (now - oldestValid) : 0;
+  // Historique réellement disponible : la PROFONDEUR OBSERVÉE, trous exclus. La version
+  // précédente mesurait l'écart entre la tranche la plus ancienne et la plus récente — une
+  // carte restée éteinte douze heures affichait donc « douze heures d'historique » avec trois
+  // relevés, et pouvait se déclarer validée dessus. Une coupure n'est pas de l'historique.
+  const int obsMin = actN * (VN_RING_STEP_S / 60);
   // « Calme » : la tranche de référence doit être dans le quart le moins actif de l'historique.
   bool quiet = false;
   if (fleetAt) {
@@ -961,9 +963,9 @@ void Model::recompute(int64_t now) {
     }
     quiet = (actN > 0) && (below * 4 <= actN); // dans le quart le plus bas
   }
-  t.inUseValid = (histS >= 6 * 3600) && quiet;
-  t.inUseProvisional = !t.inUseValid && (histS >= 6 * 3600);
-  t.histMinutes = (int)(histS / 60);
+  t.inUseValid = (obsMin >= VN_INUSE_MIN_MIN) && quiet;
+  t.inUseProvisional = !t.inUseValid && (obsMin >= VN_INUSE_PROV_MIN);
+  t.histMinutes = obsMin;
   t.refCover = refCover;
 
   // Activité sur 1 h glissante + variation
