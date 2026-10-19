@@ -163,7 +163,9 @@ bool provenance(const Model & m, int kpi, Provenance & p) {
     p.available = gbfs;
     if (!gbfs) p.missing = NO_STATUS;
   };
-  const int histMin = t.histSlots * VN_RING_STEP_S / 60;
+  // Profondeur RÉELLEMENT observée : `histSlots` compte les lignes de l'anneau, trous compris —
+  // l'afficher faisait dire « 1440 min » à une carte revenue après 12 h de coupure.
+  const int histMin = t.histMinutes;
   switch (kpi) {
     case KPI_BIKES:
       p.name = "V\xC3\xA9los disponibles";
@@ -201,9 +203,11 @@ bool provenance(const Model & m, int kpi, Provenance & p) {
                    : "Plus grand total (v\xC3\xA9los en station + v\xC3\xA9los HS) relev\xC3\xA9 dans "
                      "l'historique 5 min des derni\xC3\xA8res 24 h, sur les tranches o\xC3\xB9 autant de "
                      "stations r\xC3\xA9pondaient qu'aujourd'hui.";
-      p.validity = "Valid\xC3\xA9 : au moins 6 h d'historique ET un creux observ\xC3\xA9 (tranche de "
-                   "r\xC3\xA9f\xC3\xA9rence parmi le quart le moins actif). Avant le creux, la valeur est "
-                   "affich\xC3\xA9e en provisoire.";
+      p.validity = "Valid\xC3\xA9 : au moins 6 h de tranches R\xC3\x89ELLEMENT OBSERV\xC3\x89ES (les coupures "
+                   "et les tranches non comparables \xC3\xA0 la population courante ne comptent pas) ET un "
+                   "creux observ\xC3\xA9 (tranche de r\xC3\xA9f\xC3\xA9rence parmi le quart le moins actif). "
+                   "Tant que ces conditions ne sont pas r\xC3\xA9unies, la valeur est marqu\xC3\xA9e "
+                   "provisoire ici, et le tableau de bord affiche un tiret.";
       p.validityMet = t.inUseValid;
       p.refAt = t.fleetAt;
       status();
@@ -211,7 +215,7 @@ bool provenance(const Model & m, int kpi, Provenance & p) {
       char hh[8];
       if (gbfs && !t.inUseValid && !t.inUseProvisional) {
         p.available = false;
-        p.missing = "moins de 6 h d'historique : pas encore de quoi situer le parc";
+        p.missing = "moins de 6 h de relev\xC3\xA9s : pas encore de quoi situer le parc";
       }
       if (t.fleetAt) {
         hhmm(hh, sizeof(hh), t.fleetAt);

@@ -287,7 +287,7 @@ static void refresh() {
   else snprintf(b, sizeof(b), "%s", NO_DATA);
   lv_label_set_text(s_kpi[1].value, b);
   if (has && t.inUseValid) { fmtInt(c2, sizeof(c2), t.fleet); snprintf(b, sizeof(b), "parc \xE2\x89\x88 %s", c2); }
-  else snprintf(b, sizeof(b), "estimation apr\xC3\xA8s une nuit");
+  else snprintf(b, sizeof(b), "estimation apr\xC3\xA8s un creux observ\xC3\xA9");
   lv_label_set_text(s_kpi[1].sub, b);
   if (has) fmtInt(b, sizeof(b), t.docks); else snprintf(b, sizeof(b), "%s", NO_DATA);
   lv_label_set_text(s_kpi[2].value, b);

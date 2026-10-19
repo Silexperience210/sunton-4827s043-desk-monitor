@@ -363,6 +363,74 @@ static void testParc() {
           "nuit en cours, relevé courant maximal : valeur affichée, marquée provisoire");
     CHECK(m.tot.fleet == 3 * last, "parc = relevé courant (%d), obtenu %d", 3 * last, m.tot.fleet);
   }
+
+  // (e) coupure de courant : trois relevés espacés de 6 h ne font PAS 18 h d'historique.
+  //     C'est le défaut qui a été signalé — « le device était hors tension 12 h » — et il venait
+  //     de mesurer l'ÉCART d'horloge au lieu de la profondeur observée. Ici : 3 tranches = 15 min
+  //     → ni validé, ni même provisoire, et histMinutes dit 15, pas 1080.
+  {
+    static Model m;
+    CHECK(m.init(), "init parc (coupure)");
+    const int64_t t0 = 1791842400 + 8 * 3600;             // 08:00
+    m.applyInfo(ir, 3, t0);
+    for (int k = 0; k < 3; k++) {
+      const int64_t t = t0 + k * 6 * 3600;                 // 08:00, 14:00, 20:00
+      for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, 8 + k * 4, 20);
+      m.applyStatus(sr, 3, t);
+    }
+    CHECK(!m.tot.inUseValid && !m.tot.inUseProvisional,
+          "3 relevés espacés de 6 h : ni validé ni provisoire (un écart d'horloge n'est pas un historique)");
+    CHECK(m.tot.histMinutes == 3 * (VN_RING_STEP_S / 60),
+          "profondeur observée = 3 tranches (%d min attendues, %d obtenues)",
+          3 * (VN_RING_STEP_S / 60), m.tot.histMinutes);
+  }
+
+  // (f) couverture inégale : 24 h à trois stations, puis une heure à quatre. La profondeur ne
+  //     compte que les tranches COMPARABLES à la population courante — sinon on validerait le parc
+  //     sur une heure de données en affichant « hist. 24h00 ».
+  {
+    static Model m;
+    CHECK(m.init(), "init parc (couverture inégale)");
+    // Six stations apparaissent : la tolérance d'une station manquante (tolCover = 1) ne suffit
+    // plus à rendre comparables les tranches à deux stations.
+    InfoRec ir6[6] = { mkInfo("1", 49.60f, 6.13f, 20), mkInfo("2", 49.61f, 6.14f, 20),
+                       mkInfo("3", 49.62f, 6.15f, 20), mkInfo("4", 49.63f, 6.16f, 20),
+                       mkInfo("5", 49.64f, 6.17f, 20), mkInfo("6", 49.65f, 6.18f, 20) };
+    const int64_t t0 = 1791842400 + 6 * 3600;              // 06:00
+    m.applyInfo(ir6, 2, t0);
+    for (int64_t t = t0; t <= t0 + 24 * 3600; t += 300) {
+      for (int s = 0; s < 2; s++) sr[s] = mkStat(ir6[s].sid, 10, 20);
+      m.applyStatus(sr, 2, t);
+    }
+    m.applyInfo(ir6, 6, t0 + 24 * 3600);                   // quatre stations de plus
+    for (int64_t t = t0 + 24 * 3600; t <= t0 + 25 * 3600; t += 300) {
+      for (int s = 0; s < 6; s++) sr[s] = mkStat(ir6[s].sid, 10, 20);
+      m.applyStatus(sr, 6, t);
+    }
+    CHECK(!m.tot.inUseValid, "couverture inégale : pas de validation sur la seule heure comparable");
+    CHECK(m.tot.histMinutes <= 65,
+          "profondeur = tranches comparables seulement (%d min, pas 25 h)", m.tot.histMinutes);
+  }
+
+  // (g) recul d'horloge (resynchronisation NTP vers l'arrière) : la même tranche ne doit pas être
+  //     inscrite deux fois, sinon elle compterait double dans la profondeur observée.
+  {
+    static Model m;
+    CHECK(m.init(), "init parc (recul d'horloge)");
+    const int64_t t0 = 1791842400 + 6 * 3600;              // 06:00
+    m.applyInfo(ir, 3, t0);
+    for (int64_t t = t0; t <= t0 + 3600; t += 300) {
+      for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, 10, 20);
+      m.applyStatus(sr, 3, t);
+    }
+    const int before = m.tot.histMinutes;
+    for (int64_t t = t0 + 3600 - 600; t <= t0 + 3600; t += 300) {   // horloge reculée de 10 min
+      for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, 10, 20);
+      m.applyStatus(sr, 3, t);
+    }
+    CHECK(m.tot.histMinutes == before,
+          "recul d'horloge : profondeur inchangée (%d min → %d min)", before, m.tot.histMinutes);
+  }
 }
 
 
