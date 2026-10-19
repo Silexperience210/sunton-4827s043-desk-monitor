@@ -171,13 +171,13 @@ struct Totals {
   int refCover;                // stations couvertes par la tranche de référence
   int64_t fleetAt;             // instant du maximum retenu (0 = le relevé courant)
   int dep1h, ret1h;            // activité sur 60 min glissantes
-  bool actValid;               // au moins 1 h de relevés (sinon les compteurs sont vides)
+  bool actValid;               // 12 tranches réellement renseignées = 1 h pleine (sinon compteurs vides)
   int delta1h;                 // variation des vélos dispo sur 1 h (‑ = sorties nettes)
   bool deltaValid;             // au moins 1 h de recul pour la comparer
   float fillPct, balancePct;
   int need, surplus;           // somme des besoins / excédents (stations en tension)
   int nRenting, nReturning;    // stations ouvertes sommées dans bikes / docks
-  int histSlots;               // profondeur d'historique 5 min parcourue pour le parc
+  int histSlots;               // lignes de l'anneau parcourues, TROUS COMPRIS (ne pas afficher tel quel)
 };
 
 struct Alert {

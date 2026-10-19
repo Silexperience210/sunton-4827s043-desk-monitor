@@ -168,6 +168,36 @@ Revenir en arrière sans sauvegarde, c'est repartir d'un profil vide. Donc :
 > **1.2.0 → 1.2.1 : aucune migration.** La 1.2.1 ne change que la recherche Wi-Fi (voir plus bas) :
 > même flash par-dessus, mêmes fichiers relus à l'identique.
 
+> **1.2.1 → 1.2.2 : aucune migration.** La 1.2.2 ne change qu'un critère de calcul (voir plus bas) :
+> mêmes fichiers, mêmes formats.
+
+#### 1.2.2 — « vélos en trajet » : une profondeur d'historique RÉELLEMENT observée
+
+Signalé par le propriétaire : « le device était hors tension 12 h ». La validité du chiffre et la
+ligne `hist. Xh YY` venaient de l'**écart d'horloge** entre la tranche la plus ancienne et la plus
+récente de l'anneau : une carte éteinte douze heures affichait donc douze heures d'historique avec
+trois relevés, et pouvait se déclarer validée dessus. Une coupure n'est pas une observation.
+
+Désormais la profondeur est celle des tranches **réellement renseignées et comparables** à la
+population courante (× 5 min, trous, coupures et changements de couverture exclus) : validé à
+**6 h observées** *et* un creux ; le provisoire garde son seuil, seule la mesure change — aucune
+décision produit n'est prise au passage.
+
+Trois autres endroits mentaient de la même façon et sont corrigés :
+
+- **fiche « Variation sur 1 h »** : « Historique disponible : 1440 min » après une coupure, alors que
+  la carte n'avait que 145 tranches — elle affiche maintenant la profondeur observée ;
+- **tuile d'activité du tableau de bord** : « 1 h : 0 retraits · 0 retours » dès le premier relevé
+  après une coupure, parce que le critère comptait des lignes d'anneau au lieu de tranches
+  renseignées — il en faut désormais douze pleines ;
+- **quart « calme »** : il se mesure sur les mêmes tranches que le parc (couverture égale), sinon un
+  moment jugé calme pour trois stations pouvait servir à valider un parc calculé sur six.
+
+Un **recul d'horloge** (resynchronisation NTP vers l'arrière) n'inscrit plus deux fois la même
+tranche, ce qui gonflait la profondeur. Quatre tests de non-régression figent ces cas : coupure
+(trois relevés espacés de 6 h → ni validé ni provisoire, 15 min d'historique), couverture inégale,
+recul d'horloge, et le seuil du provisoire inchangé.
+
 #### 1.2.1 — la recherche Wi-Fi fonctionne aussi sans réseau
 
 Le pilote refuse tout balayage **pendant qu'une association est en cours**, et la carte, quand son
@@ -376,7 +406,7 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision dump_sim
-./test_core ../docs/donnees     # 955 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 963 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2, v3 → v4),
                                  # écart habituel (dispersion apprise, affichée pour information, textes de l'écart),

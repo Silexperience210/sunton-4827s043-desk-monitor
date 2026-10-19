@@ -252,6 +252,10 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
 
   // Tranche de 5 min : historique 24 h + profils
   int64_t slotT = now - (now % VN_RING_STEP_S);
+  // Recul d'horloge (resynchronisation NTP vers l'arrière) : créer une tranche « passée » la
+  // réinscrirait une seconde fois, donc la compterait deux fois dans la profondeur observée.
+  // On cumule dans la tranche courante à la place.
+  if (head >= 0 && slotT < net[head].t) slotT = net[head].t;
   bool newSlot = false;
   if (head < 0 || net[head].t != slotT) {
     newSlot = true;
@@ -910,8 +914,8 @@ void Model::recompute(int64_t now) {
   //     l'horloge ne prouve rien : un creux tombe à 00 h 30 comme à 05 h 30, et « entre 1 h et 5 h »
   //     n'était qu'un substitut fragile.
   //
-  // Ce qui n'est pas encore tranché s'affiche quand même : « provisoire » dès 6 h d'historique,
-  // « validé » au premier creux observé. Un tiret muet n'apprend rien à l'exploitant.
+  // Ce qui n'est pas encore tranché s'affiche quand même : « provisoire » dès 6 h de tranches
+  // réellement observées, « validé » au premier creux observé. Un tiret muet n'apprend rien.
   int liveNow = 0, curPark = 0;
   for (int i = 0; i < n; i++) {
     const Station & s = st[i];
@@ -920,16 +924,16 @@ void Model::recompute(int64_t now) {
     curPark += s.bikes + s.bikesDis;
   }
   const int tolCover = 1;                       // une station peut manquer le temps d'un relevé
-  int fleet = curPark, refCover = liveNow, actN = 0;
+  int fleet = curPark, refCover = liveNow, compN = 0;
   int64_t fleetAt = 0;
   for (int b = 0; b < count; b++) {
     const NetSample & ns = net[ringIndex(b)];
     if (ns.avail == 0xFFFF) continue;
-    actN++;
     const uint8_t * row = ring + (size_t)ringIndex(b) * VN_MAX_ST;
     int cov = 0;
     for (int i = 0; i < n; i++) if (row[i] != 255) cov++;
     if (cov + tolCover < liveNow) continue;     // population différente : non comparable
+    compN++;                                   // tranche utilisable pour le parc ET pour la profondeur
     int v = ns.bikesRaw + ns.dis;
     if (v > fleet) { fleet = v; fleetAt = ns.t; refCover = cov; }
   }
@@ -942,26 +946,37 @@ void Model::recompute(int64_t now) {
   // précédente mesurait l'écart entre la tranche la plus ancienne et la plus récente — une
   // carte restée éteinte douze heures affichait donc « douze heures d'historique » avec trois
   // relevés, et pouvait se déclarer validée dessus. Une coupure n'est pas de l'historique.
-  const int obsMin = actN * (VN_RING_STEP_S / 60);
+  const int obsMin = compN * (VN_RING_STEP_S / 60);
   // « Calme » : la tranche de référence doit être dans le quart le moins actif de l'historique.
   bool quiet = false;
+  // Le quart calme se mesure sur les MÊMES tranches que le parc (couverture égale) : mélanger les
+  // populations rendait « calme » un moment qui ne l'était pas pour les stations retenues.
+  auto comparable = [&](int b) {
+    const NetSample & ns = net[ringIndex(b)];
+    if (ns.avail == 0xFFFF) return false;
+    const uint8_t * row = ring + (size_t)ringIndex(b) * VN_MAX_ST;
+    int cov = 0;
+    for (int i = 0; i < n; i++) if (row[i] != 255) cov++;
+    return cov + tolCover >= liveNow;
+  };
   if (fleetAt) {
-    int actRef = -1, below = 0;
+    int actRef = -1, below = 0, sameN = 0;
     for (int b = 0; b < count; b++) {
+      if (!comparable(b)) continue;
       const NetSample & ns = net[ringIndex(b)];
-      if (ns.avail == 0xFFFF) continue;
       const int act = ns.dep + ns.ret;
+      sameN++;
       if (ns.t == fleetAt) actRef = act;
       else if (actRef >= 0 && act < actRef) below++;
     }
     if (actRef < 0) {                          // référence rencontrée en dernier : second passage
       for (int b = 0; b < count; b++) {
+        if (!comparable(b)) continue;
         const NetSample & ns = net[ringIndex(b)];
-        if (ns.avail == 0xFFFF) continue;
         if (ns.t != fleetAt && (ns.dep + ns.ret) < actRef) below++;
       }
     }
-    quiet = (actN > 0) && (below * 4 <= actN); // dans le quart le plus bas
+    quiet = (sameN > 0) && (below * 4 <= sameN); // dans le quart le plus bas
   }
   t.inUseValid = (obsMin >= VN_INUSE_MIN_MIN) && quiet;
   t.inUseProvisional = !t.inUseValid && (obsMin >= VN_INUSE_PROV_MIN);
@@ -975,7 +990,10 @@ void Model::recompute(int64_t now) {
   }
   int i12 = ringIndex(12);
   bool h1 = i12 >= 0 && count >= 13 && net[i12].avail != 0xFFFF;
-  t.actValid = count >= 13;                      // une heure pleine de relevés
+  int obs12 = 0;
+  for (int b = 0; b < 12 && b < count; b++)
+    if (net[ringIndex(b)].avail != 0xFFFF) obs12++;
+  t.actValid = obs12 >= 12;                      // 12 tranches RENSEIGNÉES = une heure pleine
   t.deltaValid = h1;
   t.delta1h = h1 ? t.bikes - net[i12].avail : 0;
   tot = t;
