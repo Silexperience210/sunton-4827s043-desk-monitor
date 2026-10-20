@@ -457,8 +457,8 @@ static void refresh() {
     iconColor(ic, toneColor(alertTone(a)));
     // Une alerte réseau a st = ‑1 : sans garde, `g_model.st[-1]` lit 408 octets avant le tableau
     // (l'en-tête du tas PSRAM), donc un nom illisible et un badge pris au hasard. L'alerte réseau
-    // entre désormais vraiment dans ces cinq lignes (risque 100, gravité 3 pour un flux figé) :
-    // ASan voyait le débordement à chaque rafraîchissement.
+    // entre désormais vraiment dans ces cinq lignes (risque 100, gravité 3 pour un flux figé) ; la
+    // revue du 20/10 a vu le débordement sous ASan, à chaque rafraîchissement.
     const bool netAlert = a.st < 0;
     lv_label_set_text(lv_obj_get_child(r, 1), netAlert ? "R\xC3\xA9" "seau" : g_model.st[a.st].name);
     alertWhy(a, b, sizeof(b));
@@ -522,8 +522,6 @@ const char * debugDashText(int w) {
     case 7: return lv_obj_has_flag(s_fresh, LV_OBJ_FLAG_HIDDEN) ? "" : lv_label_get_text(s_freshMsg);
     case 8: return lv_label_get_text(s_cnt[0]);
     case 9: return lv_label_get_text(lv_obj_get_child(s_prioRows[0], 1));
-    case 12: case 13: case 14: case 15: case 16:
-      return lv_label_get_text(lv_obj_get_child(s_prioRows[w - 12], 1));
     case 10: return lv_label_get_text(s_kpi[0].sub);
     case 11: return lv_label_get_text(s_fcDelta);
     default: return "";
