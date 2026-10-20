@@ -17,9 +17,13 @@
 | Épaisseur totale | 9,5 mm (façade 4,0 + dos 5,5) |
 | Encombrement | 127,2 × 78,2 mm |
 | Parois | 1,6 mm · jeu carte 0,5 mm |
-| Renversement | 22° vers l'arrière |
+| Renversement | 22° vers l'arrière (**négatif** autour de X : le signe positif faisait pencher vers l'avant) |
 | Écran | ouverture module + 0,6 · interface à 1,2 mm sous la lèvre |
 | Ventilation | 4 fentes dans le dos, 2,2 × 44 mm |
+| Fixations | 4 vis M3 traversantes + poches d'inserts borgnes Ø4,2 × 4 |
+| Pièces exportées | façade 127,2 × 4,0 × 78,2 · dos 127,2 × 5,5 × 78,2 · pied 73,8 × 55 × 33 mm |
+| Étanchéité (arêtes libres) | 0 sur les trois pièces |
+| Stabilité | centre de gravité à 31 mm de l'arête avant, assise de 2,5 à 57,5 mm |
 
 ## ⚠️ À vérifier au pied à coulisse AVANT d'imprimer
 

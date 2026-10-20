@@ -180,6 +180,28 @@ nt.links.new(tex.outputs["Color"], bsdf.inputs["Emission Color"])
 bsdf.inputs["Emission Strength"].default_value = 1.4
 ecr.data.materials.append(m)
 
+# ── Fixations : 4 bossages dans la façade, poches d'inserts dans le dos ───
+INSERT_D, INSERT_H = 4.2, 4.0          # insert M3 court : Ø4,2 × 4 (le dos ne fait que 5,5 mm)
+BOSS_D = 7.0
+for sx in (-1, 1):
+    for sz in (-1, 1):
+        bx = sx * (W / 2 - 9.0)
+        bz = PCB_H / 2 + sz * (H / 2 - 9.0)
+        # le bossage appartient au DOS (c'est lui qui porte l'insert) ; la façade ne garde que
+        # le passage de vis. Union sur la façade = pièce de 32 mm d'épaisseur (mesuré).
+        boss = box("boss", (BOSS_D, D_BACK - 1.4, BOSS_D), (bx, D_FRONT + D_BACK / 2 + 0.7, bz))
+        op(back, boss, "UNION")
+        op(front, box("vis", (2.9, D_FRONT, 2.9), (bx, D_FRONT / 2, bz)))     # passage de vis
+        # poche BORGNE : elle s'arrête 1,2 mm avant la face extérieure, sinon elle traverse et
+        # laisse des arêtes libres (17 mesurées sur le dos au premier export).
+        op(back, box("ins", (INSERT_D, INSERT_H, INSERT_D),
+                     (bx, D_FRONT + 0.6 + INSERT_H / 2, bz)))
+
+# feuillure : le dos entre dans la façade sur 1,2 mm (joint propre, pas de jour)
+op(front, box("feuil", (W - 2 * WALL + 0.6, 1.4, H - 2 * WALL + 0.6),
+              (0, D_FRONT - 0.2, H / 2)))
+back.scale = (1.0, 1.0, 1.0)
+
 # ── Piètement : semelle + talon, très bas ────────────────────────────────
 foot = box("pied", (W * 0.58, 52.0, 4.0), (0, 30.0, -2.0))
 bevel(foot, 1.8, 5)
@@ -188,14 +210,43 @@ bevel(heel, 3.0, 5)
 op(foot, heel, "UNION")
 foot.data.materials.append(M_BODY)
 
+def nettoyer(o):
+    """Hygiène de maillage avant export : souder les doublons, combler les boucles de bord
+    (les booléens en laissent), recalculer les normales. Sans ça le dos sortait avec 17 arêtes
+    libres — le trancheur le répare, mais autant livrer propre."""
+    bpy.context.view_layer.objects.active = o
+    o.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.mesh.remove_doubles(threshold=0.001)
+    bpy.ops.mesh.fill_holes(sides=0)
+    bpy.ops.mesh.normals_make_consistent(inside=False)
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+
+# ── Export STL avant l'inclinaison : les pièces sortent dans leur orientation d'impression ──
+# ── Export STL des pièces, en millimètres, avant mise à l'échelle ─────────
+STLDIR = os.path.join(os.path.dirname(STL_REF), "")
+for ob, nom in ((front, "boitier-facade"), (back, "boitier-dos"), (foot, "boitier-pied")):
+    bpy.ops.object.select_all(action="DESELECT")
+    nettoyer(ob)
+    ob.select_set(True)
+    bpy.context.view_layer.objects.active = ob
+    chemin = os.path.join(STLDIR, nom + ".stl")
+    bpy.ops.wm.stl_export(filepath=chemin, export_selected_objects=True,
+                          ascii_format=False, apply_modifiers=True)
+    print("[stl] %s" % chemin)
+
 # ── Renversement de 22° ───────────────────────────────────────────────────
 bpy.ops.object.empty_add(location=(0, 0, 0))
 pivot = bpy.context.object
 for o in (front, back, gorge, ecr, foot, pcb, lcd, esp, reg, usb):   # `heel` a été consommé par l'union
     o.parent = pivot
     o.matrix_parent_inverse = pivot.matrix_world.inverted()
-pivot.rotation_euler[0] = math.radians(TILT)
+pivot.rotation_euler[0] = math.radians(-TILT)   # négatif = le haut part vers l'arrière
 bpy.context.view_layer.update()
+
+
 
 # ── mm → m ────────────────────────────────────────────────────────────────
 for o in bpy.data.objects:
@@ -279,3 +330,5 @@ sc.render.filepath = OUT
 sc.render.image_settings.file_format = "PNG"
 bpy.ops.render.render(write_still=True)
 print(f"[rendu] {OUT}")
+
+
