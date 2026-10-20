@@ -99,18 +99,38 @@ bool lastRupture(const Model & m, int st, AlertLog & out) {
   return true;
 }
 
-// Bilan du jour (heure locale) : nombre d'épisodes commencés et temps cumulé, pour la fiche.
+// Minuit local. On ne suppose pas que la journée dure un nombre entier d'heures : le jour du
+// changement d'heure, `now − (h × 3600 + …)` tombe une heure à côté (et le bilan du jour
+// compterait alors les ruptures de la veille, ou en oublierait).
+static int64_t localMidnight(int64_t now, const struct tm & lt) {
+  const int64_t guess = now - (int64_t)(lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec);
+  for (int k = -2; k <= 2; k++) {
+    const int64_t c = guess + (int64_t)k * 3600;
+    struct tm t; plat::localTime(c, &t);
+    if (t.tm_hour == 0 && t.tm_min == 0 && t.tm_sec == 0 && t.tm_mday == lt.tm_mday
+        && t.tm_mon == lt.tm_mon && t.tm_year == lt.tm_year)
+      return c;
+  }
+  return guess;
+}
+
+// Bilan du jour (heure locale) : nombre d'épisodes qui RECOUPENT la journée et temps cumulé de
+// leur seule part d'aujourd'hui, pour la fiche. Un épisode qui commence hier soir et dure encore
+// ce matin compte pour aujourd'hui — l'ancienne règle (`e.t < dayStart` → dehors) affichait
+// « 0 rupture aujourd'hui » pour une station vide depuis la veille.
 int rupturesToday(const Model & m, int st, int64_t now, int * totalS) {
   if (totalS) *totalS = 0;
   if (!m.log || m.nLog <= 0 || st < 0) return 0;
   struct tm lt; plat::localTime(now, &lt);
-  const int64_t dayStart = now - (int64_t)(lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec);
+  const int64_t dayStart = localMidnight(now, lt);
   int n = 0; int tot = 0;
   for (int k = 0; k < m.nLog; k++) {
     const AlertLog & e = m.log[(m.logHead - k + 2 * VN_ALERT_LOG) % VN_ALERT_LOG];
-    if (e.st != st || e.t < dayStart) continue;
+    if (e.st != st) continue;
+    const int64_t end = e.t + (e.dur > 0 ? e.dur : (now > e.t ? now - e.t : 0));
+    if (end <= dayStart) continue;                       // terminé avant aujourd'hui
     n++;
-    tot += e.dur > 0 ? e.dur : (int)(now - e.t);
+    tot += (int)(end - (e.t > dayStart ? e.t : dayStart));
   }
   if (totalS) *totalS = tot;
   return n;

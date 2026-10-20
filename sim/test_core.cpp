@@ -452,6 +452,58 @@ static void testAlertes() {
   CHECK(nToday == 1 && totS == 1200, "bilan du jour : %d épisode(s), %d s", nToday, totS);
 }
 
+// ── Bilan du jour : il compte les épisodes qui RECOUPENT la journée ──────────
+// Une station vide depuis 23 h 30 et toujours vide à 0 h 40 annonçait « 0 rupture aujourd'hui » :
+// la règle écartait tout épisode commencé avant minuit. Et le jour du changement d'heure,
+// `now − (h × 3600 + m × 60 + s)` tombe une heure à côté.
+static void testBilanJour() {
+  settingsDefaults(g_set);
+  const int64_t MID = 1791842400;                 // 13/10/2026 00:00 heure locale (Europe/Paris)
+  static Model m;
+  CHECK(m.init(), "init (bilan du jour)");
+  InfoRec ir[3] = { mkInfo("A", 49.60f, 6.13f, 20), mkInfo("B", 49.61f, 6.13f, 20), mkInfo("C", 49.62f, 6.13f, 20) };
+  m.applyInfo(ir, 3, MID - 7200);
+  StatusRec sr[3];
+  sr[0] = mkStat("A", 6, 20); sr[1] = mkStat("B", 6, 20); sr[2] = mkStat("C", 6, 20);
+  m.applyStatus(sr, 3, MID - 5400);               // 22 h 30 : premier relevé
+  sr[1] = mkStat("B", 0, 20);                     // B vide de 23 h 00 à 23 h 50 (terminé hier)
+  m.applyStatus(sr, 3, MID - 3600);
+  sr[0] = mkStat("A", 0, 20);                     // A vide depuis 23 h 30, encore à 0 h 40
+  sr[2] = mkStat("C", 0, 20);                     // C vide depuis 23 h 30
+  m.applyStatus(sr, 3, MID - 1800);
+  sr[1] = mkStat("B", 6, 20);                     // B se remplit à 23 h 50
+  m.applyStatus(sr, 3, MID - 600);
+  sr[2] = mkStat("C", 6, 20);                     // C se remplit à 0 h 20
+  m.applyStatus(sr, 3, MID + 1200);
+  int tot = -1;
+  int nA = vn::rupturesToday(m, 0, MID + 2400, &tot);
+  CHECK(nA == 1 && tot == 2400, "épisode commencé hier : compté pour aujourd'hui, part d'après minuit (%d, %d s)", nA, tot);
+  tot = -1;
+  int nB = vn::rupturesToday(m, 1, MID + 2400, &tot);
+  CHECK(nB == 0 && tot == 0, "épisode terminé hier : pas compté aujourd'hui (%d, %d s)", nB, tot);
+  tot = -1;
+  int nC = vn::rupturesToday(m, 2, MID + 2400, &tot);
+  CHECK(nC == 1 && tot == 1200, "épisode à cheval, terminé aujourd'hui : seule la part du jour (%d, %d s)", nC, tot);
+
+  // Changement d'heure (25/10/2026, 03 h 00 → 02 h 00) : à 10 h locales, minuit local n'est pas
+  // à `now − 10 h`. Un épisode de 0 h 10 à 0 h 40 doit rester « aujourd'hui ».
+  const int64_t MID2 = 1792879200;                // 25/10/2026 00:00 locale
+  static Model m2;
+  CHECK(m2.init(), "init (bilan du jour, changement d'heure)");
+  InfoRec ir2[1] = { mkInfo("Z", 49.60f, 6.13f, 20) };
+  m2.applyInfo(ir2, 1, MID2 - 7200);
+  StatusRec z[1];
+  z[0] = mkStat("Z", 6, 20);
+  m2.applyStatus(z, 1, MID2 - 7200);
+  z[0] = mkStat("Z", 0, 20);
+  m2.applyStatus(z, 1, MID2 + 600);               // vide à 0 h 10
+  z[0] = mkStat("Z", 6, 20);
+  m2.applyStatus(z, 1, MID2 + 2400);              // remise en service à 0 h 40
+  tot = -1;
+  int nZ = vn::rupturesToday(m2, 0, 1792918800, &tot);   // 10 h 00 locales
+  CHECK(nZ == 1 && tot == 1800, "changement d'heure : l'épisode du matin reste aujourd'hui (%d, %d s)", nZ, tot);
+}
+
 static void testRuptureStart() {
   settingsDefaults(g_set);
   static Model m;
@@ -2805,6 +2857,7 @@ int main(int argc, char ** argv) {
   testMojibakeDetector();
   testParc();
   testAlertes();
+  testBilanJour();
   testRuptureStart();
   testIngest();
   testFreshness();
