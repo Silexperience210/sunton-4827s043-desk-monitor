@@ -278,6 +278,123 @@ static void testTouchCal() {
 }
 
 // Rupture déjà en cours au démarrage : durée reconstituée depuis l'historique, inconnue sans historique
+
+// ── Onglet « Alertes » : plafond, gravité, arrêts, flux figé, journal ─────────
+// La revue du 20/10 a montré qu'une liste plafonnée remplie dans l'ordre des stations perd des
+// ruptures (mesuré : 5 sur 13 quand le flux se fige et que 142 « aucun mouvement » arrivent d'un
+// coup). Ces cas figent le comportement attendu.
+static void testAlertes() {
+  settingsDefaults(g_set);
+  g_set.frozenHours = 1;
+  const int64_t T = 1791842400 + 12 * 3600;      // 13/10/2026 12:00, heures actives
+
+  // (a) 101 stations figées (sev 1) arrivent avant 19 ruptures (sev 3), de part et d'autre du
+  //     plafond : les ruptures doivent survivre, les compteurs doivent dire la vérité.
+  static Model m;
+  CHECK(m.init(), "init (alertes)");
+  const int N = 120;
+  static InfoRec ir[120];
+  for (int i = 0; i < N; i++) { char id[8]; snprintf(id, sizeof(id), "%d", i + 1); ir[i] = mkInfo(id, 49.60f + i * 0.001f, 6.13f, 20); }
+  m.applyInfo(ir, N, T - 7200);
+  static StatusRec sr[120];
+  for (int k = 0; k < 2; k++) {
+    for (int i = 0; i < N; i++) sr[i] = mkStat(ir[i].sid, i < 101 ? 6 : (k == 0 ? 6 : 0), 20);
+    m.applyStatus(sr, N, k == 0 ? T - 7200 : T);
+  }
+  m.recompute(T);
+  int nEmpty = 0, nFrozenSeen = 0;
+  for (int k = 0; k < m.nAlerts; k++) { if (m.alerts[k].type == AL_EMPTY) nEmpty++; if (m.alerts[k].type == AL_FROZEN) nFrozenSeen++; }
+  CHECK(m.nAlerts == VN_MAX_ALERTS, "liste plafonnée à %d (%d listées, %d vraies)", VN_MAX_ALERTS, m.nAlerts, m.nAlertsTotal);
+  CHECK(nEmpty == 19, "19 ruptures listées (%d)", nEmpty);
+
+  // (b) même situation avec un plafond artificiellement atteint : on bourre la liste avec les
+  //     alertes de maintenance, puis les ruptures arrivent et doivent évincer les moins graves.
+  for (int i = 0; i < N; i++) { sr[i] = mkStat(ir[i].sid, i < 101 ? 6 : 0, 20); sr[i].bikesDis = 4; }
+  m.applyStatus(sr, N, T + 60);
+  m.recompute(T + 60);
+  nEmpty = 0;
+  int firstNonCritical = -1;
+  for (int k = 0; k < m.nAlerts; k++) {
+    if (m.alerts[k].type == AL_EMPTY) nEmpty++;
+    else if (firstNonCritical < 0) firstNonCritical = k;
+  }
+  CHECK(m.nAlertsTotal > m.nAlerts, "plafond atteint (%d vraies, %d listées)", m.nAlertsTotal, m.nAlerts);
+  CHECK(nEmpty == 19, "les 19 ruptures survivent au plafond (%d)", nEmpty);
+  CHECK(firstNonCritical == 19, "les ruptures occupent la tête (%d)", firstNonCritical);
+  int sum = 0;
+  for (int k = 0; k < AL_TYPE_COUNT; k++) sum += m.alertCount[k];
+  CHECK(sum == m.nAlertsTotal, "compteurs vrais : somme %d = total %d", sum, m.nAlertsTotal);
+
+  // (c) ordre déterministe : deux recomputes du même état donnent la même liste (qsort non stable)
+  const int nA = m.nAlerts;
+  static int16_t saveSt[VN_MAX_ALERTS]; static uint8_t saveTy[VN_MAX_ALERTS];
+  for (int k = 0; k < nA; k++) { saveSt[k] = m.alerts[k].st; saveTy[k] = m.alerts[k].type; }
+  m.recompute(T + 60);
+  bool same = m.nAlerts == nA;
+  for (int k = 0; same && k < nA; k++) same = (m.alerts[k].st == saveSt[k] && m.alerts[k].type == saveTy[k]);
+  CHECK(same, "deux recomputes donnent la même liste");
+
+  // (d) une station qui ne loue plus n'est pas une rupture, et un arrêt de plus de sept jours est
+  //     annoncé comme tel (elle s'affichait « Vide · URGENT » en tête de liste)
+  static Model m3;
+  CHECK(m3.init(), "init (arrêts)");
+  InfoRec i3[2] = { mkInfo("1", 49.60f, 6.13f, 20), mkInfo("2", 49.61f, 6.14f, 20) };
+  m3.applyInfo(i3, 2, T - 900);
+  StatusRec s3[2];
+  s3[0] = mkStat("1", 0, 20); s3[0].renting = 0; s3[0].lastReported = T - 20 * 86400;  // arrêtée depuis 20 j
+  s3[1] = mkStat("2", 0, 20); s3[1].lastReported = T - 60;                            // vraie rupture
+  m3.applyStatus(s3, 2, T);
+  m3.recompute(T);
+  int empty[2] = { 0, 0 }, closedLong = 0, closedVal[2] = { -1, -1 };
+  for (int k = 0; k < m3.nAlerts; k++) {
+    const Alert & a = m3.alerts[k];
+    if (a.type == AL_EMPTY && a.st >= 0) empty[a.st]++;
+    if (a.type == AL_CLOSED && a.st >= 0) { closedVal[a.st] = a.value; if (a.value == 3) closedLong++; }
+  }
+  CHECK(empty[0] == 0, "une station suspendue n'est pas « vide » (%d)", empty[0]);
+  CHECK(empty[1] == 1, "une vraie rupture reste « vide » (%d)", empty[1]);
+  CHECK(closedLong == 1, "arrêt de plus de 7 jours signalé comme prolongé (%d)", closedLong);
+
+  // (e) flux figé : aucune station ne bouge pendant vingt-cinq minutes en heures actives → une
+  //     seule alerte réseau, pas une par station (c'est ce qui faisait exploser le plafond)
+  static Model m4;
+  CHECK(m4.init(), "init (flux figé)");
+  const int M = 30;
+  static InfoRec i4[30];
+  for (int i = 0; i < M; i++) { char id[8]; snprintf(id, sizeof(id), "%d", i + 1); i4[i] = mkInfo(id, 49.60f + i * 0.001f, 6.13f, 20); }
+  m4.applyInfo(i4, M, T - 3600);
+  static StatusRec s4[30];
+  for (int i = 0; i < M; i++) s4[i] = mkStat(i4[i].sid, 6, 20);
+  m4.applyStatus(s4, M, T - 3600);
+  m4.applyStatus(s4, M, T - 25 * 60);
+  m4.applyStatus(s4, M, T);
+  m4.recompute(T);
+  CHECK(m4.alertCount[AL_FEED_FROZEN] == 1, "flux figé : une alerte réseau (%d)", m4.alertCount[AL_FEED_FROZEN]);
+  CHECK(m4.alertCount[AL_FROZEN] == 0, "flux figé : aucune alerte « aucun mouvement » par station (%d)",
+        m4.alertCount[AL_FROZEN]);
+
+  // (f) journal : une rupture qui se termine laisse sa durée
+  static Model m5;
+  CHECK(m5.init(), "init (journal)");
+  InfoRec i5[1] = { mkInfo("1", 49.60f, 6.13f, 20) };
+  m5.applyInfo(i5, 1, T - 3600);
+  StatusRec s5[1];
+  s5[0] = mkStat("1", 6, 20); m5.applyStatus(s5, 1, T - 3600);
+  s5[0] = mkStat("1", 0, 20); m5.applyStatus(s5, 1, T - 2400);
+  s5[0] = mkStat("1", 6, 20); m5.applyStatus(s5, 1, T - 1200);
+  CHECK(m5.nLog >= 1, "journal : une entrée (%d)", m5.nLog);
+  CHECK(m5.nLog >= 1 && m5.log[m5.logHead].st == 0 && m5.log[m5.logHead].type == AL_EMPTY
+        && m5.log[m5.logHead].dur == 1200,
+        "journal : durée de la rupture (%d s)", m5.nLog >= 1 ? (int)m5.log[m5.logHead].dur : -1);
+  AlertLog le;
+  CHECK(vn::lastRupture(m5, 0, le) && le.type == AL_EMPTY && le.dur == 1200,
+        "dernier épisode lisible par la fiche station (%d)", (int)le.dur);
+  CHECK(!vn::lastRupture(m5, 1, le), "aucun épisode inventé pour une autre station");
+  int totS = 0;
+  const int nToday = vn::rupturesToday(m5, 0, T, &totS);
+  CHECK(nToday == 1 && totS == 1200, "bilan du jour : %d épisode(s), %d s", nToday, totS);
+}
+
 static void testRuptureStart() {
   settingsDefaults(g_set);
   static Model m;
@@ -2630,6 +2747,7 @@ int main(int argc, char ** argv) {
   testModel();
   testMojibakeDetector();
   testParc();
+  testAlertes();
   testRuptureStart();
   testIngest();
   testFreshness();

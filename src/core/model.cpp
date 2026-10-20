@@ -101,11 +101,13 @@ bool Model::init() {
   prof   = (ProfCell *)plat::psAlloc(sizeof(ProfCell) * (size_t)VN_MAX_ST * PROF_STRIDE);
   cellN  = (uint8_t *)plat::psAlloc(PROF_STRIDE);
   alerts = (Alert *)plat::psAlloc(sizeof(Alert) * VN_MAX_ALERTS);
+  log    = (AlertLog *)plat::psAlloc(sizeof(AlertLog) * VN_ALERT_LOG);
   dispSince = (int64_t *)plat::psAlloc(sizeof(int64_t) * VN_MAX_ST);
   dispPendDev = (float *)plat::psAlloc(sizeof(float) * VN_MAX_ST);
   dispPendCell = (int16_t *)plat::psAlloc(sizeof(int16_t) * VN_MAX_ST);
   if (!dispPendDev || !dispPendCell) return false;
-  if (!st || !ringT || !ring || !net || !recT || !rec || !prof || !cellN || !alerts || !dispSince) return false;
+  if (!st || !ringT || !ring || !net || !recT || !rec || !prof || !cellN || !alerts || !log || !dispSince) return false;
+  memset(log, 0, sizeof(AlertLog) * VN_ALERT_LOG);
   if (!days.init()) return false;
   memset(ring, 255, (size_t)VN_RING_SLOTS * VN_MAX_ST);
   memset(rec, 255, (size_t)VN_RECENT_SLOTS * VN_MAX_ST);
@@ -229,6 +231,24 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
   for (int i = 0; i < n; i++)
     if (st[i].active && !seen[i]) { st[i].installed = st[i].renting = st[i].returning = false; }
 
+  // Journal des ruptures : une entrée à l'apparition (durée 0 = en cours), complétée à la fin.
+  auto logStart = [&](int i, uint8_t type, int64_t t) {
+    if (!log) return;
+    logHead = (logHead + 1) % VN_ALERT_LOG;
+    if (nLog < VN_ALERT_LOG) nLog++;
+    log[logHead] = { t > 0 ? t : now, 0, (int16_t)i, type };
+  };
+  auto logEnd = [&](int i, uint8_t type, int64_t t) {
+    if (!log) return;
+    for (int k = 0; k < nLog; k++) {
+      AlertLog & e = log[(logHead - k + 2 * VN_ALERT_LOG) % VN_ALERT_LOG];
+      if (e.st == i && e.type == type && e.dur == 0) {
+        e.dur = (int32_t)(t > e.t ? t - e.t : 0);
+        return;
+      }
+    }
+  };
+
   // Ruptures nouvelles → évènements UI
   for (int i = 0; i < n; i++) {
     Station & s = st[i];
@@ -236,10 +256,18 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
     uint8_t prev = s.status, cur = classify(s);
     // Au premier relevé, une rupture déjà en cours n'a pas commencé « maintenant » :
     // sa durée est reconstituée depuis l'historique restauré, sinon elle reste inconnue (0).
-    if (cur == ST_EMPTY) { if (prev != ST_EMPTY) { s.emptySince = firstFill ? ruptureStart(i, true, now) : now; if (!firstFill && nEv < 8) ev[nEv++] = { (int16_t)i, AL_EMPTY }; } }
-    else s.emptySince = 0;
-    if (cur == ST_FULL) { if (prev != ST_FULL) { s.fullSince = firstFill ? ruptureStart(i, false, now) : now; if (!firstFill && nEv < 8) ev[nEv++] = { (int16_t)i, AL_FULL }; } }
-    else s.fullSince = 0;
+    if (cur == ST_EMPTY) {
+      if (prev != ST_EMPTY) { s.emptySince = firstFill ? ruptureStart(i, true, now) : now; logStart(i, AL_EMPTY, s.emptySince); if (!firstFill && nEv < 8) ev[nEv++] = { (int16_t)i, AL_EMPTY }; }
+    } else {
+      if (prev == ST_EMPTY) logEnd(i, AL_EMPTY, now);
+      s.emptySince = 0;
+    }
+    if (cur == ST_FULL) {
+      if (prev != ST_FULL) { s.fullSince = firstFill ? ruptureStart(i, false, now) : now; logStart(i, AL_FULL, s.fullSince); if (!firstFill && nEv < 8) ev[nEv++] = { (int16_t)i, AL_FULL }; }
+    } else {
+      if (prev == ST_FULL) logEnd(i, AL_FULL, now);
+      s.fullSince = 0;
+    }
     s.status = cur;
   }
 
@@ -819,12 +847,25 @@ static void anomalyStation(const Model & m, Station & s, int i, int64_t now, boo
 
 // ── Alertes ──────────────────────────────────────────────────────────
 static const Model * s_sortModel = nullptr;
+// Poids d'une alerte dans la liste : gravité d'abord, puis risque d'intervention. L'alerte RÉSEAU
+// (st = ‑1) n'a pas de station : elle passe en tête de sa gravité — avant, `st[-1]` lisait l'en-tête
+// du bloc PSRAM (ASan : lecture 217 o avant `st`, à chaque rafraîchissement).
+static int alertRisk(const Alert & a) {
+  return a.st >= 0 ? (int)s_sortModel->st[a.st].risk : 100;
+}
+
+// Rang d'une alerte pour l'éviction : gravité, puis risque (le réseau vaut 100).
+static int severityRank(const Alert & a) { return (int)a.sev * 1000 + alertRisk(a); }
+
 static int alertCmp(const void * a, const void * b) {
   const Alert * x = (const Alert *)a; const Alert * y = (const Alert *)b;
   if (x->sev != y->sev) return y->sev - x->sev;
-  int rx = s_sortModel->st[x->st].risk, ry = s_sortModel->st[y->st].risk;
+  const int rx = alertRisk(*x), ry = alertRisk(*y);
   if (rx != ry) return ry - rx;
-  return x->type - y->type;
+  if (x->type != y->type) return x->type - y->type;
+  // Départage final déterministe : le qsort de newlib n'est pas stable, donc sans lui les ex-aequo
+  // (les treize vides à même risque) permutaient à chaque rafraîchissement de soixante secondes.
+  return (int)x->st - (int)y->st;
 }
 
 void Model::recompute(int64_t now) {
@@ -1042,12 +1083,23 @@ void Model::recompute(int64_t now) {
   tot = t;
 
   // Liste d'alertes
+  s_sortModel = this;                    // l'éviction lit st[].risk, déjà calculé plus haut
   nAlerts = 0;
+  nAlertsTotal = 0;
   memset(alertCount, 0, sizeof(alertCount));
+  // Les compteurs comptent TOUT (sélecteur de l'onglet et pastille du rail), et la liste ne garde que
+  // les plus graves : à liste pleine, la nouvelle alerte évince la moins grave en place. Avant, on
+  // abandonnait les suivantes dans l'ordre des stations : un flux figé (une alerte « aucun mouvement »
+  // par station, toutes dans la même minute) faisait disparaître cinq ruptures sur treize (mesuré).
   auto add = [&](uint8_t type, uint8_t sev, int i, int minutes, int value) {
-    if (nAlerts >= VN_MAX_ALERTS) return;
-    alerts[nAlerts++] = { type, sev, (int16_t)i, (int16_t)minutes, (int16_t)value };
     alertCount[type]++;
+    nAlertsTotal++;
+    const Alert a = { type, sev, (int16_t)i, (int16_t)minutes, (int16_t)value };
+    if (nAlerts < VN_MAX_ALERTS) { alerts[nAlerts++] = a; return; }
+    int worst = 0;
+    for (int k = 1; k < nAlerts; k++)
+      if (severityRank(alerts[k]) < severityRank(alerts[worst])) worst = k;
+    if (severityRank(a) > severityRank(alerts[worst])) alerts[worst] = a;
   };
   // Réseau : part de vélos hors service. Chaque station a déjà son alerte (AL_MAINT_BIKES), mais
   // un parc entier à 20 % HS ne se voit nulle part — c'est un signal d'exploitation (atelier,
@@ -1062,24 +1114,49 @@ void Model::recompute(int64_t now) {
         add(AL_FLEET_MAINT, pct >= vn::FLEET_MAINT_PCT_HIGH ? 2 : 1, -1, pct, t.bikesDis);
     }
   }
+  // Flux figé : en heures actives, si presque aucune station n'a bougé depuis vingt minutes sur un
+  // réseau qui en compte des dizaines, c'est le fournisseur qui est muet — pas cent quarante
+  // stations à vérifier une par une. Mesuré à midi : 23 à 24 stations changent toutes les quatre
+  // minutes ; deux mouvements ou moins en vingt minutes est donc un signal franc.
+  int cand = 0, moved = 0;
+  for (int i = 0; i < n; i++) {
+    const Station & s = st[i];
+    if (!s.active || !s.live || s.status == ST_CLOSED) continue;
+    cand++;
+    if (s.lastChange && now - s.lastChange <= 20 * 60) moved++;
+  }
+  const bool feedFrozen = activeHours && cand >= 20 && moved <= 1;
+  if (feedFrozen) add(AL_FEED_FROZEN, 2, -1, lastUpdate ? (int)((now - lastUpdate) / 60) : -1, moved);
+
   for (int i = 0; i < n; i++) {
     const Station & s = st[i];
     if (!s.active || !s.live) continue;
-    if (s.status == ST_CLOSED) { add(AL_CLOSED, 0, i, -1, 0); continue; }
-    if (s.status == ST_EMPTY) add(AL_EMPTY, 3, i, s.emptySince ? (int)((now - s.emptySince) / 60) : -1, 0);
-    else if (s.status == ST_FULL) add(AL_FULL, 3, i, s.fullSince ? (int)((now - s.fullSince) / 60) : -1, 0);
-    else if (s.etaEmpty >= 0 && s.etaEmpty <= 60) add(AL_SOON_EMPTY, s.etaEmpty <= 30 ? 2 : 1, i, s.etaEmpty, s.bikes);
-    else if (s.etaFull >= 0 && s.etaFull <= 60) add(AL_SOON_FULL, s.etaFull <= 30 ? 2 : 1, i, s.etaFull, s.docks);
+    if (s.status == ST_CLOSED || !s.renting || !s.returning) {
+      // Arrêt, pas rupture : `classify()` donne « vide » à une station qui ne loue plus (bikes = 0
+      // quand renting est faux). Sans cette branche elle s'affichait « Vide · URGENT » en tête de
+      // liste, avec une seconde ligne « Location suspendue » (mesuré : #23 arrêtée depuis le 13/05).
+      // `last_reported` ne sert qu'ici, pour distinguer une suspension récente d'un arrêt de longue
+      // durée (13/05 et 24/06 dans le flux réel) — jamais comme signal de vie.
+      const int days = s.lastReported > 0 ? (int)((now - s.lastReported) / 86400) : -1;
+      const int v = days >= 7 ? 3 : (s.status == ST_CLOSED ? 0 : (!s.renting ? 1 : 2));
+      add(AL_CLOSED, (days >= 7 || s.status == ST_CLOSED) ? 0 : 1, i, -1, v);
+      if (s.bikesDis >= g_set.maintBikes) add(AL_MAINT_BIKES, 1, i, -1, s.bikesDis);
+      if (s.docksDis >= g_set.maintDocks) add(AL_MAINT_DOCKS, 1, i, -1, s.docksDis);
+      continue;
+    }
+    if (s.status == ST_EMPTY && s.renting) add(AL_EMPTY, 3, i, s.emptySince ? (int)((now - s.emptySince) / 60) : -1, 0);
+    else if (s.status == ST_FULL && s.returning) add(AL_FULL, 3, i, s.fullSince ? (int)((now - s.fullSince) / 60) : -1, 0);
+    else if (s.renting && s.etaEmpty >= 0 && s.etaEmpty <= 60) add(AL_SOON_EMPTY, s.etaEmpty <= 30 ? 2 : 1, i, s.etaEmpty, s.bikes);
+    else if (s.returning && s.etaFull >= 0 && s.etaFull <= 60) add(AL_SOON_FULL, s.etaFull <= 30 ? 2 : 1, i, s.etaFull, s.docks);
     if (!s.renting) add(AL_CLOSED, 1, i, -1, 1);
     else if (!s.returning) add(AL_CLOSED, 1, i, -1, 2);
     if (s.bikesDis >= g_set.maintBikes) add(AL_MAINT_BIKES, 1, i, -1, s.bikesDis);
     if (s.docksDis >= g_set.maintDocks) add(AL_MAINT_DOCKS, 1, i, -1, s.docksDis);
+    // Flux figé : les « aucun mouvement » individuels sont du bruit (et évinceraient les ruptures) ;
+    // l'alerte réseau les remplace.
     if (s.frozen) add(AL_FROZEN, 1, i, (int)((now - s.lastChange) / 60), 0);
-    // Sévérité « info » : un écart au profil est à examiner, pas une intervention — il ne
-    // doit pas évincer les ruptures et la maintenance des priorités du tableau de bord.
     if (s.anom == AN_HIGH || s.anom == AN_LOW) add(AL_UNUSUAL, 0, i, -1, s.bikes - s.anomExp);
   }
-  s_sortModel = this;
   qsort(alerts, nAlerts, sizeof(Alert), alertCmp);
 
   // Suggestions de transferts (glouton : besoin le plus urgent ← donneur le plus proche)

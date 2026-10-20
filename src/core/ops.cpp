@@ -76,6 +76,46 @@ int staleThresholdS(const Settings & s) {
 
 int wxStaleThresholdS() { return 3 * VN_WX_REFRESH_S; }
 
+// Le journal est un anneau : on relit du plus récent au plus ancien et on s'arrête au premier
+// épisode de cette station et de ce type.
+bool lastRuptureOf(const Model & m, int st, uint8_t type, AlertLog & out) {
+  out = AlertLog{};
+  if (!m.log || m.nLog <= 0 || st < 0) return false;
+  for (int k = 0; k < m.nLog; k++) {
+    const AlertLog & e = m.log[(m.logHead - k + 2 * VN_ALERT_LOG) % VN_ALERT_LOG];
+    if (e.st == st && e.type == type && e.t > 0) { out = e; return true; }
+  }
+  return false;
+}
+
+// Dernier épisode, en préférant une rupture encore en cours (c'est l'état qui compte).
+bool lastRupture(const Model & m, int st, AlertLog & out) {
+  AlertLog a, b;
+  const bool hasA = lastRuptureOf(m, st, AL_EMPTY, a);
+  const bool hasB = lastRuptureOf(m, st, AL_FULL, b);
+  if (!hasA && !hasB) return false;
+  if (hasA && hasB) { out = (a.dur == 0) ? a : (b.dur == 0 ? b : (a.t > b.t ? a : b)); return true; }
+  out = hasA ? a : b;
+  return true;
+}
+
+// Bilan du jour (heure locale) : nombre d'épisodes commencés et temps cumulé, pour la fiche.
+int rupturesToday(const Model & m, int st, int64_t now, int * totalS) {
+  if (totalS) *totalS = 0;
+  if (!m.log || m.nLog <= 0 || st < 0) return 0;
+  struct tm lt; plat::localTime(now, &lt);
+  const int64_t dayStart = now - (int64_t)(lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec);
+  int n = 0; int tot = 0;
+  for (int k = 0; k < m.nLog; k++) {
+    const AlertLog & e = m.log[(m.logHead - k + 2 * VN_ALERT_LOG) % VN_ALERT_LOG];
+    if (e.st != st || e.t < dayStart) continue;
+    n++;
+    tot += e.dur > 0 ? e.dur : (int)(now - e.t);
+  }
+  if (totalS) *totalS = tot;
+  return n;
+}
+
 int64_t dataAgeS(int64_t okAt, int64_t now) {
   if (okAt <= 0 || now <= 0) return -1;
   int64_t a = now - okAt;

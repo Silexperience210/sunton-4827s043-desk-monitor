@@ -43,8 +43,13 @@ void alertWhy(const vn::Alert & a, char * out, size_t n) {
       vn::anomAlertText(s, out, n);
       break;
     case vn::AL_CLOSED:
-      snprintf(out, n, "%s", a.value == 1 ? "Location suspendue" : a.value == 2 ? "Retours suspendus"
-                                          : (s.installed ? "Station hors service" : "Station non install\xC3\xA9" "e"));
+      snprintf(out, n, "%s", a.value == 3 ? "Hors service depuis plus d'une semaine"
+                            : a.value == 1 ? "Location suspendue" : a.value == 2 ? "Retours suspendus"
+                            : (s.installed ? "Station hors service" : "Station non install\xC3\xA9" "e"));
+      break;
+    case vn::AL_FEED_FROZEN:
+      if (a.minutes >= 0) { fmtDur(d, sizeof(d), a.minutes); snprintf(out, n, "Aucune station n'a boug\xC3\xA9 depuis %s \xC2\xB7 flux fig\xC3\xA9", d); }
+      else snprintf(out, n, "Aucune station n'a boug\xC3\xA9 \xC2\xB7 flux fig\xC3\xA9");
       break;
     default: out[0] = 0;
   }
@@ -57,7 +62,7 @@ const lv_img_dsc_t * alertIcon16(uint8_t t) {
     case vn::AL_SOON_EMPTY: return &ic_trend_down_16;
     case vn::AL_SOON_FULL: return &ic_trend_up_16;
     case vn::AL_MAINT_BIKES: case vn::AL_MAINT_DOCKS: case vn::AL_FLEET_MAINT: return &ic_wrench_16;
-    case vn::AL_FROZEN: return &ic_clock_16;
+    case vn::AL_FROZEN: case vn::AL_FEED_FROZEN: return &ic_clock_16;
     case vn::AL_UNUSUAL: return &ic_activity_16;
     default: return &ic_ban_16;
   }
@@ -70,6 +75,7 @@ Tone alertTone(const vn::Alert & a) {
     case vn::AL_SOON_EMPTY: return T_WARN;
     case vn::AL_SOON_FULL: return T_ELEC;
     case vn::AL_MAINT_BIKES: case vn::AL_MAINT_DOCKS: case vn::AL_FLEET_MAINT: case vn::AL_FROZEN: return T_WARN;
+    case vn::AL_FEED_FROZEN: return T_BAD;
     case vn::AL_UNUSUAL: return T_ELEC;
     default: return T_CLOSED;
   }
@@ -84,7 +90,7 @@ void needText(int need, char * out, size_t n) {
 struct ARow { lv_obj_t * obj, * flash, * ic, * name, * why, * need; };
 static ARow s_rows[VN_MAX_ALERTS];
 static int s_nRows = 0;
-static lv_obj_t * s_list, * s_seg, * s_planSub, * s_empty;
+static lv_obj_t * s_list, * s_seg, * s_planSub, * s_empty, * s_emptyIc, * s_emptyTitle, * s_emptySub;
 static int s_filter = 0;
 static const int NF = 5;
 static const char * FILTERS[NF] = { "Toutes", "Ruptures", "Pr\xC3\xA9visions", "Maint.", "Inhabituel" };
@@ -137,22 +143,33 @@ static ARow & makeRow(int i) {
 }
 
 static void refresh() {
-  int cnt[NF] = { 0, 0, 0, 0, 0 };
-  for (int k = 0; k < g_model.nAlerts; k++) {
-    const vn::Alert & a = g_model.alerts[k];
-    cnt[0]++;
-    if (a.type == vn::AL_EMPTY || a.type == vn::AL_FULL) cnt[1]++;
-    else if (a.type == vn::AL_SOON_EMPTY || a.type == vn::AL_SOON_FULL) cnt[2]++;
-    else if (a.type == vn::AL_UNUSUAL) cnt[4]++;
-    else cnt[3]++;
-  }
+  // Compteurs VRAIS : ils portent sur toutes les alertes, y compris celles que le plafond de 96
+  // écarte de la liste. Avant, sélecteur et pastille comptaient les seules survivantes.
+  int cnt[NF];
+  cnt[0] = g_model.nAlertsTotal;
+  cnt[1] = g_model.alertCount[vn::AL_EMPTY] + g_model.alertCount[vn::AL_FULL];
+  cnt[2] = g_model.alertCount[vn::AL_SOON_EMPTY] + g_model.alertCount[vn::AL_SOON_FULL];
+  cnt[4] = g_model.alertCount[vn::AL_UNUSUAL];
+  cnt[3] = g_model.nAlertsTotal - cnt[1] - cnt[2] - cnt[4];
   char b[96];
   for (int k = 0; k < NF; k++) { snprintf(b, sizeof(b), "%s %d", FILTERS[k], cnt[k]); segLabel(s_seg, k, b); }
 
+  // Une ligne par STATION (la plus grave d'abord, la liste est triée) : trois lignes visibles, donc
+  // une station qui cumule rupture + suspension + maintenance ne doit pas en manger deux ou trois.
+  int extra[VN_MAX_ST] = { 0 };
+  for (int k = 0; k < g_model.nAlerts; k++) {
+    const vn::Alert & a = g_model.alerts[k];
+    if (a.st >= 0 && a.st < VN_MAX_ST && match(a)) extra[a.st]++;
+  }
+  bool seenSt[VN_MAX_ST] = { false };
   int shown = 0;
   for (int k = 0; k < g_model.nAlerts; k++) {
     const vn::Alert & a = g_model.alerts[k];
     if (!match(a)) continue;
+    if (a.st >= 0) {
+      if (a.st < VN_MAX_ST && seenSt[a.st]) continue;
+      if (a.st < VN_MAX_ST) seenSt[a.st] = true;
+    }
     if (shown >= s_nRows) makeRow(s_nRows++);
     ARow & r = s_rows[shown++];
     lv_obj_clear_flag(r.obj, LV_OBJ_FLAG_HIDDEN);
@@ -167,8 +184,13 @@ static void refresh() {
     lv_label_set_text(r.name, b);
     alertWhy(a, b, sizeof(b));
     lv_label_set_text(r.why, b);
+    const int more = (a.st >= 0 && a.st < VN_MAX_ST && extra[a.st] > 1) ? extra[a.st] - 1 : 0;
     bool showNeed = s.need && (a.type <= vn::AL_SOON_FULL);
-    if (showNeed) {
+    if (more > 0) {
+      snprintf(b, sizeof(b), "+%d", more);
+      badgeSet(r.need, b, T_ELEC);
+      lv_obj_clear_flag(r.need, LV_OBJ_FLAG_HIDDEN);
+    } else if (showNeed) {
       char nd[24];
       needText(s.need, nd, sizeof(nd));
       badgeSet(r.need, nd, s.need > 0 ? T_GOOD : T_TRANSIT);
@@ -180,13 +202,43 @@ static void refresh() {
   }
   for (int i = shown; i < s_nRows; i++) lv_obj_add_flag(s_rows[i].obj, LV_OBJ_FLAG_HIDDEN);
   if (shown) lv_obj_add_flag(s_empty, LV_OBJ_FLAG_HIDDEN);
-  else lv_obj_clear_flag(s_empty, LV_OBJ_FLAG_HIDDEN);
+  else {
+    // Une coche verte sous une pastille « RETARD », c'est contradictoire : quand le relevé est
+    // périmé, l'état vide le dit, avec l'âge et une horloge ambre à la place de la coche.
+    const int64_t tnow = now();
+    int64_t ageS = g_model.lastUpdate ? tnow - g_model.lastUpdate : -1;
+    // `feedUpdated` = last_updated du flux : si le fournisseur gèle en répondant 200, c'est lui qui
+    // vieillit alors que le téléchargement, lui, réussit.
+    if (g_model.feedUpdated) {
+      const int64_t fa = tnow - g_model.feedUpdated;
+      if (fa > ageS || ageS < 0) ageS = fa;
+    }
+    const bool stale = ageS >= 0 && ageS > vn::staleThresholdS(vn::g_set);
+    char d[24];
+    if (stale) {
+      fmtDur(d, sizeof(d), (int)(ageS / 60));
+      lv_label_set_text(s_emptyTitle, "Relev\xC3\xA9 fig\xC3\xA9");
+      snprintf(b, sizeof(b), "Donn\xC3\xA9" "es vieilles de %s \xE2\x80\x94 rien \xC3\xA0 signaler sur ce relev\xC3\xA9", d);
+      lv_label_set_text(s_emptySub, b);
+      lv_img_set_src(s_emptyIc, &ic_clock_20);
+      iconColor(s_emptyIc, C(HX_WARN));
+    } else {
+      lv_label_set_text(s_emptyTitle, "Rien \xC3\xA0 signaler");
+      lv_label_set_text(s_emptySub, "Aucune alerte dans cette cat\xC3\xA9gorie");
+      lv_img_set_src(s_emptyIc, &ic_check_20);
+      iconColor(s_emptyIc, C(HX_GOOD));
+    }
+    lv_obj_clear_flag(s_empty, LV_OBJ_FLAG_HIDDEN);
+  }
 
   char n1[16], n2[16];
   fmtInt(n1, sizeof(n1), g_model.tot.need);
   fmtInt(n2, sizeof(n2), g_model.tot.surplus);
   if (!g_model.lastUpdate) snprintf(b, sizeof(b), "En attente des premi\xC3\xA8res donn\xC3\xA9" "es");
   else if (!g_model.tot.need && !g_model.tot.surplus) snprintf(b, sizeof(b), "R\xC3\xA9seau \xC3\xA9quilibr\xC3\xA9 \xC2\xB7 aucune action");
+  else if (g_model.nAlertsTotal > g_model.nAlerts)
+    snprintf(b, sizeof(b), "+%s \xC3\xA0 livrer \xC2\xB7 \xE2\x88\x92%s \xC3\xA0 retirer \xC2\xB7 %d alertes, %d affich\xC3\xA9" "es",
+             n1, n2, g_model.nAlertsTotal, g_model.nAlerts);
   else snprintf(b, sizeof(b), "+%s \xC3\xA0 livrer \xC2\xB7 \xE2\x88\x92%s \xC3\xA0 retirer \xC2\xB7 %d transfert%s",
                 n1, n2, g_model.nTr, g_model.nTr > 1 ? "s" : "");
   lv_label_set_text(s_planSub, b);
@@ -252,10 +304,10 @@ static void build(lv_obj_t * root) {
   lv_obj_set_style_radius(ei, 12, 0);
   lv_obj_set_style_bg_color(ei, C(HX_S2), 0);
   lv_obj_set_style_bg_opa(ei, LV_OPA_COVER, 0);
-  lv_obj_t * eic = icon(ei, &ic_check_20, HX_GOOD);
-  lv_obj_center(eic);
-  label(s_empty, &vn_inter_13s, HX_TEXT, "Rien \xC3\xA0 signaler");
-  label(s_empty, &vn_inter_12, HX_TEXT2, "Aucune alerte dans cette cat\xC3\xA9gorie");
+  s_emptyIc = icon(ei, &ic_check_20, HX_GOOD);
+  lv_obj_center(s_emptyIc);
+  s_emptyTitle = label(s_empty, &vn_inter_13s, HX_TEXT, "Rien \xC3\xA0 signaler");
+  s_emptySub = label(s_empty, &vn_inter_12, HX_TEXT2, "Aucune alerte dans cette cat\xC3\xA9gorie");
   lv_obj_add_flag(s_empty, LV_OBJ_FLAG_HIDDEN);
 }
 

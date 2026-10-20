@@ -26,7 +26,7 @@ struct SheetW {
   lv_obj_t * chart, * chartMeta;
   lv_obj_t * fcV[4];
   lv_obj_t * insFlash, * insIc, * insTitle, * insWhy, * insNeed, * insConf, * insAnom, * insWx;
-  lv_obj_t * lastMove, * lastRep, * addr;
+  lv_obj_t * lastMove, * lastRep, * ruptures, * addr;
 };
 static SheetW W;
 
@@ -205,6 +205,40 @@ static void fill() {
   else snprintf(a1, sizeof(a1), "inconnu (horodatage invalide)");
   snprintf(b, sizeof(b), "Dernier rapport de la borne (GBFS) %s", a1);
   lv_label_set_text(W.lastRep, b);
+
+  // Journal des ruptures : le seul endroit qui dit qu'une station est restée vide 38 min ce matin,
+  // même si elle est pleine à l'instant où on la regarde.
+  {
+    vn::AlertLog le;
+    if (vn::lastRupture(g_model, W.st, le)) {
+      const char * q = le.type == vn::AL_EMPTY ? "vide" : "pleine";
+      char h1[16] = "?", h2[16] = "?", du[24];
+      struct tm lt; plat::localTime(le.t, &lt);
+      snprintf(h1, sizeof(h1), "%d h %02d", lt.tm_hour, lt.tm_min);
+      if (le.dur > 0) {
+        plat::localTime(le.t + le.dur, &lt);
+        snprintf(h2, sizeof(h2), "%d h %02d", lt.tm_hour, lt.tm_min);
+        fmtDur(du, sizeof(du), le.dur / 60);
+        snprintf(b, sizeof(b), "%s %s \xE2\x86\x92 %s (%s)", q, h1, h2, du);
+      } else {
+        fmtDur(du, sizeof(du), (int)((now() - le.t) / 60));
+        snprintf(b, sizeof(b), "%s depuis %s (%s)", q, h1, du);
+      }
+      int totS = 0;
+      const int nToday = vn::rupturesToday(g_model, W.st, now(), &totS);
+      if (nToday > 1) {
+        char tot[24];
+        fmtDur(tot, sizeof(tot), totS / 60);
+        char b2[96];
+        snprintf(b2, sizeof(b2), "Aujourd'hui : %d ruptures, %s au total", nToday, tot);
+        lv_label_set_text(W.ruptures, b2);
+        snprintf(b, sizeof(b), "Dernière : %s", b);
+      }
+      lv_label_set_text(W.ruptures, b);
+    } else {
+      lv_label_set_text(W.ruptures, "Aucune rupture enregistrée depuis l'allumage");
+    }
+  }
   lv_label_set_text(W.addr, s.addr[0] ? s.addr : "\xE2\x80\x94");
 }
 
@@ -306,6 +340,7 @@ void openStation(int st) {
   lv_obj_t * det = col(body, 3);
   W.lastMove = label(det, &vn_inter_12, HX_TEXT2, "");
   W.lastRep = label(det, &vn_inter_12, HX_TEXT3, "");
+  W.ruptures = label(det, &vn_inter_12, HX_TEXT2, "");   // journal : « vide 8 h 03 → 8 h 41 (38 min) »
   W.addr = label(det, &vn_inter_11, HX_TEXT3, "");
   lv_label_set_long_mode(W.addr, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(W.addr, BW);

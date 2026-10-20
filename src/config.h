@@ -3,7 +3,7 @@
 // Cible : Sunton ESP32-4827S043 (ESP32-S3 N16R8, dalle RGB 480×272, tactile)
 #pragma once
 
-#define VN_VERSION      "1.2.7"
+#define VN_VERSION      "1.2.8"
 #define VN_NAME         "VelohNav Ops"
 
 // ── Données ──────────────────────────────────────────────────────────
@@ -42,7 +42,8 @@
 #define VN_RECENT_SLOTS    60   // 60 min au pas de 1 min (tendance court terme)
 #define VN_PROFILE_DECAY_N 24   // constante de temps du profil en relevés (3 par semaine et par créneau) : 8 semaines
 #define VN_FC_STEPS        25   // prévision 0…120 min au pas de 5 min
-#define VN_MAX_ALERTS      96
+#define VN_MAX_ALERTS      96   // affichées ; le plafond n'écarte plus les graves (éviction)
+#define VN_ALERT_LOG      200   // journal des ruptures, en PSRAM (12 o l'entrée ≈ 2,4 Ko)
 #define VN_MAX_TRANSFERS    8
 #define VN_DAYS            60   // résumés par jour gardés (vue Service, core/days.h) : 2 mois
 

@@ -19,6 +19,7 @@ enum AlertType : uint8_t {
   AL_MAINT_BIKES, AL_MAINT_DOCKS, AL_FROZEN, AL_CLOSED,
   AL_FLEET_MAINT,              // part de vélos hors service sur l'ENSEMBLE du parc (st = ‑1)
   AL_UNUSUAL,                  // écart au profil appris (voir Model::recompute)
+  AL_FEED_FROZEN,              // aucune station n'a bougé : le flux est figé (st = ‑1, réseau)
   AL_TYPE_COUNT
 };
 // Seuil réseau : les stations sont déjà signalées une par une (AL_MAINT_BIKES) ; ici on parle du
@@ -188,6 +189,9 @@ struct Alert {
   int16_t value;               // n vélos / bornes HS…
 };
 
+// Épisode de rupture journalisé : « #12 vide, 8 h 03 → 8 h 41 (38 min) ».
+struct AlertLog { int64_t t; int32_t dur; int16_t st; uint8_t type; };
+
 struct Transfer { int16_t from, to; uint8_t n; uint16_t distM; };
 
 // Cellule de profil (jour × quart d'heure) : moyenne ×256 et n = relevés comptés, plafonné à
@@ -234,14 +238,20 @@ struct Model {
   float     wxAlphaRaw = 0, wxAlphaSE = 0; // estimation brute et son erreur-type
   uint8_t   wxSrc = WXC_DEFAULT;         // WxCoefSrc
   float     wxNow = 0;                   // pénalité météo actuelle x (0…1), 0 sans météo
-  Alert *   alerts = nullptr;            // [VN_MAX_ALERTS]
+  Alert *   alerts = nullptr;            // [VN_MAX_ALERTS] — les plus graves, pas les premières
   int       nAlerts = 0;
-  int       alertCount[AL_TYPE_COUNT] = {};
+  int       nAlertsTotal = 0;            // toutes, y compris celles écartées par le plafond
+  int       alertCount[AL_TYPE_COUNT] = {};   // compteurs vrais (avant plafond)
   Transfer  tr[VN_MAX_TRANSFERS];
   int       nTr = 0;
   // Évènements pour l'UI (ruptures nouvelles)
   NetEvent  ev[8];
   int       nEv = 0;
+  // Journal des ruptures (PSRAM, perdu au redémarrage) : la seule trace qu'une station est restée
+  // vide de 8 h 03 à 8 h 41. Une entrée par épisode, `dur == 0` = encore en cours.
+  AlertLog *log = nullptr;                // [VN_ALERT_LOG]
+  int       nLog = 0;
+  int       logHead = -1;                 // dernière entrée écrite
   // Météo + état des flux
   Weather   wx;
   ElecTypes elec;

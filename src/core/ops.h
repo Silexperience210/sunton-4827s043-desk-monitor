@@ -42,6 +42,11 @@ void ingestErr(FeedStat & f, int64_t now, int code, uint32_t bytes, uint32_t ms)
 //  - station_status : g_set.staleMin minutes si réglé, sinon 3 × refreshSec, au moins 3 min ;
 //  - météo : 3 × sa propre période (VN_WX_REFRESH_S), même règle « 3 périodes manquées ».
 int  staleThresholdS(const Settings & s);
+
+// Journal des ruptures (PSRAM) : dernier épisode d'une station, et bilan de la journée.
+// `out.dur == 0` = rupture encore en cours ; `out.t == 0` = aucun épisode connu (journal vide).
+bool lastRupture(const Model & m, int st, AlertLog & out);
+int  rupturesToday(const Model & m, int st, int64_t now, int * totalS);
 int  wxStaleThresholdS();
 // Âge (s) d'un relevé réussi ; ‑1 si inconnu (jamais reçu, ou heure pas encore synchronisée)
 int64_t dataAgeS(int64_t okAt, int64_t now);
