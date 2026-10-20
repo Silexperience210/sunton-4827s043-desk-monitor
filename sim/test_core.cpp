@@ -449,8 +449,28 @@ static void testParc() {
       m.applyStatus(sr, 3, t);
     }
     Provenance p;
-    CHECK(provenance(m, KPI_INUSE, p) && strstr(p.detail, "veille"),
-          "fiche en trajet : référence datée « (veille) » (« %s »)", p.detail);
+    // Attention aux séquences d'échappement : « \x9214 » serait lu comme UN caractère (0x9214).
+    CHECK(provenance(m, KPI_INUSE, p) && strstr(p.detail, "(\xE2\x88\x92" "14 h)"),
+          "fiche en trajet : référence datée « (\xE2\x88\x92" "14 h) » (« %s »)", p.detail);
+  }
+
+  // (i) un maximum ISOLÉ n'est pas un parc : un seul relevé plus haut que tous les autres
+  //     (redémarrage, cache, station fantôme) fabriquerait des vélos en trajet. La validation
+  //     exige un palier d'au moins deux tranches à 1 % près.
+  {
+    static Model m;
+    CHECK(m.init(), "init parc (pic isolé)");
+    const int64_t t0 = 1791842400 + 1 * 3600;              // 01:00, creux de nuit
+    m.applyInfo(ir, 3, t0);
+    int64_t t = t0;
+    for (; t <= t0 + 8 * 3600; t += 300) {
+      const bool spike = (t == t0 + 4 * 3600);              // un seul relevé à 20
+      for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, spike ? 20 : 10, 20);
+      m.applyStatus(sr, 3, t);
+    }
+    CHECK(m.tot.fleet == 60 && m.tot.refPlateau == 1,
+          "parc = pic isolé (%d), confirmé par %d tranche(s)", m.tot.fleet, m.tot.refPlateau);
+    CHECK(!m.tot.inUseValid, "maximum isolé : en-trajet NON valide");
   }
 }
 

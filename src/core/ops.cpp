@@ -149,15 +149,12 @@ static void hhmm(char * out, size_t n, int64_t t) {
   snprintf(out, n, "%02d:%02d", lt.tm_hour, lt.tm_min);
 }
 
-// Décalage en jours locaux entre deux horodatages (0 = même jour, ‑1 = hier…). Après une coupure,
-// la tranche de référence peut dater de la veille : « Réf. 04:55 » seul laissait croire qu'elle
-// venait du matin même.
-static int dayOffsetOf(int64_t t, int64_t now) {
-  if (t <= 0 || now <= 0) return 0;
-  struct tm a, b;
-  plat::localTime(t, &a);
-  plat::localTime(now, &b);
-  return (a.tm_year - b.tm_year) * 366 + (a.tm_yday - b.tm_yday);
+// Âge de la tranche de référence, en heures pleines. Après une coupure, « Réf. 04:55 » seul
+// laissait croire à un maximum du matin même alors qu'il datait de la veille : l'âge le dit
+// sans ambiguïté, y compris quand la référence reste dans la même journée.
+static int ageHoursOf(int64_t t, int64_t now) {
+  if (t <= 0 || now <= t) return 0;
+  return (int)((now - t) / 3600);
 }
 
 bool provenance(const Model & m, int kpi, Provenance & p) {
@@ -215,10 +212,12 @@ bool provenance(const Model & m, int kpi, Provenance & p) {
                      "l'historique 5 min des derni\xC3\xA8res 24 h, sur les tranches o\xC3\xB9 autant de "
                      "stations r\xC3\xA9pondaient qu'aujourd'hui.";
       p.validity = "Valid\xC3\xA9 : au moins 6 h de tranches R\xC3\x89ELLEMENT OBSERV\xC3\x89ES (les coupures "
-                   "et les tranches non comparables \xC3\xA0 la population courante ne comptent pas) ET un "
-                   "creux observ\xC3\xA9 (tranche de r\xC3\xA9f\xC3\xA9rence parmi le quart le moins actif). "
-                   "Tant que ces conditions ne sont pas r\xC3\xA9unies, la valeur est marqu\xC3\xA9e "
-                   "provisoire ici, et le tableau de bord affiche un tiret.";
+                   "et les tranches non comparables \xC3\xA0 la population courante ne comptent pas), un "
+                   "creux observ\xC3\xA9 (r\xC3\xA9f\xC3\xA9rence dans le quart le moins actif) ET un maximum en "
+                   "PALIER : au moins deux tranches confirment le parc \xC3\xA0 1 % pr\xC3\xA8s, pour qu'un relev\xC3\xA9 "
+                   "unique plus haut que les autres ne fabrique pas des v\xC3\xA9los en trajet. Tant que ces "
+                   "conditions ne sont pas r\xC3\xA9unies, la valeur est marqu\xC3\xA9e provisoire ici, et le "
+                   "tableau de bord affiche un tiret.";
       p.validityMet = t.inUseValid;
       p.refAt = t.fleetAt;
       status();
@@ -231,11 +230,11 @@ bool provenance(const Model & m, int kpi, Provenance & p) {
       if (t.fleetAt) {
         hhmm(hh, sizeof(hh), t.fleetAt);
         char age[16] = "";
-        int d = dayOffsetOf(t.fleetAt, m.lastUpdate);
-        if (d == -1) snprintf(age, sizeof(age), " (veille)");
-        else if (d < -1) snprintf(age, sizeof(age), " (\xE2\x88\x92%d j)", -d);
-        snprintf(p.detail, sizeof(p.detail), "R\xC3\xA9f. %s%s \xC2\xB7 hist. %dh%02d \xC2\xB7 %d st. couv.%s",
+        int ah = ageHoursOf(t.fleetAt, m.lastUpdate);
+        if (ah >= 1) snprintf(age, sizeof(age), " (\xE2\x88\x92%d h)", ah);
+        snprintf(p.detail, sizeof(p.detail), "R\xC3\xA9f. %s%s \xC2\xB7 hist. %dh%02d \xC2\xB7 %d st. couv.%s%s",
                  hh, age, t.histMinutes / 60, t.histMinutes % 60, t.refCover,
+                 t.refPlateau < 2 ? " \xC2\xB7 max isol\xC3\xA9" : "",
                  t.inUseValid ? "" : " \xC2\xB7 provisoire");
       } else {
         snprintf(p.detail, sizeof(p.detail), "Maximum = relev\xC3\xA9 actuel \xC2\xB7 hist. %dh%02d%s",
