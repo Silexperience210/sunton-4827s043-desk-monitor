@@ -1131,14 +1131,21 @@ void Model::recompute(int64_t now) {
   // stations à vérifier une par une. Mesuré à midi : 23 à 24 stations changent toutes les quatre
   // minutes ; deux mouvements ou moins en vingt minutes est donc un signal franc.
   int cand = 0, moved = 0;
+  int64_t lastMove = 0;                       // mouvement le plus récent observé sur le parc
   for (int i = 0; i < n; i++) {
     const Station & s = st[i];
     if (!s.active || !s.live || s.status == ST_CLOSED) continue;
     cand++;
+    if (s.lastChange > lastMove) lastMove = s.lastChange;
     if (s.lastChange && now - s.lastChange <= 20 * 60) moved++;
   }
   const bool feedFrozen = activeHours && cand >= 20 && moved <= 1;
-  if (feedFrozen) add(AL_FEED_FROZEN, 2, -1, lastUpdate ? (int)((now - lastUpdate) / 60) : -1, moved);
+  // Les minutes se comptent depuis le DERNIER MOUVEMENT du parc, jamais depuis le téléchargement :
+  // applyStatus pose lastUpdate = now juste avant recompute(), donc l'ancien calcul annonçait
+  // toujours « aucune station n'a bougé depuis 0 min » dans le cas même qu'il décrit (fournisseur
+  // muet, téléchargement réussi). Sévérité 3 : quand le flux est figé, les ruptures listées sont
+  // périmées — l'alerte réseau doit passer devant elles (risque 100 la place en tête de sa gravité).
+  if (feedFrozen) add(AL_FEED_FROZEN, 3, -1, lastMove ? (int)((now - lastMove) / 60) : -1, moved);
 
   for (int i = 0; i < n; i++) {
     const Station & s = st[i];

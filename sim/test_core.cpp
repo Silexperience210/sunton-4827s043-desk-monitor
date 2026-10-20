@@ -406,6 +406,29 @@ static void testAlertes() {
   CHECK(m4.alertCount[AL_FEED_FROZEN] == 1, "flux figé : une alerte réseau (%d)", m4.alertCount[AL_FEED_FROZEN]);
   CHECK(m4.alertCount[AL_FROZEN] == 0, "flux figé : aucune alerte « aucun mouvement » par station (%d)",
         m4.alertCount[AL_FROZEN]);
+  // Le texte de cette alerte : les minutes se comptent depuis le dernier mouvement du parc, pas
+  // depuis le téléchargement (applyStatus pose lastUpdate = now juste avant recompute, si bien que
+  // l'ancien calcul affichait toujours « depuis 0 min »). Et elle doit passer DEVANT les ruptures :
+  // avec un flux figé, celles de la liste sont périmées.
+  int fMin = -1;
+  for (int k = 0; k < m4.nAlerts; k++) if (m4.alerts[k].type == AL_FEED_FROZEN) fMin = m4.alerts[k].minutes;
+  CHECK(fMin == 60, "flux figé : minutes = âge du dernier mouvement (%d, attendu 60)", fMin);
+  CHECK(m4.nAlerts >= 1 && m4.alerts[0].type == AL_FEED_FROZEN && m4.alerts[0].sev == 3,
+        "flux figé : l'alerte réseau est en tête, en gravité 3");
+
+  // (e2) deux stations bougent dans les vingt minutes → ce n'est pas un flux figé
+  static Model m4b;
+  CHECK(m4b.init(), "init (flux vivant)");
+  static StatusRec s4b[30];
+  for (int i = 0; i < M; i++) s4b[i] = mkStat(i4[i].sid, 6, 20);
+  m4b.applyInfo(i4, M, T - 3600);
+  m4b.applyStatus(s4b, M, T - 3600);
+  s4b[0] = mkStat(i4[0].sid, 7, 20); s4b[1] = mkStat(i4[1].sid, 5, 20);
+  m4b.applyStatus(s4b, M, T - 600);
+  m4b.applyStatus(s4b, M, T);
+  m4b.recompute(T);
+  CHECK(m4b.alertCount[AL_FEED_FROZEN] == 0, "deux stations qui bougent : pas d'alerte réseau (%d)",
+        m4b.alertCount[AL_FEED_FROZEN]);
 
   // (f) journal : une rupture qui se termine laisse sa durée
   static Model m5;
