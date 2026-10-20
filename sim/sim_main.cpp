@@ -28,6 +28,7 @@
 #include <time.h>
 
 namespace ui { lv_obj_t * debugToast(); int debugTab(); const char * debugDashText(int w);
+               const char * debugDashPrio(int row, int field);
                int debugDashCurvePoints(); int debugDashCurveLastX(); int debugDashForecastPoints(); }
 namespace sim { extern int64_t g_epoch0; extern uint32_t g_ms; extern bool g_fetching; extern const char * g_fsDir;
                 extern int g_wifiState; extern bool g_timeOk; extern const char * g_stage; extern int g_wifiReason;
@@ -1058,6 +1059,87 @@ static int horsLigneScenario(const std::string & in) {
   return fails ? 3 : 0;
 }
 
+// ── Scénario « priorités » : une alerte réseau dans les cinq lignes du tableau de bord ──
+// Elle y entre dès que moins de cinq stations sont plus graves qu'elle — une journée calme, donc.
+// La ligne lisait alors `g_model.st[-1]`, 408 octets AVANT le tableau (l'en-tête du tas PSRAM) :
+// nom illisible et badge pris au hasard, sans plantage. ASan le voyait à chaque rafraîchissement.
+// Ce scénario fige la règle : la ligne existe, elle est nommée « Réseau » et ne porte pas de badge.
+static int prioScenario() {
+  settingsDefaults(g_set);
+  strcpy(g_set.ssid, "VELOH-OPS");
+  const int64_t T = 1791842400 + 12 * 3600;              // 13/10/2026 12:00, heures actives
+  if (!g_model.init()) { fprintf(stderr, "init modèle\n"); return 1; }
+  static InfoRec ir[40];
+  for (int i = 0; i < 40; i++) {
+    memset(&ir[i], 0, sizeof ir[i]);
+    snprintf(ir[i].sid, sizeof ir[i].sid, "%d", i + 1);
+    snprintf(ir[i].name, sizeof ir[i].name, "Station %d", i + 1);
+    ir[i].lat = 49.60f + i * 0.001f; ir[i].lon = 6.13f; ir[i].cap = 20;
+  }
+  g_model.applyInfo(ir, 40, T - 3600);
+  static StatusRec sr[40];
+  for (int i = 0; i < 40; i++) {
+    memset(&sr[i], 0, sizeof sr[i]);
+    strcpy(sr[i].sid, ir[i].sid);
+    sr[i].bikes = 6; sr[i].elec = 6; sr[i].docks = 14;
+    sr[i].installed = sr[i].renting = sr[i].returning = 1;
+    sr[i].bikesDis = (i < 25) ? 2 : 0;                   // 50 vélos HS sur 290 présents ≈ 17 %
+  }
+  for (int i = 0; i < 4; i++) { sr[i].bikes = 0; sr[i].docks = 20; }   // quatre ruptures, pas plus
+  sim::g_epoch0 = T; sim::g_timeOk = true;
+  g_model.applyStatus(sr, 40, T - 1800);
+  // Quelques stations bougent dans les vingt minutes : le flux n'est pas figé, donc l'alerte
+  // réseau testée ici est celle du parc (part de vélos hors service), pas celle du flux.
+  for (int i = 10; i < 15; i++) { sr[i].bikes = 7; sr[i].docks = 13; }
+  g_model.applyStatus(sr, 40, T - 600);
+  g_model.applyStatus(sr, 40, T);
+  g_model.recompute(T);
+
+  int fails = 0;
+  auto check = [&](bool c, const char * what) { printf("  %s %s\n", c ? "✓" : "ÉCHEC", what); if (!c) fails++; };
+
+  // Précondition : l'alerte réseau est bien dans les cinq premières lignes de priorité
+  int netRank = -1, sevAbove = 0;
+  for (int k = 0; k < g_model.nAlerts && netRank < 0; k++) {
+    const Alert & a = g_model.alerts[k];
+    if (a.sev < 1) continue;
+    if (a.st < 0) netRank = sevAbove; else sevAbove++;
+  }
+  printf("Priorités : %d alerte(s) plus graves avant l'alerte réseau (rang %d)\n", sevAbove, netRank);
+  check(netRank >= 0 && netRank < 5, "l'alerte réseau entre dans les cinq lignes de priorité");
+
+  lv_init();
+  static lv_disp_draw_buf_t db;
+  lv_disp_draw_buf_init(&db, s_buf, nullptr, 480 * 40);
+  static lv_disp_drv_t dd;
+  lv_disp_drv_init(&dd);
+  dd.hor_res = 480; dd.ver_res = 272; dd.flush_cb = flush; dd.draw_buf = &db;
+  lv_disp_t * disp = lv_disp_drv_register(&dd);
+  static lv_indev_drv_t id;
+  lv_indev_drv_init(&id);
+  id.type = LV_INDEV_TYPE_POINTER; id.read_cb = readTouch;
+  lv_indev_drv_register(&id);
+  ui::init(disp);
+  run(800);
+  shot("prio_reseau");
+
+  bool netNamed = false, netBadge = false, netWhy = false;
+  for (int k = 0; k < 5; k++) {
+    printf("  ligne %d : « %s » · « %s » · badge « %s »\n", k, ui::debugDashPrio(k, 0),
+           ui::debugDashPrio(k, 1), ui::debugDashPrio(k, 2));
+    if (strcmp(ui::debugDashPrio(k, 0), "R\xC3\xA9" "seau") == 0) {
+      netNamed = true;
+      netWhy = ui::debugDashPrio(k, 1)[0] != 0;
+      netBadge = ui::debugDashPrio(k, 2)[0] != 0;
+    }
+  }
+  check(netNamed, "la ligne de l'alerte réseau est nommée « Réseau » (pas un nom lu hors du tableau)");
+  check(netWhy, "elle porte un motif lisible");
+  check(!netBadge, "elle ne porte pas de besoin de livraison");
+  printf("Scénario priorités : %d échec(s)\n", fails);
+  return fails ? 3 : 0;
+}
+
 static int realMain(int argc, char ** argv) {
   if (argc < 3) { fprintf(stderr, "usage : sim <json_dir> <out_dir>\n"); return 1; }
   std::string in = argv[1];
@@ -1071,8 +1153,9 @@ static int realMain(int argc, char ** argv) {
     if (strcmp(argv[3], "service") == 0) return serviceScenario(in);
     if (strcmp(argv[3], "hors-ligne") == 0) return horsLigneScenario(in);
     if (strcmp(argv[3], "boot") == 0 || strcmp(argv[3], "boot-wifi-ko") == 0) return bootScenario(in, argv[3]);
+    if (strcmp(argv[3], "priorites") == 0) return prioScenario();
     // un nom mal tapé ne doit pas « passer » en jouant le démarrage (code 0) : la CI le verrait vert
-    fprintf(stderr, "sc\xC3\xA9nario inconnu : %s (ops, service, hors-ligne, totaux, boot, boot-wifi-ko)\n", argv[3]);
+    fprintf(stderr, "sc\xC3\xA9nario inconnu : %s (ops, service, hors-ligne, totaux, boot, boot-wifi-ko, priorites)\n", argv[3]);
     return 64;
   }
 

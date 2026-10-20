@@ -455,10 +455,15 @@ static void refresh() {
     lv_obj_t * ic = lv_obj_get_child(r, 0);
     lv_img_set_src(ic, alertIcon16(a.type));
     iconColor(ic, toneColor(alertTone(a)));
-    lv_label_set_text(lv_obj_get_child(r, 1), g_model.st[a.st].name);
+    // Une alerte réseau a st = ‑1 : sans garde, `g_model.st[-1]` lit 408 octets avant le tableau
+    // (l'en-tête du tas PSRAM), donc un nom illisible et un badge pris au hasard. L'alerte réseau
+    // entre désormais vraiment dans ces cinq lignes (risque 100, gravité 3 pour un flux figé) :
+    // ASan voyait le débordement à chaque rafraîchissement.
+    const bool netAlert = a.st < 0;
+    lv_label_set_text(lv_obj_get_child(r, 1), netAlert ? "R\xC3\xA9" "seau" : g_model.st[a.st].name);
     alertWhy(a, b, sizeof(b));
     lv_label_set_text(lv_obj_get_child(r, 2), b);
-    int nd = g_model.st[a.st].need;
+    int nd = netAlert ? 0 : g_model.st[a.st].need;
     lv_obj_t * bd = lv_obj_get_child(r, 3);
     if (nd) { needText(nd, c2, sizeof(c2)); badgeSet(bd, c2, nd > 0 ? T_GOOD : T_TRANSIT); lv_obj_clear_flag(bd, LV_OBJ_FLAG_HIDDEN); }
     else lv_obj_add_flag(bd, LV_OBJ_FLAG_HIDDEN);
@@ -517,10 +522,26 @@ const char * debugDashText(int w) {
     case 7: return lv_obj_has_flag(s_fresh, LV_OBJ_FLAG_HIDDEN) ? "" : lv_label_get_text(s_freshMsg);
     case 8: return lv_label_get_text(s_cnt[0]);
     case 9: return lv_label_get_text(lv_obj_get_child(s_prioRows[0], 1));
+    case 12: case 13: case 14: case 15: case 16:
+      return lv_label_get_text(lv_obj_get_child(s_prioRows[w - 12], 1));
     case 10: return lv_label_get_text(s_kpi[0].sub);
     case 11: return lv_label_get_text(s_fcDelta);
     default: return "";
   }
+}
+// Banc : ce qu'une ligne de priorité AFFICHE (0 = nom, 1 = motif, 2 = badge, "" = caché/absent).
+const char * debugDashPrio(int row, int field) {
+  if (row < 0 || row >= 5) return "";
+  lv_obj_t * r = s_prioRows[row];
+  if (lv_obj_has_flag(r, LV_OBJ_FLAG_HIDDEN)) return "";
+  lv_obj_t * o = lv_obj_get_child(r, field == 0 ? 1 : field == 1 ? 2 : 3);
+  if (!o) return "";
+  if (field == 2) {                       // la pastille est un conteneur : son texte est chez l'enfant
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return "";
+    o = lv_obj_get_child(o, 0);
+    if (!o) return "";
+  }
+  return lv_label_get_text(o);
 }
 int debugDashCurvePoints() { int n = 0; for (float v : s_real) n += !isnan(v); return n; }
 int debugDashCurveLastX() { for (int x = VN_RING_SLOTS - 1; x >= 0; x--) if (!isnan(s_real[x])) return x; return -1; }
