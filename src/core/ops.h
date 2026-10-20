@@ -102,6 +102,7 @@ struct Provenance {
   int64_t recvAt;              // réception par la carte (0 si inconnue)
   int64_t refAt;               // instant de référence d'une estimation (creux du parc…), 0 sinon
   int     count;               // stations sommées, ‑1 si sans objet
+  bool    lowerBound;          // la valeur est un plancher (« ≥ »), pas une mesure exacte
   char    detail[112];         // état chiffré de la condition / précision (peut être vide)
 };
 bool provenance(const Model & m, int kpi, Provenance & out);

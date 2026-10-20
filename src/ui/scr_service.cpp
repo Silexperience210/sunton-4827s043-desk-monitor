@@ -199,8 +199,8 @@ static void refreshSynth(int64_t t, int32_t today, int done) {
     const vn::DayNet * d = k >= 0 ? b.dayAt(k) : nullptr;
     if (!d) { s_evE[i] = s_evF[i] = NAN; continue; }
     bool any = false;
-    for (int h = 0; h < vn::DAY_NH && !any; h++) any = d->slots[h] != 0;
-    if (!any) { s_evE[i] = s_evF[i] = NAN; continue; }   // relevé seulement hors service : un trou
+    for (int h = 0; h < vn::DAY_NH && !any; h++) any = d->slots[h] >= vn::DAY_SEEN_SLOTS;
+    if (!any) { s_evE[i] = s_evF[i] = NAN; continue; }   // pas une heure pleinement relevée : un trou
     uint32_t e = 0, f = 0;
     for (int h = 0; h < vn::DAY_NH; h++) { e += d->evEmpty[h]; f += d->evFull[h]; }
     s_evE[i] = (float)e; s_evF[i] = (float)f;
@@ -522,7 +522,9 @@ static void refreshCard(int64_t t, int32_t today) {
     } else snprintf(x, sizeof(x), "%d jour%s gard\xC3\xA9%s (depuis %s, au plus %d)", b.count, b.count > 1 ? "s" : "", b.count > 1 ? "s" : "", a, VN_DAYS);
   }
   lv_label_set_text(s_cardSub[5], x);
-  const bool noToday = td.days == 0;        // aucun jour de service relevé aujourd'hui (même avant 8 h)
+  // Avant 8 h, aucune heure de service n'est encore complète : ce n'est pas une anomalie, donc pas
+  // d'alerte. Le badge ne signale l'absence de relevé qu'une fois la journée entamée.
+  const bool noToday = done > 0 && td.days == 0;
   bool cov = done && td.slotsMax && td.slots * 10 < td.slotsMax * 9;
   badgeSet(s_cardBadge[5], !b.count ? "VIDE" : noToday ? "AUCUN RELEV\xC3\x89" : cov ? "TROUS" : "COMPLET",
            (!b.count || cov || noToday) ? T_WARN : T_GOOD);

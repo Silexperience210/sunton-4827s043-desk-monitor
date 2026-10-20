@@ -213,15 +213,20 @@ bool provenance(const Model & m, int kpi, Provenance & p) {
                      "stations r\xC3\xA9pondaient qu'aujourd'hui.";
       p.validity = "Valid\xC3\xA9 : au moins 6 h de tranches R\xC3\x89" "ELLEMENT OBSERV\xC3\x89" "ES et comparables "
                    "\xC3\xA0 la population courante (les coupures et les changements de couverture ne comptent pas), "
-                   "ET un creux observ\xC3\xA9 (r\xC3\xA9f\xC3\xA9rence dans le quart le moins actif). Le parc est la "
+                   "ET un creux observ\xC3\xA9 (r\xC3\xA9" "f\xC3\xA9rence dans le quart le moins actif). Le parc est la "
                    "TROISI\xC3\x88" "ME plus grande valeur comparable : un ou deux relev\xC3\xA9s anormalement hauts "
                    "(red\xC3\xA9marrage, cache, station fant\xC3\xB4me) sont \xC3\xA9" "cart\xC3\xA9s et compt\xC3\xA9s dans le d\xC3\xA9tail "
-                   "au lieu de gonfler le chiffre. Tant que les conditions ne sont pas r\xC3\xA9unies, la valeur est "
+                   "au lieu de gonfler le chiffre. Le parc retenu restant prudent, le nombre de v\xC3\xA9los en "
+                   "circulation est un PLANCHER : la r\xC3\xA9" "alit\xC3\xA9 est au moins celle-l\xC3\xA0. Tant que les conditions "
+                   "ne sont pas r\xC3\xA9unies, la valeur est "
                    "marqu\xC3\xA9" "e provisoire ici, et le tableau de bord affiche un tiret.";
       p.validityMet = t.inUseValid;
       p.refAt = t.fleetAt;
       status();
       p.value = (float)(use ? t.inUse : t.fleet);
+      // Estimation, pas un plancher : la revue a montré que deux artefacts indépendants surestiment
+      // encore le parc (« ≥ 400 » pour 200 réels). On ne promet donc pas de borne.
+      p.lowerBound = false;
       char hh[8];
       if (gbfs && !t.inUseValid && !t.inUseProvisional) {
         p.available = false;
@@ -232,12 +237,8 @@ bool provenance(const Model & m, int kpi, Provenance & p) {
         char age[16] = "";
         int ah = ageHoursOf(t.fleetAt, m.lastUpdate);
         if (ah >= 1) snprintf(age, sizeof(age), " (\xE2\x88\x92%d h)", ah);
-        char spk[40] = "";
-        if (t.refSpikes) snprintf(spk, sizeof(spk), " \xC2\xB7 %d relev\xC3\xA9%s plus haut%s \xC3\xA9" "cart\xC3\xA9%s",
-                                  t.refSpikes, t.refSpikes > 1 ? "s" : "", t.refSpikes > 1 ? "s" : "",
-                                  t.refSpikes > 1 ? "s" : "");
-        snprintf(p.detail, sizeof(p.detail), "R\xC3\xA9" "f. %s%s \xC2\xB7 hist. %dh%02d \xC2\xB7 %d st. couv.%s%s",
-                 hh, age, t.histMinutes / 60, t.histMinutes % 60, t.refCover, spk,
+        snprintf(p.detail, sizeof(p.detail), "R\xC3\xA9" "f. %s%s \xC2\xB7 hist. %dh%02d \xC2\xB7 %d st. couv.%s",
+                 hh, age, t.histMinutes / 60, t.histMinutes % 60, t.refCover,
                  t.inUseValid ? "" : " \xC2\xB7 provisoire");
       } else {
         snprintf(p.detail, sizeof(p.detail), "Maximum = relev\xC3\xA9 actuel \xC2\xB7 hist. %dh%02d%s",

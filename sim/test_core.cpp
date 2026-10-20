@@ -508,7 +508,7 @@ static void testParc() {
     // Attention aux séquences d'échappement : « \x92" "14 » serait lu comme UN caractère (0x9214).
     CHECK(provenance(m, KPI_INUSE, p) && strstr(p.detail, "(\xE2\x88\x92" "14 h)"),
           "fiche en trajet : référence datée « (\xE2\x88\x92" "14 h) » (« %s »)", p.detail);
-    // Régression du 20/10 : « \xA9f » avalait le f et la fiche affichait « Rß. » dans le binaire livré.
+    // Régression du 20/10 : « \xA9" "f » avalait le f et la fiche affichait « Rß. » dans le binaire livré.
     CHECK(strstr(p.detail, "R\xC3\xA9" "f. ") != nullptr,
           "la fiche écrit bien « R\xC3\xA9" "f. » (pas « R\xC3\x9F. ») (« %s »)", p.detail);
   }
@@ -524,12 +524,13 @@ static void testParc() {
     const int64_t t0 = 1791842400 + 1 * 3600;              // 01:00, creux de nuit
     m.applyInfo(irF, 3, t0);
     int64_t t = t0;
+    StatusRec sF[4];                                     // 4 lignes : la fantôme en occupe une
     for (; t <= t0 + 8 * 3600; t += 300) {
       const bool ghost = (t == t0 + 4 * 3600 || t == t0 + 4 * 3600 + 300);   // deux tranches fantômes
       if (ghost) m.applyInfo(irF, 4, t);
-      for (int s2 = 0; s2 < 3; s2++) sr[s2] = mkStat(irF[s2].sid, 10, 20);
-      if (ghost) sr[3] = mkStat(irF[3].sid, 50, 0);
-      m.applyStatus(sr, ghost ? 4 : 3, t);
+      for (int s2 = 0; s2 < 3; s2++) sF[s2] = mkStat(irF[s2].sid, 10, 20);
+      if (ghost) sF[3] = mkStat(irF[3].sid, 50, 0);
+      m.applyStatus(sF, ghost ? 4 : 3, t);
       if (ghost) m.applyInfo(irF, 3, t);
     }
     CHECK(m.tot.fleet == 30, "parc = 3 × 10 malgré la station fantôme (%d)", m.tot.fleet);
@@ -647,6 +648,10 @@ static void testProvenance(const std::string & dir) {
   provenance(m, KPI_INUSE, p);
   CHECK(p.estimate && p.validity && !p.validityMet && !p.available && p.missing,
         "en trajet, carte neuve : estimation NON valable, « — » et raison");
+  provenance(m, KPI_FLEET, p);
+  CHECK(!p.lowerBound, "le parc estimé est une approximation, pas un plancher");
+  provenance(m, KPI_INUSE, p);
+  CHECK(!p.lowerBound, "« vélos en trajet » est une ESTIMATION, pas un plancher (deux artefacts la surestiment)");
   provenance(m, KPI_DELTA1H, p);
   CHECK(!p.available && p.missing, "variation 1 h sans recul : « — » et raison");
   provenance(m, KPI_TEMP, p);

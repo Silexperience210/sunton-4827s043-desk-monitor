@@ -175,7 +175,8 @@ int svcRank(const DayBook & b, const Model & m, int32_t dayFrom, int32_t dayTo, 
   }
   for (int i = 0; i < m.n && i < VN_MAX_ST; i++) if (m.st[i].active && acc[i].obs > best) best = acc[i].obs;
   int n = 0, skip = 0;
-  for (int i = 0; i < m.n && i < VN_MAX_ST; i++) if (m.st[i].active && acc[i].obs * 2 < best) skip++;
+  for (int i = 0; i < m.n && i < VN_MAX_ST; i++)
+    if (!m.st[i].active || acc[i].obs * 2 < best) skip++;   // inactives : ni classées ni observées
   for (int i = 0; best && i < m.n && i < VN_MAX_ST && n < max; i++) {
     if (!m.st[i].active || acc[i].obs * 2 < best) continue;
     acc[i].st = (int16_t)i;
