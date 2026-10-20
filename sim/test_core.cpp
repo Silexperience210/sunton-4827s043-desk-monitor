@@ -431,6 +431,27 @@ static void testParc() {
     CHECK(m.tot.histMinutes == before,
           "recul d'horloge : profondeur inchangée (%d min → %d min)", before, m.tot.histMinutes);
   }
+
+  // (h) la référence est datée quand elle vient de la veille : après une coupure, « Réf. 20:05 »
+  //     seul laissait croire à un maximum du matin. La fiche doit dire « (veille) ».
+  {
+    static Model m;
+    CHECK(m.init(), "init parc (référence de la veille)");
+    const int64_t t0 = 1791842400 + 20 * 3600;             // 20:00, réseau plein
+    m.applyInfo(ir, 3, t0);
+    for (int64_t t = t0; t <= t0 + 1800; t += 300) {
+      for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, 20, 20);
+      m.applyStatus(sr, 3, t);
+    }
+    const int64_t t1 = t0 + 14 * 3600;                     // lendemain 10:00, réseau vide
+    for (int64_t t = t1; t <= t1 + 1800; t += 300) {
+      for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, 8, 20);
+      m.applyStatus(sr, 3, t);
+    }
+    Provenance p;
+    CHECK(provenance(m, KPI_INUSE, p) && strstr(p.detail, "veille"),
+          "fiche en trajet : référence datée « (veille) » (« %s »)", p.detail);
+  }
 }
 
 

@@ -149,6 +149,17 @@ static void hhmm(char * out, size_t n, int64_t t) {
   snprintf(out, n, "%02d:%02d", lt.tm_hour, lt.tm_min);
 }
 
+// Décalage en jours locaux entre deux horodatages (0 = même jour, ‑1 = hier…). Après une coupure,
+// la tranche de référence peut dater de la veille : « Réf. 04:55 » seul laissait croire qu'elle
+// venait du matin même.
+static int dayOffsetOf(int64_t t, int64_t now) {
+  if (t <= 0 || now <= 0) return 0;
+  struct tm a, b;
+  plat::localTime(t, &a);
+  plat::localTime(now, &b);
+  return (a.tm_year - b.tm_year) * 366 + (a.tm_yday - b.tm_yday);
+}
+
 bool provenance(const Model & m, int kpi, Provenance & p) {
   memset(&p, 0, sizeof(p));
   p.unit = "";
@@ -219,8 +230,12 @@ bool provenance(const Model & m, int kpi, Provenance & p) {
       }
       if (t.fleetAt) {
         hhmm(hh, sizeof(hh), t.fleetAt);
-        snprintf(p.detail, sizeof(p.detail), "R\xC3\xA9f. %s \xC2\xB7 hist. %dh%02d \xC2\xB7 %d st. couv.%s",
-                 hh, t.histMinutes / 60, t.histMinutes % 60, t.refCover,
+        char age[16] = "";
+        int d = dayOffsetOf(t.fleetAt, m.lastUpdate);
+        if (d == -1) snprintf(age, sizeof(age), " (veille)");
+        else if (d < -1) snprintf(age, sizeof(age), " (\xE2\x88\x92%d j)", -d);
+        snprintf(p.detail, sizeof(p.detail), "R\xC3\xA9f. %s%s \xC2\xB7 hist. %dh%02d \xC2\xB7 %d st. couv.%s",
+                 hh, age, t.histMinutes / 60, t.histMinutes % 60, t.refCover,
                  t.inUseValid ? "" : " \xC2\xB7 provisoire");
       } else {
         snprintf(p.detail, sizeof(p.detail), "Maximum = relev\xC3\xA9 actuel \xC2\xB7 hist. %dh%02d%s",
