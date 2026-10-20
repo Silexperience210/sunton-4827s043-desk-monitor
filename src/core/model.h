@@ -191,6 +191,9 @@ struct Alert {
 
 // Épisode de rupture journalisé : « #12 vide, 8 h 03 → 8 h 41 (38 min) ».
 struct AlertLog { int64_t t; int32_t dur; int16_t st; uint8_t type; };
+// Le budget mémoire du journal (VN_ALERT_LOG × 16 o) et le commentaire de config.h reposent sur
+// cette taille : un champ ajouté ici doit se voir tout de suite, pas à la première allocation.
+static_assert(sizeof(AlertLog) == 16, "AlertLog doit rester à 16 octets (budget du journal)");
 
 struct Transfer { int16_t from, to; uint8_t n; uint16_t distM; };
 

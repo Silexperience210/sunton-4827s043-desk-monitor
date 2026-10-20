@@ -43,7 +43,11 @@
 #define VN_PROFILE_DECAY_N 24   // constante de temps du profil en relevés (3 par semaine et par créneau) : 8 semaines
 #define VN_FC_STEPS        25   // prévision 0…120 min au pas de 5 min
 #define VN_MAX_ALERTS      96   // affichées ; le plafond n'écarte plus les graves (éviction)
-#define VN_ALERT_LOG      200   // journal des ruptures, en PSRAM (12 o l'entrée ≈ 2,4 Ko)
+#define VN_ALERT_LOG     1024   // journal des ruptures, en PSRAM. 16 o l'entrée (int64 horodatage +
+                                // int32 durée + int16 station + type, aligné) ≈ 16 Ko. Mesuré sur
+                                // l'anneau réel de la carte : 262 épisodes en 22 h au pas de 5 min,
+                                // donc 200 entrées étaient pleines en moins de 12 h et le bilan du
+                                // jour perdait les ruptures du matin (le pas réel de 60 s en ajoute).
 #define VN_MAX_TRANSFERS    8
 #define VN_DAYS            60   // résumés par jour gardés (vue Service, core/days.h) : 2 mois
 

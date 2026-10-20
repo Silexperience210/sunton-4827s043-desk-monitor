@@ -456,6 +456,23 @@ static void testAlertes() {
   int totS = 0;
   const int nToday = vn::rupturesToday(m5, 0, T, &totS);
   CHECK(nToday == 1 && totS == 1200, "bilan du jour : %d épisode(s), %d s", nToday, totS);
+
+  // (h) capacité du journal : une journée chargée ne doit pas écraser le matin. Sur l'anneau réel
+  //     de la carte, 200 entrées étaient pleines en moins de douze heures (262 épisodes en 22 h au
+  //     pas de 5 min) : le bilan du jour annonçait alors « aucune rupture » pour une station vide
+  //     depuis le matin. 300 épisodes doivent tenir.
+  static Model m7;
+  CHECK(m7.init(), "init (capacité du journal)");
+  InfoRec i7[1] = { mkInfo("1", 49.60f, 6.13f, 20) };
+  m7.applyInfo(i7, 1, T - 100000);
+  StatusRec s7[1];
+  s7[0] = mkStat("1", 6, 20);
+  m7.applyStatus(s7, 1, T - 99000);
+  for (int k = 0; k < 300; k++) {
+    s7[0] = mkStat("1", 0, 20); m7.applyStatus(s7, 1, T - 99000 + 2 * k * 60 + 60);
+    s7[0] = mkStat("1", 6, 20); m7.applyStatus(s7, 1, T - 99000 + 2 * k * 60 + 120);
+  }
+  CHECK(m7.nLog == 300, "journal : 300 épisodes conservés (%d, anneau de %d)", m7.nLog, VN_ALERT_LOG);
 }
 
 // ── Bilan du jour : il compte les épisodes qui RECOUPENT la journée ──────────
