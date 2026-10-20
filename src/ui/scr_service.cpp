@@ -121,7 +121,8 @@ static void buildSynth(lv_obj_t * p) {
   }
   lv_obj_t * def = wrapLabel(c, &vn_inter_11, HX_TEXT3, PANE_W - 16);
   lv_label_set_text(def, "Disponible = ouverte, \xE2\x89\xA5\xC2\xA0" "1 v\xC3\xA9lo louable ET \xE2\x89\xA5\xC2\xA0" "1 borne libre. "
-                         "Vide (on peut rendre, pas prendre) et pleine (l'inverse) ne sont PAS hors service. "
+                         "Vide = aucun vélo louable (on ne peut pas prendre ; rendre reste possible s'il "
+                         "reste une borne libre) ; pleine = l'inverse. Ni l'un ni l'autre n'est hors service. "
                          "Unit\xC3\xA9 : station \xC3\x97 5 min observ\xC3\xA9" "es, en heures.");
 
   lv_obj_t * cc = cardCol(p, "ENTR\xC3\x89" "ES EN RUPTURE ET EN SATURATION PAR JOUR \xC2\xB7 30 J");
@@ -162,7 +163,7 @@ static void refreshSynth(int64_t t, int32_t today, int done) {
   else {
     vn::svcHours(y, sizeof(y), mo.avail()); vn::svcHours(z, sizeof(z), mo.obs);
     vn::svcPct(w, sizeof(w), mo.slots, mo.slotsMax);
-    snprintf(x, sizeof(x), "%s sur %s \xC2\xB7 %d j sur 30 relev\xC3\xA9s, %s des tranches", y, z, mo.days, w);
+    snprintf(x, sizeof(x), "%s sur %s \xC2\xB7 %d j sur 30 relev\xC3\xA9s, %s des tranches des jours relev\xC3\xA9s", y, z, mo.days, w);
   }
   lv_label_set_text(s_monthSub, x);
   // Parts
@@ -192,14 +193,18 @@ static void refreshSynth(int64_t t, int32_t today, int done) {
   float mx = 4;
   uint32_t sumE = 0, sumF = 0;
   for (int i = 0; i < NDAYS_CHART; i++) {
-    int32_t day = today - NDAYS_CHART + 1 + i;
+    // Même fenêtre que la tuile « 30 JOURS » : today-30 … today-1 (30 jours, aujourd'hui exclu).
+    int32_t day = today - NDAYS_CHART + i;
     int k = b.find(day);
     const vn::DayNet * d = k >= 0 ? b.dayAt(k) : nullptr;
     if (!d) { s_evE[i] = s_evF[i] = NAN; continue; }
+    bool any = false;
+    for (int h = 0; h < vn::DAY_NH && !any; h++) any = d->slots[h] != 0;
+    if (!any) { s_evE[i] = s_evF[i] = NAN; continue; }   // relevé seulement hors service : un trou
     uint32_t e = 0, f = 0;
     for (int h = 0; h < vn::DAY_NH; h++) { e += d->evEmpty[h]; f += d->evFull[h]; }
     s_evE[i] = (float)e; s_evF[i] = (float)f;
-    if (day < today) { sumE += e; sumF += f; }
+    sumE += e; sumF += f;
     if (e > mx) mx = (float)e;
     if (f > mx) mx = (float)f;
   }
@@ -210,8 +215,8 @@ static void refreshSynth(int64_t t, int32_t today, int done) {
   cd->nxl = 3; cd->xlPos[0] = 0; cd->xlPos[1] = NDAYS_CHART / 2; cd->xlPos[2] = NDAYS_CHART - 1;
   for (int q = 0; q < 3; q++) {
     int dd, mm, yy;
-    vn::dayCivil(today - NDAYS_CHART + 1 + cd->xlPos[q], yy, mm, dd);
-    if (q == 2) snprintf(cd->xl[q], sizeof(cd->xl[q]), "auj.");
+    vn::dayCivil(today - NDAYS_CHART + cd->xlPos[q], yy, mm, dd);
+    if (q == 2) snprintf(cd->xl[q], sizeof(cd->xl[q]), "hier");
     else snprintf(cd->xl[q], sizeof(cd->xl[q]), "%02d/%02d", dd, mm);
   }
   chartInvalidate(s_chart);
@@ -228,8 +233,9 @@ static void refreshSynth(int64_t t, int32_t today, int done) {
   snprintf(x, sizeof(x), "Disponibilit\xC3\xA9 7 derniers jours %s (%d j) \xC2\xB7 7 jours d'avant %s (%d j) \xC2\xB7 %s",
            y, w1.days, z, w0.days, w);
   lv_label_set_text(s_cmp[0], x);
-  snprintf(x, sizeof(x), "Ruptures 7 j : %u contre %u \xC2\xB7 saturations : %u contre %u",
-           (unsigned)w1.evEmpty, (unsigned)w0.evEmpty, (unsigned)w1.evFull, (unsigned)w0.evFull);
+  snprintf(x, sizeof(x), "Ruptures 7 j : %u (%d j) contre %u (%d j) \xC2\xB7 saturations : %u contre %u",
+           (unsigned)w1.evEmpty, w1.days, (unsigned)w0.evEmpty, w0.days,
+           (unsigned)w1.evFull, (unsigned)w0.evFull);
   lv_label_set_text(s_cmp[1], x);
   vn::svcSum(b, today - 7, today - 7, done, ld);
   char dl[24];
@@ -239,8 +245,13 @@ static void refreshSynth(int64_t t, int32_t today, int done) {
     vn::svcPct(y, sizeof(y), td.avail(), td.obs);
     vn::svcPct(z, sizeof(z), ld.avail(), ld.obs);
     ptDiff(w, sizeof(w), rate10(td.avail(), td.obs), rate10(ld.avail(), ld.obs));
-    snprintf(x, sizeof(x), "Aujourd'hui 7\xC2\xA0h\xE2\x80\x93%d\xC2\xA0h %s \xC2\xB7 %s m\xC3\xAAmes heures %s \xC2\xB7 %s \xC2\xB7 ruptures %u contre %u",
-             vn::DAY_H0 + done, y, dl, ld.days ? z : "non relev\xC3\xA9", w, (unsigned)td.evEmpty, (unsigned)ld.evEmpty);
+    char rl[16], tl[16];
+    if (ld.days) snprintf(rl, sizeof(rl), "%u", (unsigned)ld.evEmpty);
+    else snprintf(rl, sizeof(rl), "non relev\xC3\xA9");
+    if (td.days) snprintf(tl, sizeof(tl), "%u", (unsigned)td.evEmpty);
+    else snprintf(tl, sizeof(tl), "non relev\xC3\xA9");
+    snprintf(x, sizeof(x), "Aujourd'hui 7\xC2\xA0h\xE2\x80\x93%d\xC2\xA0h %s \xC2\xB7 %s m\xC3\xAAmes heures %s \xC2\xB7 %s \xC2\xB7 ruptures %s contre %s",
+             vn::DAY_H0 + done, y, dl, ld.days ? z : "non relev\xC3\xA9", w, tl, rl);
   }
   lv_label_set_text(s_cmp[2], x);
 }
@@ -404,13 +415,14 @@ static void fillKRows(KRow * rows, const vn::StRank * r, int n, bool worst) {
 static void refreshRank(int32_t today) {
   vn::StRank * r = (vn::StRank *)plat::psAlloc(sizeof(vn::StRank) * VN_MAX_ST);   // PSRAM, le temps du rafraîchissement
   if (!r) return;
-  int n = vn::svcRank(g_model.days, g_model, today - 30, today - 1, r, VN_MAX_ST);
+  int skipped = 0;
+  int n = vn::svcRank(g_model.days, g_model, today - 30, today - 1, r, VN_MAX_ST, &skipped);
   char x[220];
   vn::SvcCount mo;
   vn::svcSum(g_model.days, today - 30, today - 1, vn::DAY_NH, mo);
   snprintf(x, sizeof(x), "Part indisponible = (vide + pleine + hors service) \xC3\xB7 temps observ\xC3\xA9, 7\xC2\xA0h\xE2\x80\x93" "22\xC2\xA0h, "
-           "%d jours complets. Class\xC3\xA9" "es : %d stations observ\xC3\xA9" "es au moins la moiti\xC3\xA9 du temps de la mieux observ\xC3\xA9" "e.",
-           mo.days, n);
+           "%d jours relev\xC3\xA9s. Class\xC3\xA9" "es : %d stations observ\xC3\xA9" "es au moins la moiti\xC3\xA9 du temps de la mieux observ\xC3\xA9" "e, %d \xC3\xA9" "cart\xC3\xA9" "es.",
+           mo.days, n, skipped);
   lv_label_set_text(s_rankRule, x);
   vn::svcSortWorst(r, n);
   fillKRows(s_worst, r, n, true);
@@ -474,9 +486,11 @@ static void refreshCard(int64_t t, int32_t today) {
   else snprintf(x, sizeof(x), "D\xC3\xA9" "connect\xC3\xA9 \xE2\x80\x94 les chiffres s'arr\xC3\xAAtent au dernier relev\xC3\xA9");
   lv_label_set_text(s_cardSub[2], x);
   badgeSet(s_cardBadge[2], up ? (ns.rssi >= -78 ? "OK" : "FAIBLE") : "HORS LIGNE", up ? (ns.rssi >= -78 ? T_GOOD : T_WARN) : T_BAD);
-  // 4. Mémoire
-  plat::SysInfo si;
-  plat::sysInfo(si);
+  // 4. Mémoire — rafraîchie toutes les 30 s seulement : sysInfo() interroge LittleFS, et le minuteur
+  //     de la carte la solliciterait 60 fois par minute sous le verrou du modèle.
+  static plat::SysInfo si;
+  static int64_t siAt = 0;
+  if (siAt == 0 || t - siAt >= 30) { plat::sysInfo(si); siAt = t; }
   fmtInt(a, sizeof(a), (int)(si.heapFree / 1024));
   fmtInt(b2, sizeof(b2), (int)(si.heapMin / 1024));
   char c2[24], d2[24];
@@ -508,8 +522,10 @@ static void refreshCard(int64_t t, int32_t today) {
     } else snprintf(x, sizeof(x), "%d jour%s gard\xC3\xA9%s (depuis %s, au plus %d)", b.count, b.count > 1 ? "s" : "", b.count > 1 ? "s" : "", a, VN_DAYS);
   }
   lv_label_set_text(s_cardSub[5], x);
+  const bool noToday = td.days == 0;        // aucun jour de service relevé aujourd'hui (même avant 8 h)
   bool cov = done && td.slotsMax && td.slots * 10 < td.slotsMax * 9;
-  badgeSet(s_cardBadge[5], !b.count ? "VIDE" : cov ? "TROUS" : "COMPLET", !b.count || cov ? T_WARN : T_GOOD);
+  badgeSet(s_cardBadge[5], !b.count ? "VIDE" : noToday ? "AUCUN RELEV\xC3\x89" : cov ? "TROUS" : "COMPLET",
+           (!b.count || cov || noToday) ? T_WARN : T_GOOD);
 }
 
 // ── Écran ────────────────────────────────────────────────────────────
@@ -538,7 +554,19 @@ static void refresh() {
   refreshCard(t, today);
 }
 
+static lv_obj_t * s_root = nullptr;
+
+// Le volet « La carte » doit vieillir tout seul : sans lui, une coupure Wi-Fi le laissait figé sur
+// « reçu à l'instant · FRAIS · OK » — c'est-à-dire le panneau chargé de prouver la fraîcheur qui
+// mentait. Les calculs lourds restent conditionnés par `refresh()` au changement de version.
+static void serviceTick(lv_timer_t *) {
+  if (!s_root || lv_obj_has_flag(s_root, LV_OBJ_FLAG_HIDDEN) || sheetIsOpen()) return;
+  refresh();
+}
+
 static void build(lv_obj_t * root) {
+  s_root = root;
+  lv_timer_create(serviceTick, 1000, nullptr);
   s_seg = segmented(root, PANES, NPANE, 0, [](int i) { showPane(i); }, 30);
   lv_obj_set_pos(s_seg, 8, 6);
   lv_obj_set_width(s_seg, CONTENT_W - 16);

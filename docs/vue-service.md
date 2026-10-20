@@ -18,7 +18,11 @@ La carte relève `station_status` toutes les 60 s ; l'historique garde **une tra
 - **Heures de service évaluées** : 7 h – 22 h, heure de Luxembourg (15 créneaux d'une heure, les mêmes
   heures que l'alerte « inhabituel »). La nuit n'est pas comptée.
 - **Station observée** dans une tranche : publiée dans `station_information` et ayant déjà reçu un statut.
-- **Unité affichée** : la station-tranche (une station observée 5 min), convertie en **heures**
+- **Jour relevé** : un jour ne compte comme relevé que s'il porte au moins **une heure pleinement
+relevée** (6 tranches dans une heure) — même définition pour la Synthèse et pour les récurrents.
+Une seule tranche isolée, ou une soirée entière, ne fait pas un jour relevé.
+
+**Unité affichée** : la station-tranche (une station observée 5 min), convertie en **heures**
   (12 tranches = 1 h ; « 22 758 h » = 22 758 heures-stations).
 
 ### Les quatre états — la définition de « disponible »
@@ -26,14 +30,14 @@ La carte relève `station_status` toutes les 60 s ; l'historique garde **une tra
 | État | Règle (statut de remplissage `classify`, `src/core/model.cpp`) | Ce que vit l'usager |
 |---|---|---|
 | **Disponible** | ouverte, **≥ 1 vélo louable ET ≥ 1 borne libre** | peut prendre et rendre |
-| **Vide** | ouverte, aucun vélo louable (location suspendue = vide) | peut rendre, pas prendre |
+| **Vide** | ouverte, aucun vélo louable (location suspendue = vide) | peut rendre, pas prendre — sauf si aucune borne n'est libre non plus (cas rare, classé « vide » quand même) |
 | **Pleine** | ouverte, aucune borne libre (retours suspendus = pleine) | peut prendre, pas rendre |
 | **Hors service** | non installée, ou ni location ni retour | ni l'un ni l'autre |
 
 **Taux de disponibilité = disponibles ÷ observées.** Une station vide n'est **pas** « indisponible » au
 sens du matériel : elle est *vide*. L'écran ne donne jamais un pourcentage seul : il affiche les heures
 (« 97,3 % · 54 671 h sur 56 211 h ») et la **répartition en quatre parts** sous la barre, avec la
-définition en clair. La couverture est dite à côté : « 27 j sur 30 relevés, 97,1 % des tranches » —
+définition en clair. La couverture est dite à côté : « 27 j sur 30 relevés, 97,1 % des tranches des jours relevés » —
 les heures où la carte était éteinte ne comptent **ni pour ni contre** (le dénominateur est le temps
 observé, pas le temps calendaire).
 
@@ -101,7 +105,7 @@ et aujourd'hui contre **le même jour de la semaine précédente, mêmes heures*
 
 **Récurrents** (`48`, `52`, `53`) — la règle en une phrase, le périmètre examiné (« 18 jours ouvrables
 et 9 de week-end ou fériés relevés sur les 28 derniers jours »), puis la liste : « Al Bréck — Vide
-8 h–9 h · 10 jours ouvrables sur 10 · série 12 j ». Un tap ouvre la fiche de la station. Avant d'avoir
+8 h–9 h · 10 j ouvrables sur 10 · série 12 j ». Un tap ouvre la fiche de la station. Avant d'avoir
 assez de jours, l'écran le dit (« Trop tôt pour conclure : il faut au moins 7 jours ouvrables… la carte
 en a 3 »). Cette liste est **distincte** des alertes instantanées : l'incident du jour reste dans Alertes.
 
@@ -131,7 +135,7 @@ relevées sur tranches possibles — badge TROUS sous 90 %). Pour pouvoir dire �
 - créneaux voisins signalés pour la même station, le même état et la même classe : **fusionnés** en une
   plage (« 14 h–16 h ») ; les nombres affichés sont ceux du créneau **le moins touché** de la plage ;
 - **série** = jours relevés consécutifs touchés en remontant depuis hier — elle peut dépasser la fenêtre
-  (« 10 sur 10 · série 12 j ») ; « série interrompue » si le dernier jour relevé est sain.
+  (« 10 sur 10 · série 12 j ») ; « série interrompue » si le dernier jour relevé est sain. La série se compte en jours de la classe **relevés** : elle peut traverser un jour sans données.
 - Tri : la plus longue série d'abord, puis le taux.
 
 **Fériés.** Un férié se comporte comme un dimanche (c'est ce que mesure `docs/mesures-prevision.md`) :
@@ -162,7 +166,7 @@ toute la journée du 17/12, Noël (vendredi) et Saint-Étienne fériés. Rôles 
 | pendulaire au hasard | vide à 8 h un jour ouvrable sur trois | cas limite, mesuré |
 
 **`test_core` (60 stations : 8 nommées, 40 de bruit, 12 pendulaires)** — trouvées : dérive (« Vide
-8 h–9 h · 10 jours ouvrables sur 10 · série 12 j ») et week-end (« Pleine 14 h–16 h · 6 week-ends/fériés
+8 h–9 h · 10 j ouvrables sur 10 · série 12 j ») et week-end (« Pleine 14 h–16 h · 6 j de week-end/férié
 sur 6 · série 9 j ») ; faux positifs : **0** sur les rôles nommés, **0** sur 41 stations de bruit,
 **0** sur 13 pendulaires.
 
@@ -214,7 +218,7 @@ Coût : `svcRecurrent` ≈ 0,8 ms pour 200 stations × 28 jours sur PC (x86-64, 
   apprentissage, couverture des résumés).
 - **Nouveau : `/vn_days.bin`** (version 1) — 60 résumés par jour ; fichier absent ou abîmé : ignoré
   sans plantage, le reste chargé.
-- `test_core` : **855 vérifications** (68 nouvelles : comptes à la main, règles du récurrent, monde à
+- `test_core` : **977 vérifications** (celles de cette vue, comptes à la main, règles du récurrent, monde à
   vérité connue, persistance et fichiers abîmés). Simulateur : scénario `service`, captures 48 à 58 ;
   les captures 00 à 47 ont été refaites (rail à 6 onglets) ; audit tactile : 392 éléments, 0 masqué.
 - Non vérifié sur la carte : voir §6.

@@ -80,7 +80,9 @@ struct StRank {
   uint32_t obs, closed, empty, full;
   float bad() const { return obs ? (float)(closed + empty + full) / obs : 0.f; }
 };
-int  svcRank(const DayBook & b, const Model & m, int32_t dayFrom, int32_t dayTo, StRank * out, int max);
+// skipped (facultatif) : stations actives écartées du classement faute d'observation suffisante
+int  svcRank(const DayBook & b, const Model & m, int32_t dayFrom, int32_t dayTo, StRank * out, int max,
+             int * skipped = nullptr);
 void svcSortWorst(StRank * r, int n);  // part indisponible décroissante
 void svcSortBest(StRank * r, int n);   // part indisponible croissante (à égalité : la plus observée d'abord)
 

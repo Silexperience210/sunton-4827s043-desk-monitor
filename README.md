@@ -26,7 +26,7 @@ tout le reste est réorienté exploitation.
 | **Carte** | Carte dessinée (sans tuiles) : quadrillage métrique, tracé du tram T1, quartiers, stations colorées sur l'axe *vide → pleine* · horizon **Live / +30 min / +1 h** (la carte montre où le réseau *sera* en tension) · filtres Tout / Vides / Pleines / Tension · glisser pour déplacer, double-tap ou +/− pour zoomer (au zoom : nombre de vélos dans chaque pastille) · anneau ambre = station sans mouvement suspect |
 | **Stations** | Les 143 stations, triables par priorité, nom, remplissage ou échéance de rupture · vélos / bornes, barre de composition, prévision à +1 h |
 | **Alertes** | Plan de régulation (vélos à livrer / à retirer), transferts suggérés, filtres Ruptures / Prévisions / Maintenance · badge rouge sur le rail = stations vides ou pleines · notification à chaque nouvelle rupture |
-| **Service** | La vue du directeur de service : disponibilité du jour et sur 30 jours (« 97,3 % · 54 671 h sur 56 211 h », parts vide / pleine / hors service nommées — une station vide n'est pas hors service), ruptures et saturations par jour sur 30 jours, comparaison à la semaine précédente et au même jour de la semaine dernière · **problèmes récurrents** (« Vide 8 h–9 h · 10 jours ouvrables sur 10 · série 12 j », règle affichée, fériés rangés avec le week-end) · 5 pires et 5 meilleures stations · état de la carte (fraîcheur des flux, Wi-Fi, mémoire, apprentissage). Définitions et mesures : [`docs/vue-service.md`](docs/vue-service.md) |
+| **Service** | La vue du directeur de service : disponibilité du jour et sur 30 jours (« 97,3 % · 54 671 h sur 56 211 h », parts vide / pleine / hors service nommées — une station vide n'est pas hors service), ruptures et saturations par jour sur 30 jours, comparaison à la semaine précédente et au même jour de la semaine dernière · **problèmes récurrents** (« Vide 8 h–9 h · 10 j ouvrables sur 10 · série 12 j », règle affichée, fériés rangés avec le week-end) · 5 pires et 5 meilleures stations · état de la carte (fraîcheur des flux, Wi-Fi, mémoire, apprentissage). Définitions et mesures : [`docs/vue-service.md`](docs/vue-service.md) |
 | **Réglages** | Wi-Fi (recherche + clavier), fréquence de rafraîchissement, seuils d'alerte, luminosité et atténuation nocturne, état de l'apprentissage, test et étalonnage du tactile, mémoire / stockage / redémarrage |
 
 Un tap sur une station (carte, liste, alerte) ouvre sa **fiche** : statut, vélos / élec / bornes / HS,
@@ -196,6 +196,40 @@ Trois autres endroits mentaient de la même façon et sont corrigés :
 Un **recul d'horloge** (resynchronisation NTP vers l'arrière) n'inscrit plus deux fois la même
 tranche, ce qui gonflait la profondeur. Et la tranche de référence est **datée de son âge** : la
 fiche écrit « Réf. 00:30 (−15 h) », y compris quand la référence reste dans la même journée.
+
+#### 1.2.5 — l'onglet Service ne promet plus ce qu'il compte
+
+Sept défauts de chiffres et de libellés, relevés par une revue indépendante qui a confronté
+`docs/vue-service.md` au code et pratiqué 26 mutations sur le banc :
+
+- **le volet « La carte » se rafraîchit tout seul** : hors ligne, il restait figé sur « reçu à
+  l'instant · FRAIS · OK », c'est-à-dire le panneau chargé de prouver la fraîcheur qui mentait ;
+- **« COMPLET » ne s'affiche plus quand aucun relevé n'a eu lieu aujourd'hui** (dénominateur nul) ;
+- **les comparaisons de ruptures disent le nombre de jours de chaque côté** (« 237 (7 j) contre 212
+  (6 j) ») et « non relevé » remplace un zéro inventé quand le jour de référence manque ;
+- **la courbe « 30 j » couvre exactement la même fenêtre que la tuile** (30 jours, aujourd'hui exclu) :
+  elle en additionnait 29, avec une fenêtre différente de la tuile voisine ;
+- **un jour relevé seulement hors 7 h–22 h n'est plus compté comme un jour relevé**, et n'apparaît
+  plus comme un zéro sur la courbe (c'est un trou) ;
+- **« % des tranches » précise qu'il porte sur les jours relevés** ;
+- **« 6 week-ends/fériés sur 6 » devient « 6 jours de week-end/férié sur 6 »** — c'étaient des jours,
+  pas des week-ends.
+
+Deux précisions de sens : la « série » d'un problème récurrent s'écrit maintenant « série 12 j
+relevés » (elle peut traverser des jours sans données), et le tableau des états dit « vide = aucun
+vélo louable » au lieu de promettre qu'on peut rendre — le cas « 0 vélo et 0 borne libre » existe.
+Le classement affiche aussi le nombre de stations écartées.
+
+Cinq règles qui n'étaient pas vraiment testées le sont désormais : « ≥ 3 tranches » pour un état
+touché, « ≥ 6 tranches » pour un créneau relevé, la tranche de 6 h 55 qui sert de précédente à 7 h, un
+jour relevé seulement la nuit qui n'en est pas un, et une station observée moins de la moitié du temps
+qui est écartée du classement avec son compte affiché.
+
+Deux corrections issues de la revue de ces correctifs : l'axe de la courbe écrit « hier » sous sa
+dernière barre (il disait « auj. »), et la ligne d'un problème récurrent reste lisible — abrégée en
+« j », elle ne tronque plus la série. La carte mémoire ne se rafraîchit qu'une fois toutes les 30 s :
+`sysInfo` interroge LittleFS, et le minuteur de fraîcheur l'aurait sollicité soixante fois par minute
+sous le verrou du modèle.
 
 #### 1.2.4 — parc lu à la troisième plus grande valeur, et fiches lisibles
 
@@ -439,7 +473,7 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision dump_sim
-./test_core ../docs/donnees     # 973 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 982 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2, v3 → v4),
                                  # écart habituel (dispersion apprise, affichée pour information, textes de l'écart),

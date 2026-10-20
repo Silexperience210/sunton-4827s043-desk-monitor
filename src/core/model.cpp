@@ -172,6 +172,9 @@ static uint8_t classify(const Station & s) {
   if (!s.live || !s.installed || (!s.renting && !s.returning)) return ST_CLOSED;
   int bikes = s.renting ? s.bikes : 0;
   int docks = s.returning ? s.docks : 0;
+  // Un cas reste « vide » sans que l'usager puisse rendre : 0 vélo louable ET 0 borne libre. Le
+  // classer hors service changerait les sommes des KPI (vélos dispo, bornes libres, parc) ; c'est
+  // donc le TEXTE de l'écran qui est corrigé, pas la classification (voir scr_service.cpp).
   if (bikes == 0) return ST_EMPTY;
   if (docks == 0) return ST_FULL;
   if (bikes <= g_set.lowBikes) return ST_LOW;

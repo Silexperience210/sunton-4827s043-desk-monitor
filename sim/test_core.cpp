@@ -1844,6 +1844,84 @@ static void testDayCounts() {
   char dl[24];
   svcDayLabel(civilDay(2026, 10, 8), dl, sizeof(dl));
   CHECK(strcmp(dl, "jeu. 08/10") == 0, "libellé du jour : « %s »", dl);
+
+  // Bornes EXACTES des règles, sur un jour neuf : « ≥ 3 tranches » pour un état touché, « ≥ 6
+  // tranches » pour un créneau relevé, et la tranche de 6 h 55 qui sert de « précédente » à 7 h.
+  {
+    static Model m2;
+    CHECK(m2.init(), "init bornes du résumé");
+    InfoRec ir2[2] = { mkInfo("P", 49.60f, 6.13f, 20), mkInfo("Q", 49.61f, 6.14f, 20) };
+    const int64_t d1 = lux(2026, 12, 2, 0, 0);                 // mercredi 02/12
+    m2.applyInfo(ir2, 2, d1);
+    StatusRec s2[2];
+    // 6:55 — P a des vélos (donc pas vide), Q est vide ; 7:00 — P devient vide : UNE entrée.
+    s2[0] = mkStat("P", 5, 20); s2[1] = mkStat("Q", 5, 20);
+    m2.applyStatus(s2, 2, d1 + 6 * 3600 + 55 * 60);             // 6:55 : personne n'est vide
+    s2[0] = mkStat("P", 0, 20);
+    m2.applyStatus(s2, 2, d1 + 7 * 3600);                       // 7:00 : P devient vide
+    // P vide 3 tranches (7:00, 7:05, 7:10) → touché ; Q reste pleine pendant ce temps.
+    s2[0] = mkStat("P", 0, 20);
+    m2.applyStatus(s2, 2, d1 + 7 * 3600 + 300);
+    m2.applyStatus(s2, 2, d1 + 7 * 3600 + 600);
+    s2[0] = mkStat("P", 4, 20);
+    m2.applyStatus(s2, 2, d1 + 7 * 3600 + 900);                 // 7:15 : P ne l'est plus
+    // 8 h : 6 tranches relevées (8:00…8:25) → créneau « relevé » ; 9 h : 5 tranches → non relevé.
+    for (int k2 = 0; k2 < 6; k2++) m2.applyStatus(s2, 2, d1 + 8 * 3600 + k2 * 300);
+    for (int k2 = 0; k2 < 5; k2++) m2.applyStatus(s2, 2, d1 + 9 * 3600 + k2 * 300);
+    // Q vide exactement 2 tranches à 10 h : au-dessous du seuil « touché ».
+    s2[1] = mkStat("Q", 0, 20);
+    m2.applyStatus(s2, 2, d1 + 10 * 3600);
+    m2.applyStatus(s2, 2, d1 + 10 * 3600 + 300);
+    s2[1] = mkStat("Q", 4, 20);
+    m2.applyStatus(s2, 2, d1 + 10 * 3600 + 600);
+    const DayNet * d2 = m2.days.dayAt(0);
+    const DaySt * r2 = m2.days.stAt(0);
+    CHECK(d2 && d2->evEmpty[0] == 1,
+          "une station non vide à 6 h 55 et vide à 7 h compte UNE entrée en rupture (%d)", d2 ? d2->evEmpty[0] : -1);
+    CHECK(r2 && (r2[0].hitE & 1) && !(r2[1].hitE & 1) && !(r2[1].hitE & 8),
+          "trois tranches vides = touché, deux = non (0x%04x, 0x%04x)", r2 ? r2[0].hitE : 0, r2 ? r2[1].hitE : 0);
+    CHECK(r2 && (r2[0].seen & 2) && !(r2[0].seen & 4),
+          "six tranches relevées = créneau relevé, cinq = non (0x%04x)", r2 ? r2[0].seen : 0);
+  }
+
+  // Un jour relevé seulement la nuit, ou une seule tranche isolée, n'est PAS un jour relevé : la
+  // Synthèse et le détecteur de récurrents doivent compter le même nombre de jours (deux
+  // définitions coexistaient : « 2 jours relevés » d'un côté, « 1 jour ouvrable » de l'autre).
+  {
+    static Model m3;
+    CHECK(m3.init(), "init jour nocturne");
+    InfoRec ira[2] = { mkInfo("N1", 49.60f, 6.13f, 20), mkInfo("N2", 49.61f, 6.14f, 20) };
+    const int64_t d2 = lux(2026, 12, 3, 0, 0);                 // jeudi
+    m3.applyInfo(ira, 2, d2);
+    StatusRec s3[2] = { mkStat("N1", 5, 20), mkStat("N2", 5, 20) };
+    for (int64_t t = d2 + 23 * 3600; t <= d2 + 23 * 3600 + 300; t += 300)
+      m3.applyStatus(s3, 2, t);                                // 23 h : hors heures de service
+    SvcCount c3;
+    svcSum(m3.days, civilDay(2026, 12, 3), civilDay(2026, 12, 3), DAY_NH, c3);
+    CHECK(c3.days == 0 && c3.slotsMax == 0,
+          "jour relevé seulement la nuit : aucun jour relevé (%d, %d)", c3.days, c3.slotsMax);
+    int wd = 0, we = 0;
+    svcRecurDays(m3.days, civilDay(2026, 12, 4), g_recur, wd, we);
+    CHECK(wd == 0 && we == 0, "le détecteur de récurrents ne le compte pas non plus (%d, %d)", wd, we);
+  }
+
+  // Classement : une station observée moins de la moitié du temps de la mieux observée est
+  // ÉCARTÉE, et le nombre d'écartées est rendu (l'écran l'affiche).
+  {
+    static Model m4;
+    CHECK(m4.init(), "init classement");
+    InfoRec irb[2] = { mkInfo("A1", 49.60f, 6.13f, 20), mkInfo("B1", 49.61f, 6.14f, 20) };
+    const int64_t d4 = lux(2026, 12, 7, 0, 0);                 // lundi
+    m4.applyInfo(irb, 1, d4);                                  // B n'est connue que plus tard
+    StatusRec s4[2] = { mkStat("A1", 5, 20), mkStat("B1", 5, 20) };
+    for (int k = 0; k < 54; k++) m4.applyStatus(s4, 1, d4 + 8 * 3600 + k * 300);     // A seule, 4 h 30
+    m4.applyInfo(irb, 2, d4 + 8 * 3600 + 54 * 300);            // B apparaît
+    for (int k = 54; k < 60; k++) m4.applyStatus(s4, 2, d4 + 8 * 3600 + k * 300);    // les deux, 30 min
+    static StRank rk[VN_MAX_ST];
+    int skipped = -1;
+    int nr = svcRank(m4.days, m4, civilDay(2026, 12, 7), civilDay(2026, 12, 7), rk, VN_MAX_ST, &skipped);
+    CHECK(nr == 1 && skipped == 1, "1 classée (A), 1 écartée (B, 1/10 du temps) (%d, %d)", nr, skipped);
+  }
 }
 
 // Règles du détecteur sur des résumés écrits à la main (comptes exacts)
@@ -1914,11 +1992,11 @@ static void testRecurRules() {
   char t[160];
   if (f0 >= 0) {
     svcRecurText(out[f0], t, sizeof(t));
-    CHECK(strcmp(t, "Vide 8\xC2\xA0h\xE2\x80\x93" "10\xC2\xA0h \xC2\xB7 9 jours ouvrables sur 10 \xC2\xB7 s\xC3\xA9rie 1\xC2\xA0j") == 0, "phrase : « %s »", t);
+    CHECK(strcmp(t, "Vide 8\xC2\xA0h\xE2\x80\x93" "10\xC2\xA0h \xC2\xB7 9 j ouvrables sur 10 \xC2\xB7 s\xC3\xA9rie 1\xC2\xA0j") == 0, "phrase : « %s »", t);
   }
   { Recur z{}; z.kind = RK_FULL; z.weekend = 1; z.h0 = 7; z.h1 = 8; z.hits = 5; z.days = 6; z.streak = 0;
     svcRecurText(z, t, sizeof(t));
-    CHECK(strcmp(t, "Pleine 14\xC2\xA0h\xE2\x80\x93" "16\xC2\xA0h \xC2\xB7 5 week-ends/f\xC3\xA9ri\xC3\xA9s sur 6 \xC2\xB7 s\xC3\xA9rie interrompue") == 0,
+    CHECK(strcmp(t, "Pleine 14\xC2\xA0h\xE2\x80\x93" "16\xC2\xA0h \xC2\xB7 5 j de week-end/f\xC3\xA9ri\xC3\xA9 sur 6 \xC2\xB7 s\xC3\xA9rie interrompue") == 0,
           "série nulle : « série interrompue », pas « série 0 j » (« %s »)", t); }
   svcRecurRule(g_recur, t, sizeof(t));
   CHECK(strstr(t, "7 des 10 derniers jours ouvrables") && strstr(t, "5 sur 6") && strstr(t, "15\xC2\xA0min"), "règle affichée : « %s »", t);

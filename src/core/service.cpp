@@ -18,6 +18,13 @@ void svcSum(const DayBook & b, int32_t dayFrom, int32_t dayTo, int hTo, SvcCount
     const DayNet * d = b.dayAt(k);
     if (d->day < dayFrom) break;               // jours stockés en ordre croissant
     if (d->day > dayTo) continue;
+    // Un jour n'est « relevé » que s'il porte au moins une tranche entre 7 h et 22 h : une carte
+    // allumée seulement le soir ne compte pas comme un jour relevé, et n'apparaît pas à zéro.
+    // Même définition que le détecteur de récurrents (`svcRecurDays`, DAY_SEEN_SLOTS = 6 tranches
+    // dans une heure) : une tranche isolée, ou une soirée hors 7 h–22 h, ne fait pas un jour relevé.
+    bool any = false;
+    for (int h = 0; h < hTo && !any; h++) any = d->slots[h] >= DAY_SEEN_SLOTS;
+    if (!any) continue;
     out.days++;
     out.slotsMax += (uint32_t)hTo * DAY_SLOTS_H;
     for (int h = 0; h < hTo; h++) {
@@ -151,7 +158,7 @@ int svcRecurrent(const DayBook & b, const Model & m, int32_t today, Recur * out,
 }
 
 // ── Classement ───────────────────────────────────────────────────────
-int svcRank(const DayBook & b, const Model & m, int32_t dayFrom, int32_t dayTo, StRank * out, int max) {
+int svcRank(const DayBook & b, const Model & m, int32_t dayFrom, int32_t dayTo, StRank * out, int max, int * skipped) {
   // Cumuls en PSRAM le temps de l'appel (4 Ko de RAM interne de moins qu'un tableau statique)
   StRank * acc = (StRank *)plat::psAlloc(sizeof(StRank) * VN_MAX_ST);
   if (!acc) return 0;
@@ -167,13 +174,15 @@ int svcRank(const DayBook & b, const Model & m, int32_t dayFrom, int32_t dayTo, 
     }
   }
   for (int i = 0; i < m.n && i < VN_MAX_ST; i++) if (m.st[i].active && acc[i].obs > best) best = acc[i].obs;
-  int n = 0;
+  int n = 0, skip = 0;
+  for (int i = 0; i < m.n && i < VN_MAX_ST; i++) if (m.st[i].active && acc[i].obs * 2 < best) skip++;
   for (int i = 0; best && i < m.n && i < VN_MAX_ST && n < max; i++) {
     if (!m.st[i].active || acc[i].obs * 2 < best) continue;
     acc[i].st = (int16_t)i;
     out[n++] = acc[i];
   }
   plat::psFree(acc);
+  if (skipped) *skipped = skip;
   return n;
 }
 
@@ -242,8 +251,9 @@ void svcRecurText(const Recur & r, char * out, size_t n) {
   else snprintf(sr, sizeof(sr), "s\xC3\xA9rie interrompue");       // le dernier jour relevé n'est pas touché
   snprintf(out, n, "%s %d\xC2\xA0h\xE2\x80\x93%d\xC2\xA0h \xC2\xB7 %u %s sur %u \xC2\xB7 %s",
            svcKindName(r.kind), DAY_H0 + r.h0, DAY_H0 + r.h1 + 1, r.hits,
-           r.weekend ? (r.hits > 1 ? "week-ends/f\xC3\xA9ri\xC3\xA9s" : "week-end/f\xC3\xA9ri\xC3\xA9")
-                     : (r.hits > 1 ? "jours ouvrables" : "jour ouvrable"),
+           // Abrégé en « j » : la ligne fait 330 px sur une seule ligne ; en toutes lettres, les
+           // précisions ajoutées faisaient disparaître la série à l'affichage.
+           r.weekend ? "j de week-end/f\xC3\xA9ri\xC3\xA9" : "j ouvrables",
            r.days, sr);
 }
 
