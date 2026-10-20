@@ -106,6 +106,20 @@ static bool match(const vn::Alert & a) {
   }
 }
 
+#ifdef VN_SIM
+// Banc : la pastille affichée pour une station ("" = aucune). Le banc ne voit pas l'écran, et un
+// badge faux (le besoin remplacé par « +N ») est justement ce qu'on ne peut pas lire dans le cœur.
+const char * debugAlertBadge(int st) {
+  for (int i = 0; i < s_nRows; i++) {
+    if ((int)(intptr_t)lv_obj_get_user_data(s_rows[i].obj) != st) continue;
+    if (lv_obj_has_flag(s_rows[i].need, LV_OBJ_FLAG_HIDDEN)) return "";
+    lv_obj_t * l = lv_obj_get_child(s_rows[i].need, 0);
+    return l ? lv_label_get_text(l) : "";
+  }
+  return "";
+}
+#endif
+
 static void rowClick(lv_event_t * e) {
   int st = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_current_target(e));
   if (st >= 0) openStation(st);
@@ -186,17 +200,21 @@ static void refresh() {
     lv_label_set_text(r.why, b);
     const int more = (a.st >= 0 && a.st < VN_MAX_ST && extra[a.st] > 1) ? extra[a.st] - 1 : 0;
     bool showNeed = s.need && (a.type <= vn::AL_SOON_FULL);
-    if (more > 0) {
-      snprintf(b, sizeof(b), "+%d", more);
-      badgeSet(r.need, b, T_ELEC);
-      lv_obj_clear_flag(r.need, LV_OBJ_FLAG_HIDDEN);
-    } else if (showNeed) {
+    // Le besoin de livraison passe AVANT « +N » : « +1 » (il y a une autre alerte sur cette
+    // station) remplaçait « +9 vélos », c'est-à-dire le chiffre qui sert à décider — mesuré, 0 à
+    // 5 lignes par relevé perdaient leur besoin. « +N » ne s'affiche plus que lorsque la pastille
+    // serait vide autrement : aucune information n'est perdue.
+    if (showNeed) {
       char nd[24];
       needText(s.need, nd, sizeof(nd));
       badgeSet(r.need, nd, s.need > 0 ? T_GOOD : T_TRANSIT);
       lv_obj_clear_flag(r.need, LV_OBJ_FLAG_HIDDEN);
     } else if (a.sev >= 3) {
       badgeSet(r.need, "URGENT", T_BAD);
+      lv_obj_clear_flag(r.need, LV_OBJ_FLAG_HIDDEN);
+    } else if (more > 0) {
+      snprintf(b, sizeof(b), "+%d", more);
+      badgeSet(r.need, b, T_ELEC);
       lv_obj_clear_flag(r.need, LV_OBJ_FLAG_HIDDEN);
     } else lv_obj_add_flag(r.need, LV_OBJ_FLAG_HIDDEN);
   }

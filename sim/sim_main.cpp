@@ -30,6 +30,7 @@
 namespace ui { lv_obj_t * debugToast(); int debugTab(); const char * debugDashText(int w);
                const char * debugDashPrio(int row, int field);
                const char * debugSheetRuptures(int which);
+               const char * debugAlertBadge(int st);
                int debugDashCurvePoints(); int debugDashCurveLastX(); int debugDashForecastPoints(); }
 namespace sim { extern int64_t g_epoch0; extern uint32_t g_ms; extern bool g_fetching; extern const char * g_fsDir;
                 extern int g_wifiState; extern bool g_timeOk; extern const char * g_stage; extern int g_wifiReason;
@@ -1087,6 +1088,10 @@ static int prioScenario() {
     sr[i].bikesDis = (i < 25) ? 2 : 0;                   // 50 vélos HS sur 290 présents ≈ 17 %
   }
   for (int i = 0; i < 4; i++) { sr[i].bikes = 0; sr[i].docks = 20; }   // quatre ruptures, pas plus
+  sr[0].bikesDis = 4;                                   // + une alerte de maintenance : deux alertes
+  // Une station suspendue avec quinze bornes HS : deux alertes (arrêt + maintenance), aucun besoin.
+  sr[20].bikes = 0; sr[20].docks = 5; sr[20].bikesDis = 0; sr[20].docksDis = 15;
+  sr[20].renting = sr[20].returning = 0;
   sim::g_epoch0 = T; sim::g_timeOk = true;
   g_model.applyStatus(sr, 40, T - 1800);
   // Quelques stations bougent dans les vingt minutes : le flux n'est pas figé, donc l'alerte
@@ -1160,6 +1165,17 @@ static int prioScenario() {
         "fiche : le bilan du jour s'affiche EN PLUS du dernier épisode");
   ui::sheetClose();
   run(200);
+
+  // Onglet Alertes : la pastille porte le besoin de livraison, pas « +N »
+  tap(30, tabY(ui::TAB_ALERTS));
+  run(700);
+  shot("prio_alertes");
+  const char * b0 = ui::debugAlertBadge(0), * b20 = ui::debugAlertBadge(20);
+  printf("  pastille station 1 (vide, deux alertes) : « %s »\n", b0);
+  printf("  pastille station 21 (suspendue, deux alertes, aucun besoin) : « %s »\n", b20);
+  check(strstr(b0, "v\xC3\xA9los") != nullptr,
+        "station vide à deux alertes : la pastille dit le besoin, pas « +N »");
+  check(strcmp(b20, "+1") == 0, "« +N » ne s'affiche que faute de besoin");
   printf("Scénario priorités : %d échec(s)\n", fails);
   return fails ? 3 : 0;
 }
