@@ -29,6 +29,7 @@
 
 namespace ui { lv_obj_t * debugToast(); int debugTab(); const char * debugDashText(int w);
                const char * debugDashPrio(int row, int field);
+               const char * debugSheetRuptures(int which);
                int debugDashCurvePoints(); int debugDashCurveLastX(); int debugDashForecastPoints(); }
 namespace sim { extern int64_t g_epoch0; extern uint32_t g_ms; extern bool g_fetching; extern const char * g_fsDir;
                 extern int g_wifiState; extern bool g_timeOk; extern const char * g_stage; extern int g_wifiReason;
@@ -1119,6 +1120,16 @@ static int prioScenario() {
   lv_indev_drv_init(&id);
   id.type = LV_INDEV_TYPE_POINTER; id.read_cb = readTouch;
   lv_indev_drv_register(&id);
+  // Deuxième rupture de la journée pour la première station : la fiche doit afficher le bilan du
+  // jour EN PLUS du dernier épisode (l'ancien code écrivait « Dernière : » dans son propre tampon
+  // puis écrasait le bilan qu'il venait de poser).
+  sr[0].bikes = 6; sr[0].docks = 14;
+  g_model.applyStatus(sr, 40, T + 60);                 // remise en service
+  sr[0].bikes = 0; sr[0].docks = 20;
+  g_model.applyStatus(sr, 40, T + 120);                // et de nouveau vide
+  g_model.recompute(T + 120);
+  sim::g_epoch0 = T + 120;
+
   ui::init(disp);
   run(800);
   shot("prio_reseau");
@@ -1136,6 +1147,19 @@ static int prioScenario() {
   check(netNamed, "la ligne de l'alerte réseau est nommée « Réseau » (pas un nom lu hors du tableau)");
   check(netWhy, "elle porte un motif lisible");
   check(!netBadge, "elle ne porte pas de besoin de livraison");
+
+  // Fiche station : le journal et le bilan du jour, tous les deux lisibles
+  ui::openStation(0);
+  run(700);
+  shot("prio_fiche_journal");
+  printf("  fiche : « %s »\n", ui::debugSheetRuptures(0));
+  printf("  fiche : « %s »\n", ui::debugSheetRuptures(1));
+  check(textVisible(lv_layer_top(), "Dernière : vide"),
+        "fiche : le dernier épisode est lisible (« Dernière : vide … »)");
+  check(textVisible(lv_layer_top(), "Aujourd'hui : 2 ruptures"),
+        "fiche : le bilan du jour s'affiche EN PLUS du dernier épisode");
+  ui::sheetClose();
+  run(200);
   printf("Scénario priorités : %d échec(s)\n", fails);
   return fails ? 3 : 0;
 }

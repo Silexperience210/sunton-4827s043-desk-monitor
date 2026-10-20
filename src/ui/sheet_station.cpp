@@ -26,7 +26,7 @@ struct SheetW {
   lv_obj_t * chart, * chartMeta;
   lv_obj_t * fcV[4];
   lv_obj_t * insFlash, * insIc, * insTitle, * insWhy, * insNeed, * insConf, * insAnom, * insWx;
-  lv_obj_t * lastMove, * lastRep, * ruptures, * addr;
+  lv_obj_t * lastMove, * lastRep, * ruptures, * rupturesToday, * addr;
 };
 static SheetW W;
 
@@ -224,19 +224,26 @@ static void fill() {
         fmtDur(du, sizeof(du), (int)((now() - le.t) / 60));
         snprintf(b, sizeof(b), "%s depuis %s (%s)", q, h1, du);
       }
+      // `snprintf(b, sizeof(b), "Dernière : %s", b)` écrivait dans le tampon qu'il lisait
+      // (comportement indéfini, annoncé par -Wrestrict) : la fiche affichait « Dernière : Dernière :
+      // → 15 h 40 ». Et le bilan du jour, écrit dans le même libellé, était écrasé juste après —
+      // il ne s'affichait donc jamais. Deux libellés, deux tampons.
+      char lastLine[160];
+      snprintf(lastLine, sizeof(lastLine), "Dernière : %s", b);
+      lv_label_set_text(W.ruptures, lastLine);
       int totS = 0;
       const int nToday = vn::rupturesToday(g_model, W.st, now(), &totS);
       if (nToday > 1) {
-        char tot[24];
+        char tot[24], today[96];
         fmtDur(tot, sizeof(tot), totS / 60);
-        char b2[96];
-        snprintf(b2, sizeof(b2), "Aujourd'hui : %d ruptures, %s au total", nToday, tot);
-        lv_label_set_text(W.ruptures, b2);
-        snprintf(b, sizeof(b), "Dernière : %s", b);
-      }
-      lv_label_set_text(W.ruptures, b);
+        snprintf(today, sizeof(today), "Aujourd'hui : %d ruptures, %s au total", nToday, tot);
+        lv_label_set_text(W.rupturesToday, today);
+      } else lv_label_set_text(W.rupturesToday, "");
     } else {
-      lv_label_set_text(W.ruptures, "Aucune rupture enregistrée depuis l'allumage");
+      // Le journal est un anneau de VN_ALERT_LOG épisodes : son absence ne prouve pas qu'il n'y a
+      // jamais eu de rupture depuis l'allumage, seulement qu'il n'en connaît aucune.
+      lv_label_set_text(W.ruptures, "Aucune rupture connue");
+      lv_label_set_text(W.rupturesToday, "");
     }
   }
   lv_label_set_text(W.addr, s.addr[0] ? s.addr : "\xE2\x80\x94");
@@ -341,6 +348,7 @@ void openStation(int st) {
   W.lastMove = label(det, &vn_inter_12, HX_TEXT2, "");
   W.lastRep = label(det, &vn_inter_12, HX_TEXT3, "");
   W.ruptures = label(det, &vn_inter_12, HX_TEXT2, "");   // journal : « vide 8 h 03 → 8 h 41 (38 min) »
+  W.rupturesToday = label(det, &vn_inter_12, HX_TEXT3, "");   // « Aujourd'hui : 3 ruptures, 1 h 12 au total »
   W.addr = label(det, &vn_inter_11, HX_TEXT3, "");
   lv_label_set_long_mode(W.addr, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(W.addr, BW);
@@ -359,5 +367,14 @@ void stationSheetRefresh() {
   if (sheetToken() != W.token || W.token < 0) { W.st = -1; return; }
   fill();
 }
+
+#ifdef VN_SIM
+// Banc : ce que la fiche AFFICHE du journal (0 = dernier épisode, 1 = bilan du jour). Le banc ne
+// voit pas l'écran : sans cet accès, une fiche illisible reste verte.
+const char * debugSheetRuptures(int which) {
+  lv_obj_t * o = which ? W.rupturesToday : W.ruptures;
+  return o ? lv_label_get_text(o) : "";
+}
+#endif
 
 } // namespace ui
