@@ -405,15 +405,16 @@ static void testParc() {
                        mkInfo("3", 49.62f, 6.15f, 20), mkInfo("4", 49.63f, 6.16f, 20),
                        mkInfo("5", 49.64f, 6.17f, 20), mkInfo("6", 49.65f, 6.18f, 20) };
     const int64_t t0 = 1791842400 + 6 * 3600;              // 06:00
+    StatusRec sr6[6];                                    // 6 lignes : sr n'en a que 3
     m.applyInfo(ir6, 2, t0);
     for (int64_t t = t0; t <= t0 + 24 * 3600; t += 300) {
-      for (int s = 0; s < 2; s++) sr[s] = mkStat(ir6[s].sid, 10, 20);
-      m.applyStatus(sr, 2, t);
+      for (int s = 0; s < 2; s++) sr6[s] = mkStat(ir6[s].sid, 10, 20);
+      m.applyStatus(sr6, 2, t);
     }
     m.applyInfo(ir6, 6, t0 + 24 * 3600);                   // quatre stations de plus
     for (int64_t t = t0 + 24 * 3600; t <= t0 + 25 * 3600; t += 300) {
-      for (int s = 0; s < 6; s++) sr[s] = mkStat(ir6[s].sid, 10, 20);
-      m.applyStatus(sr, 6, t);
+      for (int s = 0; s < 6; s++) sr6[s] = mkStat(ir6[s].sid, 10, 20);
+      m.applyStatus(sr6, 6, t);
     }
     CHECK(!m.tot.inUseValid, "couverture inégale : pas de validation sur la seule heure comparable");
     CHECK(m.tot.histMinutes <= 65,
@@ -486,6 +487,50 @@ static void testParc() {
     CHECK(m.tot.inUse == 200, "200 vélos en trajet (%d)", m.tot.inUse);
   }
 
+  // (l') cinq tranches aberrantes (2 + 3) : le budget exact de K = 6 (K − 1). À K = 5, la troisième
+  //      tranche du second artefact passe et le parc est faux.
+  {
+    static Model m;
+    CHECK(m.init(), "init cinq aberrantes");
+    InfoRec ir7[4] = { mkInfo("a", 49.61f, 6.13f, 600), mkInfo("b", 49.62f, 6.14f, 600),
+                       mkInfo("c", 49.63f, 6.15f, 600), mkInfo("d", 49.64f, 6.16f, 600) };
+    const int64_t t0 = 1791842400 + 2 * 3600;
+    m.applyInfo(ir7, 4, t0);
+    StatusRec s7[4];
+    for (int k2 = 0; k2 < 240; k2++) {
+      int bikes = 150;
+      if (k2 >= 40 && k2 < 42) bikes = 350;                 // deux tranches
+      if (k2 >= 160 && k2 < 163) bikes = 550;               // trois tranches
+      if (k2 >= 238) bikes = 100;
+      for (int s2 = 0; s2 < 4; s2++) s7[s2] = mkStat(ir7[s2].sid, bikes, 600);
+      m.applyStatus(s7, 4, t0 + k2 * 300);
+    }
+    CHECK(m.tot.fleet == 600, "cinq tranches aberrantes absorbées (%d)", m.tot.fleet);
+    CHECK(m.tot.inUse == 200 && m.tot.inUseValid, "200 en trajet, validé (%d, %d)",
+          m.tot.inUse, m.tot.inUseValid);
+  }
+
+  // (m) référence prise en pleine vidange, suivie de tranches plus calmes : le quart calme se mesure
+  //     sur TOUTES les tranches comparables, après comme avant la référence.
+  {
+    static Model m;
+    CHECK(m.init(), "init vidange au démarrage");
+    InfoRec irm[4] = { mkInfo("a", 49.61f, 6.13f, 300), mkInfo("b", 49.62f, 6.14f, 300),
+                       mkInfo("c", 49.63f, 6.15f, 300), mkInfo("d", 49.64f, 6.16f, 300) };
+    const int64_t t0 = 1791842400 + 5 * 3600;              // 05:00, démarrage à froid
+    m.applyInfo(irm, 4, t0);
+    StatusRec sm[4];
+    for (int k2 = 0; k2 <= 156; k2++) {                    // 05:00 → 18:00
+      const int bikes = 220 - 3 * (k2 < 48 ? k2 : 48);     // −12 vélos/tranche jusqu'à 09:00, puis plat
+      for (int s2 = 0; s2 < 4; s2++) sm[s2] = mkStat(irm[s2].sid, bikes, 300);
+      m.applyStatus(sm, 4, t0 + k2 * 300);
+    }
+    CHECK(m.tot.fleet == 880 - 12 * (VN_INUSE_ORDER - 1),
+          "parc = k-ième valeur de la vidange (%d)", m.tot.fleet);
+    CHECK(!m.tot.inUseValid, "référence en pleine vidange, 108 tranches plus calmes APRÈS : pas validé");
+    CHECK(m.tot.inUseProvisional, "… mais publié comme provisoire");
+  }
+
   // (j) une tranche qui couvre PLUS de stations qu'aujourd'hui n'est pas comparable. Si trois
   //     stations disparaissent du référentiel, leur dernier relevé ne doit pas servir de parc :
   //     c'était 94 vélos en trajet annoncés « validés » pour une vraie valeur de 49.
@@ -496,15 +541,16 @@ static void testParc() {
                         mkInfo("3", 49.62f, 6.15f, 20), mkInfo("4", 49.63f, 6.16f, 20),
                         mkInfo("5", 49.64f, 6.17f, 20), mkInfo("6", 49.65f, 6.18f, 20) };
     const int64_t t0 = 1791842400 + 6 * 3600;              // 06:00
+    StatusRec sr6b[6];
     m.applyInfo(ir6b, 6, t0);
     for (int64_t t = t0; t <= t0 + 6 * 3600; t += 300) {
-      for (int s2 = 0; s2 < 6; s2++) sr[s2] = mkStat(ir6b[s2].sid, 12, 20);
-      m.applyStatus(sr, 6, t);
+      for (int s2 = 0; s2 < 6; s2++) sr6b[s2] = mkStat(ir6b[s2].sid, 12, 20);
+      m.applyStatus(sr6b, 6, t);
     }
     m.applyInfo(ir6b, 3, t0 + 6 * 3600);                   // trois stations retirées du référentiel
     for (int64_t t = t0 + 6 * 3600; t <= t0 + 7 * 3600; t += 300) {
-      for (int s2 = 0; s2 < 3; s2++) sr[s2] = mkStat(ir6b[s2].sid, 6, 20);
-      m.applyStatus(sr, 3, t);
+      for (int s2 = 0; s2 < 3; s2++) sr6b[s2] = mkStat(ir6b[s2].sid, 6, 20);
+      m.applyStatus(sr6b, 3, t);
     }
     CHECK(m.tot.fleet == 18, "parc = 3 × 6 après retrait, pas 6 × 12 (%d)", m.tot.fleet);
     CHECK(m.tot.histMinutes <= 65,

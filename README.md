@@ -197,22 +197,33 @@ Un **recul d'horloge** (resynchronisation NTP vers l'arrière) n'inscrit plus de
 tranche, ce qui gonflait la profondeur. Et la tranche de référence est **datée de son âge** : la
 fiche écrit « Réf. 00:30 (−15 h) », y compris quand la référence reste dans la même journée.
 
-#### 1.2.7 — le parc tient compte de deux artefacts indépendants
+#### 1.2.7 — le parc tient compte de deux artefacts, et le chiffre dit d'où il vient
 
 Le parc était la troisième plus grande valeur comparable : ce budget ne tolérait que **deux tranches
 aberrantes sur 24 h, toutes causes confondues**. Une revue l'a mesuré : deux artefacts indépendants de
 deux tranches (une station fantôme le matin, un cache le soir) faisaient annoncer **400 vélos en trajet
 pour 200 réels, validé, pendant vingt-quatre heures**. La valeur retenue passe au **sixième** rang :
-elle absorbe jusqu'à cinq tranches aberrantes — deux artefacts indépendants, ou une station fantôme
-d'un quart d'heure. Le test (l) fige le cas : parc 600 et 200 en trajet ; passé à K = 3, il annonce
-1400 et 1000.
+elle absorbe exactement cinq tranches aberrantes — deux artefacts indépendants, ou une station fantôme
+d'un quart d'heure. Le test (l) fige le cas ; (l') fige la borne exacte (cinq tranches passent, six
+dépassent) et tombe à K = 5 comme à K = 3.
 
-Le coût est chiffré et assumé : sur un réseau qui se vide **sans jamais de palier**, l'estimation perd
-cinq rangs de pente (environ 60 vélos sur 900) au lieu de deux, et cela dure jusqu'au plateau de nuit
-suivant. Sur une nuit avec palier — le cas normal — le biais est nul. L'autre correction proposée par
-la revue (exiger que le relevé retenu soit un palier dans le temps) a été essayée et **retirée** : elle
-rendait provisoire un drainage légitime et cassait la validation du creux de nuit ; elle sera reprise
-avec des tests dédiés si le besoin se confirme.
+**Le quart calme était mal mesuré.** L'activité de la référence se comparait aux seules tranches **plus
+anciennes** qu'elle (et le rattrapage comparait à −1 : code mort). Une référence prise en pleine
+vidange au démarrage passait donc pour un creux, et −40 % s'affichaient comme **validés** le premier
+jour. Le comptage porte désormais sur toutes les tranches comparables, avant comme après la référence ;
+la couverture est aussi bornée par le haut (une tranche plus couverte ne compte plus comme calme). Le
+test (m) le tient : référence en vidange, 108 tranches plus calmes après → **provisoire**, plus validé.
+
+**Le chiffre porte sa provenance.** La tuile écrit « parc ≈ 856 · réf. −15 h » (ou « réf. courante »),
+et la fiche donne l'heure exacte, la profondeur d'historique et la couverture. Le parc reste une
+**estimation** — la fiche dit les deux sens d'erreur — et le clamp « parc ≥ vélos garés » tolère
+désormais ±1 % (ou ±5 vélos), ce qui supprime les bascules dues au seul bruit de lecture de la nuit
+(54 bascules sur 480 relevés à ±6, mesurées par la revue).
+
+Coût documenté : sur une nuit **en rampe** sans palier de trente minutes, un biais permanent de quelques
+vélos à une quinzaine selon la pente ; sur une nuit avec palier, il est nul. Sur une vidange qui démarre
+à froid, le biais de pente (−5 rangs) dure environ vingt heures, jusqu'au premier palier — et il est
+désormais **provisoire**, donc affiché comme « — » et non comme une mesure.
 
 #### 1.2.6 — « vélos en trajet » reste une estimation, et le dit
 
@@ -509,7 +520,7 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision dump_sim
-./test_core ../docs/donnees     # 990 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 997 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2, v3 → v4),
                                  # écart habituel (dispersion apprise, affichée pour information, textes de l'écart),

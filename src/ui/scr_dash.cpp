@@ -286,7 +286,12 @@ static void refresh() {
   if (has && t.inUseValid) fmtInt(b, sizeof(b), t.inUse);
   else snprintf(b, sizeof(b), "%s", NO_DATA);
   lv_label_set_text(s_kpi[1].value, b);
-  if (has && t.inUseValid) { fmtInt(c2, sizeof(c2), t.fleet); snprintf(b, sizeof(b), "parc \xE2\x89\x88 %s", c2); }
+  if (has && t.inUseValid) {                  // provenance : le parc estimé ET l'âge de sa référence
+    fmtInt(c2, sizeof(c2), t.fleet);
+    int ah = t.fleetAt ? (int)((g_model.lastUpdate - t.fleetAt) / 3600) : 0;
+    if (ah >= 1) snprintf(b, sizeof(b), "parc \xE2\x89\x88 %s \xC2\xB7 r\xC3\xA9" "f. \xE2\x88\x92%d h", c2, ah);
+    else snprintf(b, sizeof(b), "parc \xE2\x89\x88 %s \xC2\xB7 r\xC3\xA9" "f. courante", c2);
+  }
   else snprintf(b, sizeof(b), "estimation apr\xC3\xA8s un creux observ\xC3\xA9");
   lv_label_set_text(s_kpi[1].sub, b);
   if (has) fmtInt(b, sizeof(b), t.docks); else snprintf(b, sizeof(b), "%s", NO_DATA);

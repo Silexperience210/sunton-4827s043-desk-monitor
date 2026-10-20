@@ -967,9 +967,11 @@ void Model::recompute(int64_t now) {
     refSpikes = k;                             // relevés plus hauts, écartés comme aberrants
   }
   // Invariant : le parc ne peut pas être INFÉRIEUR aux vélos garés à cet instant — un parc qui se
-  // vide (retours, atelier) peut descendre sous la 3ᵉ plus grande valeur de l'historique. On prend
-  // alors le relevé courant comme référence, ce qui rend la valeur provisoire plutôt que fausse.
-  if (curPark > fleet) { fleet = curPark; fleetAt = 0; refCover = liveNow; refSpikes = 0; }
+  // remplit (nuit, retours en masse) peut dépasser la k-ième plus grande valeur de l'historique. On
+  // prend alors le relevé courant comme référence, ce qui rend la valeur provisoire plutôt que fausse.
+  // La tolérance évite les bascules dues au seul bruit de lecture (±6 vélos la nuit).
+  const int cTol = fleet / 100 > 5 ? fleet / 100 : 5;   // bruit de nuit : ±1 % ou ±5 vélos
+  if (curPark > fleet + cTol) { fleet = curPark; fleetAt = 0; refCover = liveNow; refSpikes = 0; }
   t.fleet = fleet;
   t.histSlots = count;
   t.inUse = fleet - curPark;
@@ -990,26 +992,26 @@ void Model::recompute(int64_t now) {
     const uint8_t * row = ring + (size_t)ringIndex(b) * VN_MAX_ST;
     int cov = 0;
     for (int i = 0; i < n; i++) if (row[i] != 255) cov++;
-    return cov + tolCover >= liveNow;
+    return cov + tolCover >= liveNow && cov <= liveNow + tolCover;
   };
   if (fleetAt) {
-    int actRef = -1, below = 0, sameN = 0;
+    // Premier passage : l'activité de la référence. Second : combien de tranches comparables sont MOINS
+    // actives qu'elle, sur tout l'anneau. Un seul passage ne pouvait compter que les plus anciennes.
+    int actRef = -1, sameN = 0, below = 0;
     for (int b = 0; b < count; b++) {
       if (!comparable(b)) continue;
-      const NetSample & ns = net[ringIndex(b)];
-      const int act = ns.dep + ns.ret;
       sameN++;
-      if (ns.t == fleetAt) actRef = act;
-      else if (actRef >= 0 && act < actRef) below++;
+      const NetSample & ns = net[ringIndex(b)];
+      if (ns.t == fleetAt) actRef = ns.dep + ns.ret;
     }
-    if (actRef < 0) {                          // référence rencontrée en dernier : second passage
+    if (actRef >= 0) {
       for (int b = 0; b < count; b++) {
         if (!comparable(b)) continue;
         const NetSample & ns = net[ringIndex(b)];
         if (ns.t != fleetAt && (ns.dep + ns.ret) < actRef) below++;
       }
     }
-    quiet = (sameN > 0) && (below * 4 <= sameN); // dans le quart le plus bas
+    quiet = (sameN > 0) && (below * 4 <= sameN); // référence dans le quart le plus bas
   }
   t.refSpikes = refSpikes;
   t.inUseValid = (obsMin >= VN_INUSE_MIN_MIN) && quiet;
