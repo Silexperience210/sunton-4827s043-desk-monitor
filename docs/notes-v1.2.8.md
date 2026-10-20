@@ -52,7 +52,9 @@ Banc : **1 058 vérifications, 0 échec**, dont six nouvelles sur cet onglet : p
 19 ruptures conservées, compteurs vrais (somme = total), ordre déterministe sur deux recomputes,
 station suspendue qui n'est pas « vide », arrêt de plus de sept jours signalé, flux figé réduit à une
 alerte réseau sans les individuelles, et journal avec durée. Mutations vérifiées : sans éviction, sans
-garde « renting », sans suppression des « aucun mouvement » ou sans journal, les tests tombent.
+branche d'arrêt, sans suppression des « aucun mouvement » ou sans journal, les tests tombent. (La phrase
+d'origine citait aussi la garde « renting » de la branche d'alerte : c'était faux — cette garde était
+redondante, la retirer ne changeait aucun test, et 02c5e9d l'a supprimée.)
 
 **Non couvert** : la charge d'une vraie matinée chargée n'a pas été mesurée (l'anneau de la carte ne
 contenait qu'une nuit) ; le seuil « aucun mouvement » de vingt minutes est déduit de l'activité observée
@@ -62,3 +64,30 @@ survit pas à un redémarrage, ni ne couvre les prévisions (qui clignotent auto
 ## Mise à jour
 
 Aucune migration : aucun format de fichier ne change. Flash par-dessus, sans effacement.
+
+## Corrigé après la publication — revue indépendante du 20/10
+
+Le binaire publié portait ces défauts. Ils sont corrigés sur `main` (commits locaux, pas de nouvelle
+version tant qu'aucun format de fichier ne change) :
+
+- **tableau de bord** : une alerte réseau (`st = ‑1`) entre dans les cinq priorités dès qu'une journée
+  compte moins de cinq stations plus graves, et la ligne lisait `g_model.st[-1]` — 408 octets avant le
+  tableau, donc l'en-tête du tas PSRAM : nom illisible, badge pris au hasard.
+- **fiche station** : `snprintf(b, sizeof(b), "Dernière : %s", b)` écrivait dans le tampon qu'il lisait
+  et le bilan du jour, posé juste avant, était écrasé. Ce qui s'affiche vraiment : deux lignes,
+  « Dernière : vide 8 h 03 → 8 h 41 (38 min) » puis « Aujourd'hui : 3 ruptures, 1 h 12 au total ».
+- **flux figé** : les minutes se comptaient sur `lastUpdate`, que `applyStatus` venait de poser à `now`
+  → « aucune station n'a bougé depuis 0 min » dans le cas même de l'alerte ; et elle arrivait derrière
+  toutes les ruptures figées. Elles se comptent maintenant sur le dernier mouvement du parc, et
+  l'alerte est en gravité 3 (donc en tête).
+- **journal** : une station qui cessait de louer ouvrait un épisode « vide » qui ne se refermait jamais
+  (et un toast « vient de se vider »). Anneau porté à 1 024 entrées : mesuré, 200 étaient pleines en
+  moins de douze heures.
+- **bilan du jour** : il ignorait les épisodes commencés la veille, et minuit était calculé à une heure
+  près le jour du changement d'heure.
+
+Ce qui reste ouvert, et pourquoi : une station suspendue garde un besoin de régulation (le plan de
+transferts peut proposer de la réapprovisionner) — corriger cela déplace les sommes du modèle, c'est
+une décision du propriétaire, pas un correctif ; un épisode plus long que l'anneau peut encore être
+écrasé pendant qu'il dure (bien plus rare à 1 024 entrées) ; et l'en-tête commun mesure toujours la
+fraîcheur sur `lastUpdate`, donc un flux figé s'y annonce LIVE.
