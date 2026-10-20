@@ -463,6 +463,29 @@ static void testParc() {
     CHECK(!m.tot.inUseValid, "valeur provisoire : la 3ᵉ plus grande valeur est dépassée");
   }
 
+  // (l) DEUX artefacts indépendants de deux tranches (sonde A4) : parc 600, 200 vélos en trajet.
+  //     Avec K = 3 le parc retenait un artefact et annonçait 400 en trajet, validé. Avec K = 6, non.
+  {
+    static Model m;
+    CHECK(m.init(), "init deux artefacts");
+    InfoRec ir5[4] = { mkInfo("a", 49.61f, 6.13f, 600), mkInfo("b", 49.62f, 6.14f, 600),
+                       mkInfo("c", 49.63f, 6.15f, 600), mkInfo("d", 49.64f, 6.16f, 600) };
+    const int64_t t0 = 1791842400 + 2 * 3600;              // 02:00
+    m.applyInfo(ir5, 4, t0);
+    StatusRec s5[4];
+    for (int k2 = 0; k2 < 240; k2++) {                     // 20 h à 150 garés par station (parc 600)
+      const int64_t t = t0 + k2 * 300;
+      int bikes = 150;
+      if (k2 >= 40 && k2 < 42) bikes = 350;                // artefact +200
+      if (k2 >= 160 && k2 < 162) bikes = 550;              // artefact +400
+      if (k2 >= 238) bikes = 100;                          // les vélos partent : 200 en trajet
+      for (int s2 = 0; s2 < 4; s2++) s5[s2] = mkStat(ir5[s2].sid, bikes, 600);
+      m.applyStatus(s5, 4, t);
+    }
+    CHECK(m.tot.fleet == 600, "deux artefacts indépendants : le parc reste 600 (%d)", m.tot.fleet);
+    CHECK(m.tot.inUse == 200, "200 vélos en trajet (%d)", m.tot.inUse);
+  }
+
   // (j) une tranche qui couvre PLUS de stations qu'aujourd'hui n'est pas comparable. Si trois
   //     stations disparaissent du référentiel, leur dernier relevé ne doit pas servir de parc :
   //     c'était 94 vélos en trajet annoncés « validés » pour une vraie valeur de 49.
@@ -534,7 +557,7 @@ static void testParc() {
       if (ghost) m.applyInfo(irF, 3, t);
     }
     CHECK(m.tot.fleet == 30, "parc = 3 × 10 malgré la station fantôme (%d)", m.tot.fleet);
-    CHECK(m.tot.refSpikes == 2, "deux relevés plus hauts écartés (%d)", m.tot.refSpikes);
+    CHECK(m.tot.refSpikes == VN_INUSE_ORDER - 1, "le rang retenu est bien K-1 (%d)", m.tot.refSpikes);
     CHECK(m.tot.inUseValid, "le chiffre reste publié et validé pendant ce temps");
   }
 }
