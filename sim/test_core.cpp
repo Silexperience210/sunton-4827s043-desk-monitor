@@ -440,6 +440,29 @@ static void testParc() {
           "recul d'horloge : profondeur inchangée (%d min → %d min)", before, m.tot.histMinutes);
   }
 
+  // (k) un parc qui SE REMPLIT au-delà de la 3ᵉ plus grande valeur : le parc ne peut pas être
+  //     inférieur aux vélos garés à cet instant. Le relevé courant prend alors la référence, et la
+  //     valeur reste provisoire (c'est honnête : la 3ᵉ valeur de l'historique est dépassée).
+  {
+    static Model m;
+    CHECK(m.init(), "init parc (remplissage en cours)");
+    const int64_t t0 = 1791842400 + 3 * 3600;              // 03:00
+    m.applyInfo(ir, 3, t0);
+    int64_t t = t0;
+    for (int k = 0; k < 60; k++, t += 300) {               // 5 h à 10 vélos par station
+      for (int s2 = 0; s2 < 3; s2++) sr[s2] = mkStat(ir[s2].sid, 10, 20);
+      m.applyStatus(sr, 3, t);
+    }
+    for (int k = 0; k < 2; k++, t += 300) {                // deux tranches à 20 : le parc monte à 60
+      for (int s2 = 0; s2 < 3; s2++) sr[s2] = mkStat(ir[s2].sid, 20, 20);
+      m.applyStatus(sr, 3, t);
+    }
+    CHECK(m.tot.fleet == 60 && m.tot.fleetAt == 0,
+          "parc ≥ vélos garés : 60 et référence au relevé courant (%d, %lld)",
+          m.tot.fleet, (long long)m.tot.fleetAt);
+    CHECK(!m.tot.inUseValid, "valeur provisoire : la 3ᵉ plus grande valeur est dépassée");
+  }
+
   // (j) une tranche qui couvre PLUS de stations qu'aujourd'hui n'est pas comparable. Si trois
   //     stations disparaissent du référentiel, leur dernier relevé ne doit pas servir de parc :
   //     c'était 94 vélos en trajet annoncés « validés » pour une vraie valeur de 49.

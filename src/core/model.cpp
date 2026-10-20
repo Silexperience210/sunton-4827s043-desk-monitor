@@ -966,6 +966,10 @@ void Model::recompute(int64_t now) {
     refCover = topCov[k];
     refSpikes = k;                             // relevés plus hauts, écartés comme aberrants
   }
+  // Invariant : le parc ne peut pas être INFÉRIEUR aux vélos garés à cet instant — un parc qui se
+  // vide (retours, atelier) peut descendre sous la 3ᵉ plus grande valeur de l'historique. On prend
+  // alors le relevé courant comme référence, ce qui rend la valeur provisoire plutôt que fausse.
+  if (curPark > fleet) { fleet = curPark; fleetAt = 0; refCover = liveNow; refSpikes = 0; }
   t.fleet = fleet;
   t.histSlots = count;
   t.inUse = fleet - curPark;
