@@ -224,8 +224,9 @@ désormais ±1 % (ou ±5 vélos), ce qui supprime les bascules dues au seul brui
 contenaient encore des chaînes avalées par le compilateur (« rßérence », « Ürite ») — la séquence
 `\xHH` suivie d'un chiffre hexadécimal déborde (`\xA9f` = `0xA9F` tronqué à `0x9F`) ; un test vérifie
 désormais qu'aucune fiche ne contient les octets de cette famille, et que le détecteur les voit. La
-provenance de la tuile était **tronquée** (« parc ≈ 880 ·… ») : elle tient en dix-sept caractères, donc
-« parc ≈ 880 · −15h » et rien quand la référence est le relevé courant. Et l'invariant « parc ≥ vélos
+provenance de la tuile était **tronquée** (« parc ≈ 880 ·… ») : le label fait **80 px** à la police
+`vn_inter_11` et « parc ≈ 1 419 · −20h » en demande 99 (mesuré, crénage compris) ; la tuile écrit donc
+« ≈ 1 419 · −20h » (74 px), et « parc ≈ 880 » quand la référence est le relevé courant. Et l'invariant « parc ≥ vélos
 garés » ne tient plus **toujours** : il était relâché de la tolérance de bruit ; seule la *référence*
 est jetée au-delà du bruit, le niveau est corrigé dans tous les cas.
 

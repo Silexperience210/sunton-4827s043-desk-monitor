@@ -289,8 +289,10 @@ static void refresh() {
   if (has && t.inUseValid) {                  // provenance : le parc estimé ET l'âge de sa référence
     fmtInt(c2, sizeof(c2), t.fleet);
     const int ah = t.fleetAt ? (int)((g_model.lastUpdate - t.fleetAt) / 3600) : 0;
-    // 17 caractères tiennent dans la tuile (mesuré) : « parc ≈ 880 · réf. −15 h » était tronqué.
-    if (ah >= 1) snprintf(b, sizeof(b), "parc \xE2\x89\x88 %s \xC2\xB7 \xE2\x88\x92%dh", c2, ah);
+    // Le label de la tuile fait 80 px (mesuré à la police vn_inter_11, crénage compris) : « parc
+    // ≈ 1 419 · −20h » en fait 99 et était tronqué. Sans le mot « parc », 74 px : il tient, et le
+    // sens reste porté par le libellé de la tuile (« EN TRAJET ») et par la fiche, qui donne tout.
+    if (ah >= 1) snprintf(b, sizeof(b), "\xE2\x89\x88 %s \xC2\xB7 \xE2\x88\x92%dh", c2, ah);
     else snprintf(b, sizeof(b), "parc \xE2\x89\x88 %s", c2);
   }
   else snprintf(b, sizeof(b), "estimation apr\xC3\xA8s un creux observ\xC3\xA9");

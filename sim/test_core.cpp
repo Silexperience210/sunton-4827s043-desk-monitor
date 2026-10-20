@@ -134,7 +134,7 @@ static bool mojibake(const char * t) {
 static void testMojibakeDetector() {
   CHECK(mojibake("r\xC3\x9F" "érence"), "« ß » détecté (rßérence)");
   CHECK(mojibake("\xC3\x9C" "rite"), "« Ü » détecté (Ürite)");
-  CHECK(mojibake("s\xC3\x9E" "rie"), "« Þ » détecté (Þ de \xA9e)");
+  CHECK(mojibake("s\xC3\x9E" "rie"), "« Þ » détecté (Þ de 0xA9E tronqué)");
   CHECK(!mojibake("r\xC3\xA9" "f\xC3\xA9rence"), "« référence » passe");
   CHECK(!mojibake("R\xC3\x89" "ELLEMENT OBSERV\xC3\x89" "ES"), "les majuscules accentuées passent");
   CHECK(!mojibake(""), "chaîne vide");
