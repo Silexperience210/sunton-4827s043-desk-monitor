@@ -345,15 +345,21 @@ static void testAlertes() {
   s3[1] = mkStat("2", 0, 20); s3[1].lastReported = T - 60;                            // vraie rupture
   m3.applyStatus(s3, 2, T);
   m3.recompute(T);
-  int empty[2] = { 0, 0 }, closedLong = 0, closedVal[2] = { -1, -1 };
+  int empty[2] = { 0, 0 }, closedLong = 0, closedVal[2] = { -1, -1 }, closedSev[2] = { -1, -1 };
   for (int k = 0; k < m3.nAlerts; k++) {
     const Alert & a = m3.alerts[k];
     if (a.type == AL_EMPTY && a.st >= 0) empty[a.st]++;
-    if (a.type == AL_CLOSED && a.st >= 0) { closedVal[a.st] = a.value; if (a.value == 3) closedLong++; }
+    if (a.type == AL_CLOSED && a.st >= 0) { closedVal[a.st] = a.value; closedSev[a.st] = a.sev; if (a.value == 3) closedLong++; }
   }
   CHECK(empty[0] == 0, "une station suspendue n'est pas « vide » (%d)", empty[0]);
   CHECK(empty[1] == 1, "une vraie rupture reste « vide » (%d)", empty[1]);
   CHECK(closedLong == 1, "arrêt de plus de 7 jours signalé comme prolongé (%d)", closedLong);
+  // La raison portée par l'alerte ET sa gravité : un arrêt prolongé est en sev 0 (il ne doit pas
+  // passer devant une rupture), et une vraie rupture ne produit aucune alerte d'arrêt.
+  CHECK(closedVal[0] == 3, "arrêt de 20 jours : raison « hors service prolongé » (%d)", closedVal[0]);
+  CHECK(closedSev[0] == 0, "arrêt de 20 jours : gravité 0 (%d)", closedSev[0]);
+  CHECK(closedVal[1] == -1 && closedSev[1] == -1, "une vraie rupture ne produit pas d'alerte d'arrêt (valeur %d, sev %d)",
+        closedVal[1], closedSev[1]);
 
   // (d2) une station qui cesse de louer EN COURS DE JOURNÉE n'ouvre ni épisode de journal ni
   //      toast « vient de se vider » : classify() la donne « vide » (bikes = 0 sans renting), donc
