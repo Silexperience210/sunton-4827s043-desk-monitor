@@ -971,7 +971,14 @@ void Model::recompute(int64_t now) {
   // prend alors le relevé courant comme référence, ce qui rend la valeur provisoire plutôt que fausse.
   // La tolérance évite les bascules dues au seul bruit de lecture (±6 vélos la nuit).
   const int cTol = fleet / 100 > 5 ? fleet / 100 : 5;   // bruit de nuit : ±1 % ou ±5 vélos
-  if (curPark > fleet + cTol) { fleet = curPark; fleetAt = 0; refCover = liveNow; refSpikes = 0; }
+  if (curPark > fleet) {
+    // L'invariant tient TOUJOURS : le parc ne peut pas être inférieur aux vélos garés. Au-delà du
+    // bruit de lecture, la référence devient le relevé courant (valeur provisoire) ; en deçà, on
+    // corrige le niveau sans jeter une référence de nuit qui reste valable.
+    const bool beyondNoise = curPark > fleet + cTol;
+    fleet = curPark;
+    if (beyondNoise) { fleetAt = 0; refCover = liveNow; refSpikes = 0; }
+  }
   t.fleet = fleet;
   t.histSlots = count;
   t.inUse = fleet - curPark;

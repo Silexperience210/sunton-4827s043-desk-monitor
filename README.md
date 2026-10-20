@@ -220,6 +220,15 @@ et la fiche donne l'heure exacte, la profondeur d'historique et la couverture. L
 désormais ±1 % (ou ±5 vélos), ce qui supprime les bascules dues au seul bruit de lecture de la nuit
 (54 bascules sur 480 relevés à ±6, mesurées par la revue).
 
+**Trois défauts de la 1.2.7 corrigés après revue** (revue K7, `RAPPORT-K7.md`) : les fiches
+contenaient encore des chaînes avalées par le compilateur (« rßérence », « Ürite ») — la séquence
+`\xHH` suivie d'un chiffre hexadécimal déborde (`\xA9f` = `0xA9F` tronqué à `0x9F`) ; un test vérifie
+désormais qu'aucune fiche ne contient les octets de cette famille, et que le détecteur les voit. La
+provenance de la tuile était **tronquée** (« parc ≈ 880 ·… ») : elle tient en dix-sept caractères, donc
+« parc ≈ 880 · −15h » et rien quand la référence est le relevé courant. Et l'invariant « parc ≥ vélos
+garés » ne tient plus **toujours** : il était relâché de la tolérance de bruit ; seule la *référence*
+est jetée au-delà du bruit, le niveau est corrigé dans tous les cas.
+
 Coût documenté : sur une nuit **en rampe** sans palier de trente minutes, un biais permanent de quelques
 vélos à une quinzaine selon la pente ; sur une nuit avec palier, il est nul. Sur une vidange qui démarre
 à froid, le biais de pente (−5 rangs) dure environ vingt heures, jusqu'au premier palier — et il est
@@ -520,7 +529,7 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision dump_sim
-./test_core ../docs/donnees     # 997 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 1 037 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2, v3 → v4),
                                  # écart habituel (dispersion apprise, affichée pour information, textes de l'écart),

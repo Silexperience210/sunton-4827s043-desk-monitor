@@ -213,13 +213,13 @@ bool provenance(const Model & m, int kpi, Provenance & p) {
                      "stations r\xC3\xA9pondaient qu'aujourd'hui.";
       p.validity = "Valid\xC3\xA9 : au moins 6 h de tranches R\xC3\x89" "ELLEMENT OBSERV\xC3\x89" "ES et comparables "
                    "\xC3\xA0 la population courante (les coupures et les changements de couverture ne comptent pas), "
-                   "la r\xC3\xA9f\xC3\xA9rence devant tomber dans le quart le moins actif de ces tranches, avant "
+                   "la r\xC3\xA9" "f\xC3\xA9rence devant tomber dans le quart le moins actif de ces tranches, avant "
                    "comme apr\xC3\xA8s elle. Le parc est la SIXI\xC3\x88" "ME plus grande valeur comparable : jusqu'\xC3\xA0 "
                    "cinq relev\xC3\xA9s anormalement hauts (red\xC3\xA9marrage, cache, station fant\xC3\xB4me, deux "
                    "artefacts ind\xC3\xA9pendants) sont \xC3\xA9" "cart\xC3\xA9s au lieu de gonfler le chiffre. C'est une "
                    "ESTIMATION : une surestimation du parc la fait monter, une sous-estimation la fait "
-                   "descendre ; sa provenance (\xC3\xA2ge de la r\xC3\xA9f\xC3\xA9rence, nombre de stations couvertes) "
-                   "est \xC3\xA9crite \xC3\xA0 c\xC3\xB4t\xC3\xA9 du chiffre. Tant que les conditions ne sont pas r\xC3\xA9unies, "
+                   "descendre ; sa provenance (\xC3\xA2ge de la r\xC3\xA9" "f\xC3\xA9rence, nombre de stations couvertes) "
+                   "est \xC3\xA9" "crite \xC3\xA0 c\xC3\xB4t\xC3\xA9 du chiffre. Tant que les conditions ne sont pas r\xC3\xA9unies, "
                    "la valeur est marqu\xC3\xA9" "e provisoire ici, et le tableau de bord affiche un tiret.";
       p.validityMet = t.inUseValid;
       p.refAt = t.fleetAt;
@@ -235,7 +235,7 @@ bool provenance(const Model & m, int kpi, Provenance & p) {
       }
       if (t.fleetAt) {
         hhmm(hh, sizeof(hh), t.fleetAt);
-        char age[16] = "";
+        char age[24] = "";   // «  (−%d h) » : gcc compte 10 chiffres, ne pas rogner
         int ah = ageHoursOf(t.fleetAt, m.lastUpdate);
         if (ah >= 1) snprintf(age, sizeof(age), " (\xE2\x88\x92%d h)", ah);
         snprintf(p.detail, sizeof(p.detail), "R\xC3\xA9" "f. %s%s \xC2\xB7 hist. %dh%02d \xC2\xB7 %d st. couv.%s",

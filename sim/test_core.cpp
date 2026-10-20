@@ -114,6 +114,33 @@ static StatusRec mkStat(const char * sid, int bikes, int cap) {
   return s;
 }
 
+// Un mojibake de la famille \xHH + chiffre : « ß » (rßérence) ou « Ü » (Ürite). Les chaînes peuvent
+// être absentes (champ vide), d'où le garde.
+static bool mojibake(const char * t) {
+  if (!t) return false;
+  // La séquence fautive \xHH suivie d'un chiffre hexadécimal déborde : « \xA9f » vaut 0xA9F, tronqué
+  // à 0x9F, donc 0xC3 0x9F = « ß ». Selon la lettre avalée on obtient 0x9B à 0x9F (Û Ü Ý Þ ß) —
+  // aucun de ces caractères n'existe dans les fiches en français. On les refuse tous.
+  for (const char * q = t; q[0] && q[1]; q++) {
+    if ((unsigned char)q[0] == 0xC3) {
+      const unsigned char b = (unsigned char)q[1];
+      if (b >= 0x9B && b <= 0x9F) return true;
+    }
+  }
+  return false;
+}
+
+// Le détecteur doit voir un vrai mojibake et laisser passer le français correct.
+static void testMojibakeDetector() {
+  CHECK(mojibake("r\xC3\x9F" "érence"), "« ß » détecté (rßérence)");
+  CHECK(mojibake("\xC3\x9C" "rite"), "« Ü » détecté (Ürite)");
+  CHECK(mojibake("s\xC3\x9E" "rie"), "« Þ » détecté (Þ de \xA9e)");
+  CHECK(!mojibake("r\xC3\xA9" "f\xC3\xA9rence"), "« référence » passe");
+  CHECK(!mojibake("R\xC3\x89" "ELLEMENT OBSERV\xC3\x89" "ES"), "les majuscules accentuées passent");
+  CHECK(!mojibake(""), "chaîne vide");
+  CHECK(!mojibake(nullptr), "pointeur nul");
+}
+
 static void testModel() {
   settingsDefaults(g_set);
   static Model m;   // instance de test (même code que g_model)
@@ -663,6 +690,12 @@ static void testProvenance(const std::string & dir) {
     for (int k = 0; k < KPI_COUNT; k++) {
       Provenance p;
       CHECK(provenance(m, k, p), "provenance %d", k);
+      // Aucune fiche ne doit contenir de mojibake : une séquence \xHH suivie d'un chiffre hexadécimal
+      // avale la lettre suivante (« rßérence », « Ürite »), et ce défaut a été livré dans les binaires
+      // 1.2.0 à 1.2.7 sans qu'aucun test ne le voie.
+      CHECK(!mojibake(p.rule), "règle %d sans mojibake", k);
+      CHECK(!mojibake(p.validity), "validité %d sans mojibake", k);
+      CHECK(!mojibake(p.detail), "détail %d sans mojibake", k);
       CHECK(!p.available && p.missing && p.missing[0], "vide : « %s » sans donnée → raison affichée", p.name);
       CHECK(p.name && p.rule && p.source, "vide : libellé, règle et source");
     }
@@ -2595,6 +2628,7 @@ int main(int argc, char ** argv) {
   testIso();
   if (argc > 1) testParse(argv[1]);
   testModel();
+  testMojibakeDetector();
   testParc();
   testRuptureStart();
   testIngest();

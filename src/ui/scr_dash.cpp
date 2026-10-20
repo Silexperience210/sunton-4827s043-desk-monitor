@@ -288,9 +288,10 @@ static void refresh() {
   lv_label_set_text(s_kpi[1].value, b);
   if (has && t.inUseValid) {                  // provenance : le parc estimé ET l'âge de sa référence
     fmtInt(c2, sizeof(c2), t.fleet);
-    int ah = t.fleetAt ? (int)((g_model.lastUpdate - t.fleetAt) / 3600) : 0;
-    if (ah >= 1) snprintf(b, sizeof(b), "parc \xE2\x89\x88 %s \xC2\xB7 r\xC3\xA9" "f. \xE2\x88\x92%d h", c2, ah);
-    else snprintf(b, sizeof(b), "parc \xE2\x89\x88 %s \xC2\xB7 r\xC3\xA9" "f. courante", c2);
+    const int ah = t.fleetAt ? (int)((g_model.lastUpdate - t.fleetAt) / 3600) : 0;
+    // 17 caractères tiennent dans la tuile (mesuré) : « parc ≈ 880 · réf. −15 h » était tronqué.
+    if (ah >= 1) snprintf(b, sizeof(b), "parc \xE2\x89\x88 %s \xC2\xB7 \xE2\x88\x92%dh", c2, ah);
+    else snprintf(b, sizeof(b), "parc \xE2\x89\x88 %s", c2);
   }
   else snprintf(b, sizeof(b), "estimation apr\xC3\xA8s un creux observ\xC3\xA9");
   lv_label_set_text(s_kpi[1].sub, b);
