@@ -978,7 +978,21 @@ void Model::recompute(int64_t now) {
     }
     quiet = (sameN > 0) && (below * 4 <= sameN); // dans le quart le plus bas
   }
-  t.inUseValid = (obsMin >= VN_INUSE_MIN_MIN) && quiet;
+  // Le maximum doit être un PALIER, pas un pic isolé : un relevé unique plus haut que tous les
+  // autres (redémarrage, cache, station fantôme) fabriquerait un parc trop grand, donc des
+  // « vélos en trajet » inventés. On compte les tranches comparables qui confirment le maximum à
+  // 1 % près (au moins 2 vélos) — il en faut au moins deux.
+  int plateau = 0;
+  if (fleetAt) {
+    const int tolSolid = fleet / 100 > 2 ? fleet / 100 : 2;
+    for (int b = 0; b < count; b++) {
+      if (!comparable(b)) continue;
+      const NetSample & ns = net[ringIndex(b)];
+      if (ns.bikesRaw + ns.dis >= fleet - tolSolid) plateau++;
+    }
+  }
+  t.refPlateau = plateau;
+  t.inUseValid = (obsMin >= VN_INUSE_MIN_MIN) && quiet && (plateau >= 2);
   t.inUseProvisional = !t.inUseValid && (obsMin >= VN_INUSE_PROV_MIN);
   t.histMinutes = obsMin;
   t.refCover = refCover;

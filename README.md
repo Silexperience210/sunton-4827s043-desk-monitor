@@ -194,9 +194,20 @@ Trois autres endroits mentaient de la même façon et sont corrigés :
   moment jugé calme pour trois stations pouvait servir à valider un parc calculé sur six.
 
 Un **recul d'horloge** (resynchronisation NTP vers l'arrière) n'inscrit plus deux fois la même
-tranche, ce qui gonflait la profondeur. Et la tranche de référence est **datée** quand elle vient
-d'un autre jour : la fiche écrit « Réf. 04:55 (veille) » au lieu de laisser croire à un maximum du
-matin même. Quatre tests de non-régression figent ces cas : coupure
+tranche, ce qui gonflait la profondeur. Et la tranche de référence est **datée de son âge** : la
+fiche écrit « Réf. 00:30 (−15 h) », y compris quand la référence reste dans la même journée.
+
+#### 1.2.3 — un maximum isolé n'est pas un parc
+
+Le parc estimé est le plus haut relevé de la fenêtre. Un **relevé unique** plus haut que tous les
+autres — redémarrage, valeur en cache, station fantôme — suffisait donc à fabriquer un parc trop
+grand, donc des « vélos en trajet » inventés. La validation exige désormais un **palier** : au moins
+deux tranches comparables confirment le maximum à 1 % près (deux vélos au minimum). La fiche nomme le
+cas : « max isolé ».
+
+*Pourquoi pas une comparaison « maximum 24 h contre maximum 6 h » ?* Parce que la baisse du parc en
+journée est **normale** : les vélos sont dehors, pas disparus. Ce critère marquerait la tuile
+provisoire chaque après-midi, pour une raison qui n'est pas une erreur de mesure. Quatre tests de non-régression figent ces cas : coupure
 (trois relevés espacés de 6 h → ni validé ni provisoire, 15 min d'historique), couverture inégale,
 recul d'horloge, et le seuil du provisoire inchangé.
 
@@ -408,7 +419,7 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision dump_sim
-./test_core ../docs/donnees     # 965 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 968 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2, v3 → v4),
                                  # écart habituel (dispersion apprise, affichée pour information, textes de l'écart),
