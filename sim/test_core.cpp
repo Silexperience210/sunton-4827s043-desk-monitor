@@ -355,6 +355,40 @@ static void testAlertes() {
   CHECK(empty[1] == 1, "une vraie rupture reste « vide » (%d)", empty[1]);
   CHECK(closedLong == 1, "arrêt de plus de 7 jours signalé comme prolongé (%d)", closedLong);
 
+  // (d2) une station qui cesse de louer EN COURS DE JOURNÉE n'ouvre ni épisode de journal ni
+  //      toast « vient de se vider » : classify() la donne « vide » (bikes = 0 sans renting), donc
+  //      le journal comptait une rupture qui ne se refermait jamais, et la fiche annonçait
+  //      « vide depuis … » pour une borne où l'on ne peut pas louer.
+  static Model m3b;
+  CHECK(m3b.init(), "init (suspension en cours de journée)");
+  InfoRec i3b[2] = { mkInfo("1", 49.60f, 6.13f, 20), mkInfo("2", 49.61f, 6.13f, 20) };
+  m3b.applyInfo(i3b, 2, T - 3600);
+  StatusRec s3b[2];
+  s3b[0] = mkStat("1", 0, 20); s3b[1] = mkStat("2", 6, 20);        // 1 vraiment vide, 2 en service
+  m3b.applyStatus(s3b, 2, T - 1800);
+  const int nLogBefore = m3b.nLog, nEvBefore = m3b.nEv;
+  s3b[1].renting = 0;                                              // la 2 cesse de louer (6 vélos)
+  m3b.applyStatus(s3b, 2, T - 900);
+  int logFor2 = 0;
+  for (int k = 0; k < m3b.nLog; k++) if (m3b.log[(m3b.logHead - k + 2 * VN_ALERT_LOG) % VN_ALERT_LOG].st == 1) logFor2++;
+  CHECK(logFor2 == 0, "station suspendue : aucun épisode de journal (%d)", logFor2);
+  CHECK(m3b.nEv == nEvBefore, "station suspendue : aucun toast « vient de se vider » (%d évènement(s))", m3b.nEv);
+  CHECK(m3b.nLog == nLogBefore, "station suspendue : le journal des autres ne bouge pas (%d → %d)", nLogBefore, m3b.nLog);
+  int tot2 = 0;
+  CHECK(vn::rupturesToday(m3b, 1, T - 900, &tot2) == 0, "station suspendue : 0 rupture au bilan du jour");
+  int tot1 = 0;
+  int n1 = vn::rupturesToday(m3b, 0, T - 900, &tot1);
+  CHECK(n1 == 1 && tot1 == 900, "la vraie rupture d'à côté reste ouverte (%d épisode(s), %d s)", n1, tot1);
+  // une station vide qui est suspendue referme son épisode (elle a été vide jusqu'à la suspension)
+  s3b[0].renting = 0;
+  m3b.applyStatus(s3b, 2, T);
+  int dur1 = -1;
+  for (int k = 0; k < m3b.nLog; k++) {
+    const AlertLog & e = m3b.log[(m3b.logHead - k + 2 * VN_ALERT_LOG) % VN_ALERT_LOG];
+    if (e.st == 0 && e.type == AL_EMPTY) { dur1 = (int)e.dur; break; }
+  }
+  CHECK(dur1 == 1800, "suspension : l'épisode en cours se referme (%d s, attendu 1800)", dur1);
+
   // (e) flux figé : aucune station ne bouge pendant vingt-cinq minutes en heures actives → une
   //     seule alerte réseau, pas une par station (c'est ce qui faisait exploser le plafond)
   static Model m4;

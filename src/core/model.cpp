@@ -254,6 +254,18 @@ void Model::applyStatus(const StatusRec * r, int cnt, int64_t now) {
     Station & s = st[i];
     if (!s.active) continue;
     uint8_t prev = s.status, cur = classify(s);
+    // Une station qui ne loue plus (ou ne rend plus) n'est pas une rupture : classify() la donne
+    // « vide » (bikes = 0 quand renting est faux), donc le journal ouvrait un épisode qui ne se
+    // refermait jamais et le toast annonçait « vient de se vider » pour une borne suspendue.
+    // L'épisode éventuellement en cours se referme ici : elle a bien été vide JUSQU'À sa suspension.
+    if (!s.renting || !s.returning) {
+      logEnd(i, AL_EMPTY, now);
+      logEnd(i, AL_FULL, now);
+      s.emptySince = 0;
+      s.fullSince = 0;
+      s.status = cur;
+      continue;
+    }
     // Au premier relevé, une rupture déjà en cours n'a pas commencé « maintenant » :
     // sa durée est reconstituée depuis l'historique restauré, sinon elle reste inconnue (0).
     if (cur == ST_EMPTY) {
