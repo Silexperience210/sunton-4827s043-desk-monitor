@@ -197,6 +197,26 @@ Un **recul d'horloge** (resynchronisation NTP vers l'arrière) n'inscrit plus de
 tranche, ce qui gonflait la profondeur. Et la tranche de référence est **datée de son âge** : la
 fiche écrit « Réf. 00:30 (−15 h) », y compris quand la référence reste dans la même journée.
 
+#### 1.2.4 — parc lu à la troisième plus grande valeur, et fiches lisibles
+
+Trois corrections issues d'une revue indépendante, avec des cas chiffrés :
+
+- **la couverture est comparée dans les deux sens** : une tranche qui couvrait **plus** de stations
+  qu'aujourd'hui était jugée comparable. Trois stations retirées du référentiel faisaient annoncer
+  « 94 vélos en trajet, validés » pour une vraie valeur de 49 ;
+- **le parc est la troisième plus grande valeur comparable**, au lieu du maximum : un relevé unique ou
+  double anormalement haut (redémarrage, valeur en cache, station fantôme) est écarté et **compté**
+  dans la fiche (« 2 relevés plus hauts écartés »), au lieu de gonfler le chiffre — et sans refuser la
+  mesure pendant les ~23 h où cet artefact reste dans l'anneau ;
+- **les fiches ne sont plus corrompues** : la séquence d'échappement `\xA9` du mot « Réf. » avalait la
+  lettre suivante, et le firmware livré affichait « Rß. 03:05 » et « RÞLLEMENT OBSERVÞS ». Corrigé
+  dans toutes les chaînes concernées, avec un test qui compare le texte rendu.
+
+Les tests ont été refaits là où ils ne mordaient pas : le contrôle « pic isolé » restait vert même en
+retirant la fonctionnalité (le garde-fou « calme » invalidait tout seul), et deux scénarios
+dépendaient du jour de la semaine ou d'une série sans mouvement. Ils s'appuient maintenant sur une
+station fantôme à deux tranches et sur une couverture réduite.
+
 #### 1.2.3 — un maximum isolé n'est pas un parc
 
 Le parc estimé est le plus haut relevé de la fenêtre. Un **relevé unique** plus haut que tous les
@@ -419,7 +439,7 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision dump_sim
-./test_core ../docs/donnees     # 968 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 973 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2, v3 → v4),
                                  # écart habituel (dispersion apprise, affichée pour information, textes de l'écart),

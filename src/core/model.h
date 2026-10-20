@@ -169,7 +169,7 @@ struct Totals {
   bool inUseProvisional;       // provisoire : au moins 1 h observée, mais pas encore validable
   int histMinutes;             // profondeur d'historique observée, en minutes (trous et coupures exclus)
   int refCover;                // stations couvertes par la tranche de référence
-  int refPlateau;              // tranches comparables qui confirment le maximum (≥ 2 = palier, 1 = pic isolé)
+  int refSpikes;               // relevés comparables plus hauts que le parc retenu, écartés (top-K)
   int64_t fleetAt;             // instant du maximum retenu (0 = le relevé courant)
   int dep1h, ret1h;            // activité sur 60 min glissantes
   bool actValid;               // 12 tranches réellement renseignées = 1 h pleine (sinon compteurs vides)

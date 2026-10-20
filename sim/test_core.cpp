@@ -307,18 +307,26 @@ static void testParc() {
     CHECK(!m.tot.deltaValid && !m.tot.actValid, "carte neuve : ni variation ni activité annoncées");
   }
 
-  // (b) 8 h de relevés, mais tous de jour : la profondeur ne suffit pas
+  // (b) 8 h de relevés, mais tous de JOUR et ACTIFS : la profondeur ne suffit pas, il faut un creux.
+  //     L'activité est indispensable au test : une série plate et sans mouvement est « calme » par
+  //     construction, donc validable — et c'est juste, puisqu'il n'y a rien en mouvement.
   {
     static Model m;
     CHECK(m.init(), "init parc (jour)");
     const int64_t t0 = 1791842400 + 10 * 3600;             // 10:00
     m.applyInfo(ir, 3, t0);
-    for (int64_t t = t0; t <= t0 + 8 * 3600; t += 300) {
-      for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, 6 + s, 20);
+    int k = 0;
+    for (int64_t t = t0; t <= t0 + 8 * 3600; t += 300, k++) {
+      for (int s = 0; s < 3; s++) {
+        // Matinée plate (aucun mouvement), fin de journée agitée : le parc maximal tombe alors en
+        // pleine activité, donc hors du quart le moins actif — c'est `quiet` qui doit refuser.
+        const int bikes = 6 + s + (k > 80 ? ((k % 2) ? 3 : -3) : 0);
+        sr[s] = mkStat(ir[s].sid, bikes, 20);
+      }
       m.applyStatus(sr, 3, t);
     }
     CHECK(m.count >= 72, "8 h de relevés (%d échantillons)", m.count);
-    CHECK(!m.tot.inUseValid, "historique de jour seul : en-trajet NON valide");
+    CHECK(!m.tot.inUseValid, "historique de jour actif : en-trajet NON valide (aucun creux)");
     CHECK(m.tot.deltaValid, "8 h de recul : la variation sur 1 h est valide");
   }
 
@@ -359,8 +367,8 @@ static void testParc() {
       for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, last, 20);
       m.applyStatus(sr, 3, t);
     }
-    CHECK(!m.tot.inUseValid && m.tot.inUseProvisional,
-          "nuit en cours, relevé courant maximal : valeur affichée, marquée provisoire");
+    CHECK(m.tot.inUseValid && m.tot.inUse == 0,
+          "nuit en cours : parc = 3ᵉ plus grande valeur, 0 en trajet, validé (%d)", m.tot.inUse);
     CHECK(m.tot.fleet == 3 * last, "parc = relevé courant (%d), obtenu %d", 3 * last, m.tot.fleet);
   }
 
@@ -432,6 +440,31 @@ static void testParc() {
           "recul d'horloge : profondeur inchangée (%d min → %d min)", before, m.tot.histMinutes);
   }
 
+  // (j) une tranche qui couvre PLUS de stations qu'aujourd'hui n'est pas comparable. Si trois
+  //     stations disparaissent du référentiel, leur dernier relevé ne doit pas servir de parc :
+  //     c'était 94 vélos en trajet annoncés « validés » pour une vraie valeur de 49.
+  {
+    static Model m;
+    CHECK(m.init(), "init parc (stations retirées)");
+    InfoRec ir6b[6] = { mkInfo("1", 49.60f, 6.13f, 20), mkInfo("2", 49.61f, 6.14f, 20),
+                        mkInfo("3", 49.62f, 6.15f, 20), mkInfo("4", 49.63f, 6.16f, 20),
+                        mkInfo("5", 49.64f, 6.17f, 20), mkInfo("6", 49.65f, 6.18f, 20) };
+    const int64_t t0 = 1791842400 + 6 * 3600;              // 06:00
+    m.applyInfo(ir6b, 6, t0);
+    for (int64_t t = t0; t <= t0 + 6 * 3600; t += 300) {
+      for (int s2 = 0; s2 < 6; s2++) sr[s2] = mkStat(ir6b[s2].sid, 12, 20);
+      m.applyStatus(sr, 6, t);
+    }
+    m.applyInfo(ir6b, 3, t0 + 6 * 3600);                   // trois stations retirées du référentiel
+    for (int64_t t = t0 + 6 * 3600; t <= t0 + 7 * 3600; t += 300) {
+      for (int s2 = 0; s2 < 3; s2++) sr[s2] = mkStat(ir6b[s2].sid, 6, 20);
+      m.applyStatus(sr, 3, t);
+    }
+    CHECK(m.tot.fleet == 18, "parc = 3 × 6 après retrait, pas 6 × 12 (%d)", m.tot.fleet);
+    CHECK(m.tot.histMinutes <= 65,
+          "seules les tranches à couverture identique comptent (%d min)", m.tot.histMinutes);
+  }
+
   // (h) la référence est datée quand elle vient de la veille : après une coupure, « Réf. 20:05 »
   //     seul laissait croire à un maximum du matin. La fiche doit dire « (veille) ».
   {
@@ -449,28 +482,36 @@ static void testParc() {
       m.applyStatus(sr, 3, t);
     }
     Provenance p;
-    // Attention aux séquences d'échappement : « \x9214 » serait lu comme UN caractère (0x9214).
+    // Attention aux séquences d'échappement : « \x92" "14 » serait lu comme UN caractère (0x9214).
     CHECK(provenance(m, KPI_INUSE, p) && strstr(p.detail, "(\xE2\x88\x92" "14 h)"),
           "fiche en trajet : référence datée « (\xE2\x88\x92" "14 h) » (« %s »)", p.detail);
+    // Régression du 20/10 : « \xA9f » avalait le f et la fiche affichait « Rß. » dans le binaire livré.
+    CHECK(strstr(p.detail, "R\xC3\xA9" "f. ") != nullptr,
+          "la fiche écrit bien « R\xC3\xA9" "f. » (pas « R\xC3\x9F. ») (« %s »)", p.detail);
   }
 
-  // (i) un maximum ISOLÉ n'est pas un parc : un seul relevé plus haut que tous les autres
-  //     (redémarrage, cache, station fantôme) fabriquerait des vélos en trajet. La validation
-  //     exige un palier d'au moins deux tranches à 1 % près.
+  // (i) un relevé anormalement haut est ÉCARTÉ, pas un motif d'invalidation : le parc est la 3ᵉ plus
+  //     grande valeur comparable. Cas réaliste : une station fantôme apparaît deux tranches, avec
+  //     50 vélos et aucune activité — ni le quart calme ni un « palier » ne pouvaient la voir.
   {
     static Model m;
-    CHECK(m.init(), "init parc (pic isolé)");
+    CHECK(m.init(), "init parc (station fantôme)");
+    InfoRec irF[4] = { mkInfo("1", 49.60f, 6.13f, 20), mkInfo("2", 49.61f, 6.14f, 20),
+                       mkInfo("3", 49.62f, 6.15f, 20), mkInfo("F", 49.63f, 6.16f, 0) };
     const int64_t t0 = 1791842400 + 1 * 3600;              // 01:00, creux de nuit
-    m.applyInfo(ir, 3, t0);
+    m.applyInfo(irF, 3, t0);
     int64_t t = t0;
     for (; t <= t0 + 8 * 3600; t += 300) {
-      const bool spike = (t == t0 + 4 * 3600);              // un seul relevé à 20
-      for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, spike ? 20 : 10, 20);
-      m.applyStatus(sr, 3, t);
+      const bool ghost = (t == t0 + 4 * 3600 || t == t0 + 4 * 3600 + 300);   // deux tranches fantômes
+      if (ghost) m.applyInfo(irF, 4, t);
+      for (int s2 = 0; s2 < 3; s2++) sr[s2] = mkStat(irF[s2].sid, 10, 20);
+      if (ghost) sr[3] = mkStat(irF[3].sid, 50, 0);
+      m.applyStatus(sr, ghost ? 4 : 3, t);
+      if (ghost) m.applyInfo(irF, 3, t);
     }
-    CHECK(m.tot.fleet == 60 && m.tot.refPlateau == 1,
-          "parc = pic isolé (%d), confirmé par %d tranche(s)", m.tot.fleet, m.tot.refPlateau);
-    CHECK(!m.tot.inUseValid, "maximum isolé : en-trajet NON valide");
+    CHECK(m.tot.fleet == 30, "parc = 3 × 10 malgré la station fantôme (%d)", m.tot.fleet);
+    CHECK(m.tot.refSpikes == 2, "deux relevés plus hauts écartés (%d)", m.tot.refSpikes);
+    CHECK(m.tot.inUseValid, "le chiffre reste publié et validé pendant ce temps");
   }
 }
 

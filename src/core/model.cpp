@@ -924,18 +924,44 @@ void Model::recompute(int64_t now) {
     curPark += s.bikes + s.bikesDis;
   }
   const int tolCover = 1;                       // une station peut manquer le temps d'un relevé
-  int fleet = curPark, refCover = liveNow, compN = 0;
+  // Le parc est la K-ième plus grande valeur comparable, pas la plus grande : un relevé unique ou
+  // double, anormalement haut (redémarrage, valeur en cache, station fantôme), gonflait le parc et
+  // fabriquait des « vélos en trajet » — et l'écarter vaut mieux que refuser la mesure pendant les
+  // ~23 h où il reste dans l'anneau. Les relevés plus hauts sont comptés et nommés dans la fiche.
+  int fleet = curPark, refCover = liveNow, compN = 0, refSpikes = 0;
   int64_t fleetAt = 0;
+  int top[VN_INUSE_ORDER] = {0};
+  int64_t topT[VN_INUSE_ORDER] = {0};
+  int topCov[VN_INUSE_ORDER] = {0};
+  int nTop = 0;
   for (int b = 0; b < count; b++) {
     const NetSample & ns = net[ringIndex(b)];
     if (ns.avail == 0xFFFF) continue;
     const uint8_t * row = ring + (size_t)ringIndex(b) * VN_MAX_ST;
     int cov = 0;
     for (int i = 0; i < n; i++) if (row[i] != 255) cov++;
-    if (cov + tolCover < liveNow) continue;     // population différente : non comparable
+    // Population différente, DANS LES DEUX SENS : moins de stations qu'aujourd'hui (elles ont été
+    // ajoutées au référentiel) ou plus (elles en ont disparu). Comparer seulement vers le bas
+    // laissait une tranche plus couverte servir de parc : 94 vélos en trajet au lieu de 49.
+    if (cov + tolCover < liveNow) continue;
+    if (cov > liveNow + tolCover) continue;
     compN++;                                   // tranche utilisable pour le parc ET pour la profondeur
-    int v = ns.bikesRaw + ns.dis;
-    if (v > fleet) { fleet = v; fleetAt = ns.t; refCover = cov; }
+    const int v = ns.bikesRaw + ns.dis;
+    int q = nTop < VN_INUSE_ORDER ? nTop : VN_INUSE_ORDER;
+    while (q > 0 && v > top[q - 1]) {          // insertion décroissante, à valeur égale la plus récente d'abord
+      if (q < VN_INUSE_ORDER) { top[q] = top[q - 1]; topT[q] = topT[q - 1]; topCov[q] = topCov[q - 1]; }
+      q--;
+    }
+    if (q < VN_INUSE_ORDER) { top[q] = v; topT[q] = ns.t; topCov[q] = cov; }
+    if (nTop < VN_INUSE_ORDER) nTop++;
+  }
+  if (nTop) {
+    int k = VN_INUSE_ORDER - 1;
+    if (k > nTop - 1) k = nTop - 1;            // moins de K tranches : on prend la plus basse disponible
+    fleet = top[k];
+    fleetAt = topT[k];
+    refCover = topCov[k];
+    refSpikes = k;                             // relevés plus hauts, écartés comme aberrants
   }
   t.fleet = fleet;
   t.histSlots = count;
@@ -978,21 +1004,8 @@ void Model::recompute(int64_t now) {
     }
     quiet = (sameN > 0) && (below * 4 <= sameN); // dans le quart le plus bas
   }
-  // Le maximum doit être un PALIER, pas un pic isolé : un relevé unique plus haut que tous les
-  // autres (redémarrage, cache, station fantôme) fabriquerait un parc trop grand, donc des
-  // « vélos en trajet » inventés. On compte les tranches comparables qui confirment le maximum à
-  // 1 % près (au moins 2 vélos) — il en faut au moins deux.
-  int plateau = 0;
-  if (fleetAt) {
-    const int tolSolid = fleet / 100 > 2 ? fleet / 100 : 2;
-    for (int b = 0; b < count; b++) {
-      if (!comparable(b)) continue;
-      const NetSample & ns = net[ringIndex(b)];
-      if (ns.bikesRaw + ns.dis >= fleet - tolSolid) plateau++;
-    }
-  }
-  t.refPlateau = plateau;
-  t.inUseValid = (obsMin >= VN_INUSE_MIN_MIN) && quiet && (plateau >= 2);
+  t.refSpikes = refSpikes;
+  t.inUseValid = (obsMin >= VN_INUSE_MIN_MIN) && quiet;
   t.inUseProvisional = !t.inUseValid && (obsMin >= VN_INUSE_PROV_MIN);
   t.histMinutes = obsMin;
   t.refCover = refCover;
