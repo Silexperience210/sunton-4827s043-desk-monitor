@@ -1144,17 +1144,18 @@ void Model::recompute(int64_t now) {
       if (s.docksDis >= g_set.maintDocks) add(AL_MAINT_DOCKS, 1, i, -1, s.docksDis);
       continue;
     }
-    if (s.status == ST_EMPTY && s.renting) add(AL_EMPTY, 3, i, s.emptySince ? (int)((now - s.emptySince) / 60) : -1, 0);
-    else if (s.status == ST_FULL && s.returning) add(AL_FULL, 3, i, s.fullSince ? (int)((now - s.fullSince) / 60) : -1, 0);
-    else if (s.renting && s.etaEmpty >= 0 && s.etaEmpty <= 60) add(AL_SOON_EMPTY, s.etaEmpty <= 30 ? 2 : 1, i, s.etaEmpty, s.bikes);
-    else if (s.returning && s.etaFull >= 0 && s.etaFull <= 60) add(AL_SOON_FULL, s.etaFull <= 30 ? 2 : 1, i, s.etaFull, s.docks);
-    if (!s.renting) add(AL_CLOSED, 1, i, -1, 1);
-    else if (!s.returning) add(AL_CLOSED, 1, i, -1, 2);
+    // Les stations qui ne louent plus ou ne rendent plus sont sorties plus haut : ici, l'une et
+    // l'autre sont vrais pour toutes les suivantes, d'où l'absence de garde (vérifié : la retirer
+    // ne change rien au banc, la branche d'arrêt les capture avant).
+    if (s.status == ST_EMPTY) add(AL_EMPTY, 3, i, s.emptySince ? (int)((now - s.emptySince) / 60) : -1, 0);
+    else if (s.status == ST_FULL) add(AL_FULL, 3, i, s.fullSince ? (int)((now - s.fullSince) / 60) : -1, 0);
+    else if (s.etaEmpty >= 0 && s.etaEmpty <= 60) add(AL_SOON_EMPTY, s.etaEmpty <= 30 ? 2 : 1, i, s.etaEmpty, s.bikes);
+    else if (s.etaFull >= 0 && s.etaFull <= 60) add(AL_SOON_FULL, s.etaFull <= 30 ? 2 : 1, i, s.etaFull, s.docks);
     if (s.bikesDis >= g_set.maintBikes) add(AL_MAINT_BIKES, 1, i, -1, s.bikesDis);
     if (s.docksDis >= g_set.maintDocks) add(AL_MAINT_DOCKS, 1, i, -1, s.docksDis);
     // Flux figé : les « aucun mouvement » individuels sont du bruit (et évinceraient les ruptures) ;
     // l'alerte réseau les remplace.
-    if (s.frozen) add(AL_FROZEN, 1, i, (int)((now - s.lastChange) / 60), 0);
+    if (s.frozen && !feedFrozen) add(AL_FROZEN, 1, i, (int)((now - s.lastChange) / 60), 0);
     if (s.anom == AN_HIGH || s.anom == AN_LOW) add(AL_UNUSUAL, 0, i, -1, s.bikes - s.anomExp);
   }
   qsort(alerts, nAlerts, sizeof(Alert), alertCmp);
