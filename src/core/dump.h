@@ -76,7 +76,7 @@ size_t stationsCsv(const Model & m, int64_t now, char * out, size_t cap);
 // Commandes série, une par ligne (« dump », « stop », « ping », « aide ») : feed() rend la
 // commande complète à la fin de ligne, nullptr sinon. Une ligne trop longue est ignorée en entier.
 struct CmdLine {
-  char buf[24];
+  char buf[160];               // « sync url http://192.168.1.20:8790 » tient sur une ligne
   int  n = 0;
   bool over = false;
   const char * feed(char c);

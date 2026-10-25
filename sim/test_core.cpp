@@ -9,6 +9,7 @@
 #include "../src/core/calendar.h"
 #include "../src/core/service.h"
 #include "../src/core/dump.h"
+#include "../src/core/sync.h"
 #include "../src/platform/platform.h"
 #include "../src/hal/touch_api.h"
 #include <stdio.h>
@@ -2677,7 +2678,7 @@ static void testDump() {
   for (const char * p = "  dump \r\n"; *p; p++) { const char * r = c.feed(*p); if (r) got = r; }
   CHECK(got && !strcmp(got, "dump"), "commande « dump » (espaces, CR LF)");
   got = nullptr;
-  for (int k = 0; k < 100; k++) c.feed('x');
+  for (int k = 0; k < 300; k++) c.feed('x');
   for (const char * p = "dump\n"; *p; p++) { const char * r = c.feed(*p); if (r) got = r; }
   CHECK(!got, "ligne trop longue : ignorée en entier, y compris sa fin « dump »");
   for (const char * p = "stop\n"; *p; p++) { const char * r = c.feed(*p); if (r) got = r; }
@@ -2871,6 +2872,190 @@ static void testVersion() {
   plat::psFree(b.prof); plat::psFree(b.hist); plat::psFree(b.days);
 }
 
+// ── Synchro en ligne (core/sync) : adresse, en-têtes, décision, contrôles, déroulé complet ─
+// Le « serveur » est un modèle qui a appris plus longtemps que la carte ; ses fichiers sont ceux de
+// Model::serialize, servis par un transport en mémoire (sans réseau).
+struct FakeSrv {
+  std::vector<std::pair<std::string, std::vector<uint8_t>>> files;   // url → octets
+  std::vector<std::string> gets, posts;
+  std::vector<std::vector<uint8_t>> postBodies;
+  int failGet = 0;                 // ≠ 0 : toute lecture rend ce code
+  std::string corrupt;             // url servie avec un octet faux
+};
+static int fakeGet(void * ctx, const char * url, uint8_t * buf, size_t cap, size_t & len) {
+  FakeSrv & f = **(FakeSrv **)((vn::SyncIo *)ctx + 1);
+  f.gets.push_back(url);
+  len = 0;
+  if (f.failGet) return f.failGet;
+  for (auto & e : f.files) if (e.first == url) {
+    len = e.second.size() < cap ? e.second.size() : cap;
+    memcpy(buf, e.second.data(), len);
+    if (f.corrupt == url && len > 100) buf[100] ^= 0x5A;
+    return 200;
+  }
+  if (strstr(url, "/report?")) return 200;
+  return 404;
+}
+static int fakePost(void * ctx, const char * url, const uint8_t * buf, size_t len, uint32_t crc) {
+  FakeSrv & f = **(FakeSrv **)((vn::SyncIo *)ctx + 1);
+  f.posts.push_back(url);
+  f.postBodies.emplace_back(buf, buf + len);
+  return crc32(buf, len) == crc ? 200 : 400;
+}
+struct FakeIo { vn::SyncIo io; FakeSrv * srv; };     // srv juste après io : lu par fakeGet / fakePost
+
+// Un modèle de trois stations nourri pendant `slots` tranches de 5 min, à partir de t0
+static void feedModel(Model & m, int64_t t0, int slots) {
+  InfoRec ir[3] = { mkInfo("1", 49.60f, 6.13f, 20), mkInfo("2", 49.61f, 6.14f, 20), mkInfo("3", 49.62f, 6.15f, 20) };
+  m.applyInfo(ir, 3, t0);
+  StatusRec sr[3];
+  for (int k = 0; k < slots; k++) {
+    for (int s = 0; s < 3; s++) sr[s] = mkStat(ir[s].sid, (k * (s + 1)) % 17, 20);
+    m.applyStatus(sr, 3, t0 + (int64_t)k * 300);
+  }
+}
+static std::vector<uint8_t> vec(const uint8_t * b, size_t n) { return std::vector<uint8_t>(b, b + n); }
+static std::string manifestOf(const std::string & base, const Model::Blob & b, uint32_t samples, int64_t histSaved,
+                              int daysN, int64_t daysSaved) {
+  char j[900];
+  snprintf(j, sizeof(j),
+    "{\"proto\":1,\"fw\":\"9.9.9\",\"name\":\"test\",\"id\":\"abc\",\"t\":%lld,\"base\":\"%s\","
+    "\"prof\":{\"size\":%zu,\"crc\":\"%08X\",\"ver\":4,\"samples\":%u,\"since\":1},"
+    "\"hist\":{\"size\":%zu,\"crc\":\"%08X\",\"ver\":2,\"savedAt\":%lld,\"minutes\":5},"
+    "\"days\":{\"size\":%zu,\"crc\":\"%08X\",\"ver\":1,\"n\":%d,\"savedAt\":%lld}}",
+    (long long)histSaved, base.c_str(), b.profLen, crc32(b.prof, b.profLen), samples,
+    b.histLen, crc32(b.hist, b.histLen), (long long)histSaved, b.daysLen, crc32(b.days, b.daysLen), daysN, (long long)daysSaved);
+  return j;
+}
+
+static void testSync() {
+  char u[128];
+  CHECK(syncNormalizeUrl("umbrel.local:8790", u, sizeof(u)) && !strcmp(u, "http://umbrel.local:8790"), "adresse sans protocole : %s", u);
+  CHECK(syncNormalizeUrl(" http://192.168.1.2:8790/ ", u, sizeof(u)) && !strcmp(u, "http://192.168.1.2:8790"), "espaces et / final : %s", u);
+  CHECK(syncNormalizeUrl("https://ops.exemple.lu/sync/manifest", u, sizeof(u)) && !strcmp(u, "https://ops.exemple.lu"), "/sync/manifest retiré : %s", u);
+  CHECK(!syncNormalizeUrl("ftp://x.y", u, sizeof(u)), "protocole autre que http(s) refusé");
+  CHECK(!syncNormalizeUrl("   ", u, sizeof(u)) && !syncNormalizeUrl("http://", u, sizeof(u)), "adresse vide refusée");
+
+  sim::g_fsDir = "/tmp/vn_test_sync";
+  for (const char * f : { "/vn_prof.bin", "/vn_hist.bin", "/vn_days.bin", "/vn_sync.cfg" }) plat::fsRemove(f);
+  syncCfgDefaults(g_sync);
+  CHECK(g_sync.atBoot && g_sync.push && !g_sync.url[0], "réglage par défaut : au démarrage, envoi, aucun serveur");
+  snprintf(g_sync.url, sizeof(g_sync.url), "http://10.0.0.5:8790"); snprintf(g_sync.token, sizeof(g_sync.token), "secret");
+  g_sync.push = false;
+  CHECK(syncCfgSave(), "réglage enregistré");
+  syncCfgDefaults(g_sync);
+  CHECK(syncCfgLoad() && !strcmp(g_sync.url, "http://10.0.0.5:8790") && !strcmp(g_sync.token, "secret") && !g_sync.push && g_sync.atBoot,
+        "réglage relu : %s / %s / envoi %d", g_sync.url, g_sync.token, g_sync.push);
+
+  // Serveur : 5 jours appris ; carte : 2 jours, éteinte depuis 60 h (week-end)
+  const int64_t T0 = 1791237600;                       // lundi 05/10/2026 00:00 (Luxembourg)
+  static Model srv, card;
+  srv.init(); card.init();
+  feedModel(srv, T0, 5 * 288);
+  feedModel(card, T0, 2 * 288 + 200);
+  const int64_t now = T0 + 5 * 86400 - 300 + 60;
+  Model::Blob sb, cb;
+  CHECK(srv.serialize(sb) && card.serialize(cb), "fichiers des deux côtés");
+  SyncLocal ls; memset(&ls, 0, sizeof(ls));
+  CHECK(syncHeaderOf(SK_PROF, sb.prof, sb.profLen, ls) && ls.profSamples == srv.learnSamples, "en-tête des profils : %u relevés", ls.profSamples);
+  CHECK(syncHeaderOf(SK_HIST, sb.hist, sb.histLen, ls) && ls.histSaved == srv.lastUpdate, "en-tête de l'historique");
+  CHECK(syncHeaderOf(SK_DAYS, sb.days, sb.daysLen, ls) && ls.daysN == srv.days.count, "en-tête des résumés : %u jours", ls.daysN);
+  CHECK(!syncHeaderOf(SK_PROF, sb.hist, sb.histLen, ls), "un historique n'est pas lu comme des profils");
+
+  // Manifeste
+  const std::string base = "http://10.0.0.5:8790/sync/abc/";
+  std::string mj = manifestOf(base, sb, srv.learnSamples, srv.lastUpdate, srv.days.count, srv.lastUpdate);
+  SyncManifest m;
+  CHECK(syncParseManifest(mj.c_str(), mj.size(), m) && m.profSamples == srv.learnSamples && m.f[SK_PROF].size == sb.profLen
+        && m.f[SK_DAYS].crc == crc32(sb.days, sb.daysLen) && !strcmp(m.base, base.c_str()), "manifeste lu");
+  CHECK(!syncParseManifest("{\"proto\":2}", 11, m), "autre protocole refusé");
+  std::string bad = mj; bad.replace(bad.find("http://10.0.0.5:8790/sync/abc/"), 30, "file:///etc/passwd/sync/abc/x");
+  CHECK(!syncParseManifest(bad.c_str(), bad.size(), m), "base de fichiers hors http refusée");
+  syncParseManifest(mj.c_str(), mj.size(), m);
+
+  // Décision : le week-end
+  SyncLocal lc; memset(&lc, 0, sizeof(lc));
+  syncHeaderOf(SK_PROF, cb.prof, cb.profLen, lc); syncHeaderOf(SK_HIST, cb.hist, cb.histLen, lc); syncHeaderOf(SK_DAYS, cb.days, cb.daysLen, lc);
+  SyncPlan p;
+  syncDecide(lc, m, now, true, p);
+  CHECK(p.take[SK_PROF] && p.take[SK_HIST] && p.take[SK_DAYS], "week-end éteint : les trois fichiers du serveur (%s / %s / %s)", p.why[0], p.why[1], p.why[2]);
+  CHECK(!p.push[SK_PROF] && !p.push[SK_DAYS], "rien à envoyer");
+  // Serveur neuf : la carte garde ses profils et ses jours, les envoie si permis, prend l'historique récent
+  SyncManifest young = m;
+  young.profSamples = 12; young.daysN = 1;
+  syncDecide(ls, young, now, true, p);
+  CHECK(!p.take[SK_PROF] && p.push[SK_PROF] && !p.take[SK_DAYS] && p.push[SK_DAYS], "serveur neuf : profils et jours envoyés (%s / %s)", p.why[0], p.why[2]);
+  syncDecide(ls, young, now, false, p);
+  CHECK(!p.push[SK_PROF] && !p.push[SK_DAYS], "envoi désactivé : rien n'est envoyé");
+  // Égalité : rien
+  syncDecide(ls, m, now, true, p);
+  CHECK(!p.take[SK_PROF] && !p.take[SK_DAYS] && !p.push[SK_PROF] && !p.take[SK_HIST], "identiques : rien (%s / %s)", p.why[0], p.why[1]);
+  // Historique du serveur de plus de 20 h : jamais adopté (Model::load le refuserait)
+  syncDecide(lc, m, srv.lastUpdate + 21 * 3600, true, p);
+  CHECK(!p.take[SK_HIST], "historique du serveur trop ancien : ignoré (%s)", p.why[SK_HIST]);
+
+  // Contrôles d'un fichier reçu
+  const char * why = "";
+  CHECK(syncBlobOk(SK_PROF, sb.prof, sb.profLen, m.f[SK_PROF], now, &why), "profils reçus valides");
+  std::vector<uint8_t> x = vec(sb.prof, sb.profLen);
+  x[200] ^= 1;
+  CHECK(!syncBlobOk(SK_PROF, x.data(), x.size(), m.f[SK_PROF], now, &why) && strstr(why, "CRC"), "octet faux : %s", why);
+  CHECK(!syncBlobOk(SK_PROF, sb.prof, sb.profLen - 1, m.f[SK_PROF], now, &why), "taille fausse refusée");
+  x = vec(sb.prof, sb.profLen); x[0] = 'X';
+  SyncRemote fx = m.f[SK_PROF]; fx.crc = crc32(x.data(), x.size());
+  CHECK(!syncBlobOk(SK_PROF, x.data(), x.size(), fx, now, &why) && strstr(why, "en-t"), "CRC juste mais en-tête faux : %s", why);
+  CHECK(!syncBlobOk(SK_HIST, sb.hist, sb.histLen, m.f[SK_HIST], srv.lastUpdate + 21 * 3600, &why), "historique trop ancien refusé : %s", why);
+
+  // Déroulé complet : la carte (fichiers en flash) se synchronise sur le serveur
+  Model::writeSaved(cb);
+  FakeSrv fs;
+  fs.files.push_back({ "http://10.0.0.5:8790/sync/manifest", std::vector<uint8_t>(mj.begin(), mj.end()) });
+  fs.files.push_back({ base + "vn_prof.bin", vec(sb.prof, sb.profLen) });
+  fs.files.push_back({ base + "vn_hist.bin", vec(sb.hist, sb.histLen) });
+  fs.files.push_back({ base + "vn_days.bin", vec(sb.days, sb.daysLen) });
+  FakeIo fio; memset(&fio.io, 0, sizeof(fio.io)); fio.srv = &fs;
+  fio.io.ctx = &fio.io; fio.io.get = fakeGet; fio.io.post = fakePost;
+  SyncStatus st; memset(&st, 0, sizeof(st));
+  // a) un fichier corrompu en route : refusé, l'ancien reste en flash, les autres sont adoptés
+  fs.corrupt = base + "vn_days.bin";
+  long daysBefore = plat::fsSize("/vn_days.bin");
+  int r = syncRun(fio.io, "http://10.0.0.5:8790", now, true, st);
+  CHECK(r == 2 && (st.took & (1 << SK_PROF)) && (st.took & (1 << SK_HIST)) && !(st.took & (1 << SK_DAYS)), "corruption : 2 adoptés (%s)", st.text);
+  CHECK(plat::fsSize("/vn_days.bin") == daysBefore, "résumés corrompus : l'ancien fichier est intact");
+  CHECK(strstr(fio.io.localHdr, "prof=") == fio.io.localHdr, "en-tête X-VN-Local : %s", fio.io.localHdr);
+  CHECK(!fs.gets.empty() && strstr(fs.gets.back().c_str(), "/report?took=prof,hist&"), "compte rendu au serveur : %s", fs.gets.back().c_str());
+  // b) nouvel essai, fichier sain : les jours sont adoptés ; la carte relit le tout comme le serveur l'a écrit
+  fs.corrupt.clear();
+  r = syncRun(fio.io, "http://10.0.0.5:8790", now, true, st);
+  CHECK(r == 1 && st.took == (1 << SK_DAYS) && st.state == SS_TOOK, "second passage : les jours (%s)", st.text);
+  static Model again; again.init();
+  CHECK(again.load(now), "la carte relit les fichiers adoptés");
+  CHECK(again.learnSamples == srv.learnSamples && again.count == srv.count && again.days.count == srv.days.count,
+        "même apprentissage que le serveur : %u relevés, %d tranches, %d jours", again.learnSamples, again.count, again.days.count);
+  // c) rien de meilleur : rien adopté, rien envoyé
+  r = syncRun(fio.io, "http://10.0.0.5:8790", now, true, st);
+  CHECK(r == 0 && st.state == SS_NOTHING && !st.pushed, "à jour : %s", st.text);
+  // d) serveur neuf : la carte lui envoie profils et jours (fichiers de la flash, CRC juste)
+  std::string yj = manifestOf(base, sb, 12, srv.lastUpdate, 1, srv.lastUpdate);
+  fs.files[0].second.assign(yj.begin(), yj.end());
+  fs.posts.clear(); fs.postBodies.clear();
+  r = syncRun(fio.io, "http://10.0.0.5:8790", now, true, st);
+  CHECK(st.pushed == ((1 << SK_PROF) | (1 << SK_DAYS)) && fs.posts.size() == 2 && fs.posts[0] == base + "upload/vn_prof.bin",
+        "serveur neuf : %zu envoi(s) (%s)", fs.posts.size(), st.text);
+  CHECK(fs.postBodies.size() == 2 && fs.postBodies[0].size() == sb.profLen, "profils envoyés tels qu'en flash");
+  // e) serveur injoignable : ‑1, rien écrit
+  fs.failGet = -1;
+  long profBefore = plat::fsSize("/vn_prof.bin");
+  r = syncRun(fio.io, "http://10.0.0.5:8790", now, true, st);
+  CHECK(r == -1 && st.state == SS_FAIL && strstr(st.text, "injoignable") && plat::fsSize("/vn_prof.bin") == profBefore,
+        "serveur injoignable : %s", st.text);
+  char line[160];
+  syncStatusLine(st, now, line, sizeof(line));
+  CHECK(strstr(line, "injoignable") != nullptr, "ligne d'état : %s", line);
+  plat::psFree(sb.prof); plat::psFree(sb.hist); plat::psFree(sb.days);
+  syncCfgDefaults(g_sync);
+}
+
 int main(int argc, char ** argv) {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   testNames();
@@ -2906,6 +3091,7 @@ int main(int argc, char ** argv) {
   testVersion();
   testClosedNotLearned();
   testDaysBadTimes();
+  testSync();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;
 }

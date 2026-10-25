@@ -1,0 +1,17 @@
+# VelohNav Ops en ligne — à lancer sur une machine allumée en permanence (Umbrel, Raspberry Pi, NAS, VPS)
+#   cd online && docker compose up -d        →  http://<machine>:8790
+services:
+  velohnav-ops:
+    build: .
+    image: velohnav-ops-online
+    restart: unless-stopped
+    ports:
+      - "8790:8790"
+    volumes:
+      - ./data:/data                 # ce que le serveur apprend : vn_prof.bin, vn_hist.bin, vn_days.bin, archive/
+    environment:
+      VN_NAME: "VelohNav Ops en ligne"
+      # VN_TOKEN: "un-jeton-long"    # à définir si le port est exposé hors du réseau local
+      # VN_REFRESH_S: "60"           # période de station_status (30 s au moins), comme sur la carte
+      # VN_ARCHIVE_HOURS: "6,18"     # instantanés pour le banc --reel (heure de Luxembourg) ; vide = aucun
+      # VN_ARCHIVE_KEEP_DAYS: "0"    # 0 = tout garder

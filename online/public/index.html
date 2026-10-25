@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>VelohNav Ops en ligne</title>
+<meta name="theme-color" content="#07090B">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img src="logo.svg" alt="" width="26" height="26">
+    <div>
+      <div class="brand__name">VELOH<span>NAV</span></div>
+      <div class="eyebrow">OPS · EN LIGNE</div>
+    </div>
+  </div>
+  <div class="top__right">
+    <span class="pill" id="pill"><span class="dot" id="pillDot"></span><span id="pillTxt">CONNEXION</span></span>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="stage" aria-label="Écran Sunton en ligne">
+    <div class="stage__bar">
+      <span class="eyebrow">JUMEAU DE L'ÉCRAN · 480 × 272</span>
+      <span class="stage__meta" id="twinMeta">chargement du moteur…</span>
+      <span class="stage__tools">
+        <button class="btn btn--ghost" id="btnCrisp" type="button" aria-pressed="true" title="Pixels nets ou lissés">Pixels nets</button>
+        <button class="btn btn--ghost" id="btnFull" type="button" title="Plein écran">Plein écran</button>
+      </span>
+    </div>
+    <div class="bezel is-crisp" id="bezel">
+      <div class="screen">
+        <canvas id="screen" width="480" height="272" aria-label="Écran de la carte, interactif : toucher ou cliquer comme sur la dalle"></canvas>
+        <div class="veil" id="veil"><div class="veil__box"><div class="spinner"></div><div id="veilTxt">Chargement du moteur…</div></div></div>
+      </div>
+    </div>
+    <p class="hint">Même code que la carte (src/ui et src/core, compilés en WebAssembly) : toucher, glisser et ouvrir les fiches comme sur la dalle. Les chiffres viennent du serveur, qui relève les flux en continu.</p>
+  </section>
+
+  <aside class="side" aria-label="Serveur et synchronisation">
+    <div class="card">
+      <div class="card__head"><span class="eyebrow">CE SERVEUR</span><span class="badge" id="srvBadge">—</span></div>
+      <dl class="kv" id="srvKv">
+        <dt>Dernier relevé</dt><dd id="kvLast">—</dd>
+        <dt>Relevés appris</dt><dd id="kvSamples">—</dd>
+        <dt>Profil hebdomadaire</dt><dd id="kvLearn">—</dd>
+        <dt>Jours résumés</dt><dd id="kvDays">—</dd>
+        <dt>Météo apprise</dt><dd id="kvWx">—</dd>
+        <dt>Archive pour le banc</dt><dd id="kvArch">—</dd>
+        <dt>En service depuis</dt><dd id="kvUp">—</dd>
+      </dl>
+    </div>
+
+    <div class="card">
+      <div class="card__head"><span class="eyebrow">ÉCRANS SUNTON</span><span class="count" id="devCount">0</span></div>
+      <ul class="devs" id="devs"><li class="empty">Aucun écran ne s'est encore synchronisé.</li></ul>
+    </div>
+
+    <div class="card">
+      <div class="card__head"><span class="eyebrow">BRANCHER UN SUNTON</span></div>
+      <p class="txt">Au démarrage, la carte demande l'état du serveur et reprend ce qui est meilleur que le sien : profils plus appris, historique 24 h plus récent, plus de jours résumés. Une carte éteinte le week-end repart ainsi le lundi avec le week-end appris.</p>
+      <div class="copy">
+        <code id="syncUrl">—</code>
+        <button class="btn btn--tonal" id="btnCopy" type="button">Copier</button>
+      </div>
+      <p class="txt txt--dim">Réglages → Synchro sur l'écran, ou en série : <code>sync url …</code> puis <code>sync</code>.</p>
+    </div>
+
+    <div class="card">
+      <div class="card__head"><span class="eyebrow">FICHIERS DE LA CARTE</span></div>
+      <p class="txt txt--dim">Octets exacts de la carte (Model::serialize), pour le banc <code>bench_prevision --reel</code> ou une restauration.</p>
+      <div class="files">
+        <a class="file" href="api/export/vn_prof.bin" download>vn_prof.bin</a>
+        <a class="file" href="api/export/vn_hist.bin" download>vn_hist.bin</a>
+        <a class="file" href="api/export/vn_days.bin" download>vn_days.bin</a>
+        <a class="file" href="api/export/vn_stations.csv" download>vn_stations.csv</a>
+      </div>
+    </div>
+
+    <div class="card card--warn" id="tokenCard" hidden>
+      <div class="card__head"><span class="eyebrow">JETON REQUIS</span></div>
+      <p class="txt">Ce serveur protège la synchronisation par un jeton (VN_TOKEN).</p>
+      <form class="copy" id="tokenForm">
+        <input id="tokenInput" type="password" autocomplete="off" placeholder="jeton" aria-label="Jeton">
+        <button class="btn btn--primary" type="submit">Valider</button>
+      </form>
+    </div>
+  </aside>
+</main>
+
+<script type="module" src="twin.js"></script>
+</body>
+</html>

@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include "../core/ops.h"
 #include "../core/wifiscan.h"
+#include "../core/sync.h"
 
 namespace net {
 
@@ -21,6 +22,7 @@ struct Status {
   int64_t   timeSyncAt;    // première synchronisation NTP constatée (epoch), 0 = jamais
   const char * stage;      // étape de démarrage (écran d'accueil)
   vn::FeedStat feed[vn::FEED_COUNT];   // compteurs d'ingestion, tenus par la tâche réseau
+  vn::SyncStatus sync;     // dernière synchronisation avec le serveur en ligne (core/sync.h)
 };
 
 void   begin();                                  // démarre la tâche réseau
@@ -30,5 +32,8 @@ void   requestScan();
 bool   scanDone(int & count);                    // count = ‑1 si échec, sinon lignes à afficher
 void   scanResults(vn::WifiList & out);          // copie de la dernière liste (vide si échec)
 void   connect(const char * ssid, const char * pass);
+// Synchronisation avec le serveur en ligne (g_sync.url) : la tâche réseau sauvegarde l'état, compare,
+// adopte ce qui est meilleur et, si un fichier a été adopté, redémarre pour le relire.
+void   requestSync();
 
 } // namespace net

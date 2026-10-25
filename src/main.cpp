@@ -16,6 +16,7 @@
 #include "boot.h"
 #include "platform/platform.h"
 #include "core/settings.h"
+#include "core/sync.h"
 #include "core/model.h"
 #include "hal/board.h"
 #include "hal/display.h"
@@ -63,6 +64,7 @@ void setup() {
   }
   boot::stage(boot::S_SETTINGS, "Lecture des r\xC3\xA9glages");
   vn::settingsLoad();
+  vn::syncCfgLoad();                                // serveur en ligne (/vn_sync.cfg), facultatif
   plat::setBacklight(vn::effectiveBrightness(0));
 
   boot::stage(boot::S_MEMORY, "R\xC3\xA9servation de la m\xC3\xA9moire");
