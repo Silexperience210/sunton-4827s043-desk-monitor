@@ -179,9 +179,9 @@ export class Notifier {
       else {
         open.sort((a, b) => b.mins - a.mins);
         const line = (o) => `${o.s.name} — ${o.e.type} depuis ${fmtMin(o.mins)}${o.e.type === 'vide' ? `, ${o.s.docks} bornes libres` : `, ${o.s.bikes} vélos`}` +
-          `${o.s.need ? ` · ${o.s.need > 0 ? 'apporter' : 'retirer'} ${Math.abs(o.s.need)}` : ''}`;
+          `${o.s.need ? ` · conseil : ${o.s.need > 0 ? 'apporter' : 'retirer'} ${Math.abs(o.s.need)}` : ''}`;
         const msg = open.length === 1
-          ? { title: `Station ${open[0].e.type} : ${open[0].s.name}`, message: line(open[0]) + `\nPrévision à +1 h : ${Math.round(open[0].s.fc60)} vélo(s)`, priority: 4, tags: [open[0].e.type === 'vide' ? 'bike' : 'parking'] }
+          ? { title: `Station ${open[0].e.type} : ${open[0].s.name}`, message: line(open[0]) + `\nPrévision (estimée) à +1 h : ${Math.round(open[0].s.fc60)} vélo(s)`, priority: 4, tags: [open[0].e.type === 'vide' ? 'bike' : 'parking'] }
           : { title: `${open.length} stations en rupture`, message: open.slice(0, 8).map((o) => '• ' + line(o)).join('\n') + (open.length > 8 ? `\n… et ${open.length - 8} autre(s)` : ''), priority: 4, tags: ['warning'] };
         const r = await this.send(msg, { kind: 'rupture' });
         if (r.ok || !r.limited) for (const o of open) o.e.notified = 'sent';

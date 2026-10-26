@@ -390,7 +390,7 @@ function renderHistory() {
     tile(k, 'Vélos disponibles', lastIdx >= 0 ? fmtNum(ser.avail[lastIdx]) : '—', av.length ? `moyenne ${fmtNum(av.reduce((a, b) => a + b, 0) / av.length)} sur la période` : '');
     const full = daily.days.filter((d) => d.slots >= 200);
     const depMean = full.length ? full.reduce((a, d) => a + d.depFull, 0) / full.length : null;
-    tile(k, 'Retraits par jour', fmtNum(depMean), full.length ? `moyenne de ${full.length} jour${full.length > 1 ? 's' : ''} complet${full.length > 1 ? 's' : ''}` : 'aucun jour complet encore');
+    tile(k, 'Retraits observés par jour', fmtNum(depMean), full.length ? `minimum · moyenne de ${full.length} jour${full.length > 1 ? 's' : ''} complet${full.length > 1 ? 's' : ''}` : 'aucun jour complet encore');
     const dd = daily.days.at(-1);
     tile(k, 'En rupture aujourd\'hui', dd ? `${fmtNum(dd.emptyH + dd.fullH, 0)} h` : '—', dd ? `stations·heures : ${fmtNum(dd.emptyH, 0)} à vide, ${fmtNum(dd.fullH, 0)} pleines` : '');
   }
@@ -406,7 +406,7 @@ function renderHistory() {
     yFmt: (v, d) => fmtNum(v, d), tipFmt: (v) => fmtNum(v, st ? 1 : 0),
     tipTitle: (t) => (ser.step >= 1440 ? fDay.format(new Date(t * 1000)) : ser.step > 5 ? `${fFull.format(new Date(t * 1000))} (${ser.step >= 60 ? ser.step / 60 + ' h' : ser.step + ' min'})` : fFull.format(new Date(t * 1000))),
     extraTip: (i) => (st ? [{ value: fmtNum(ser.cap[i]), label: 'bornes' }] : [
-      { value: fmtNum(ser.dep[i]), label: `retraits (${ser.step >= 60 ? 'par ' + (ser.step / 60) + ' h' : 'par ' + ser.step + ' min'})` },
+      { value: fmtNum(ser.dep[i]), label: `retraits observés (${ser.step >= 60 ? 'par ' + (ser.step / 60) + ' h' : 'par ' + ser.step + ' min'})` },
       ...(ser.temp[i] !== null ? [{ value: `${fmtNum(ser.temp[i], 1)} °C`, label: ser.rain[i] > 0.05 ? `pluie ${fmtNum(ser.rain[i], 1)} mm` : 'sec' }] : []),
     ]),
     empty: 'Aucune tranche sur cette période.', label: 'Courbe des vélos disponibles',
@@ -423,11 +423,11 @@ function renderHistory() {
   });
   columnChart($('histDep'), {
     x: dl.map((d) => fDayShort.format(new Date(`${d.day}T12:00:00Z`))),
-    series: [{ name: 'Retraits', color: C.line(), values: dl.map((d) => d.dep) }],
+    series: [{ name: 'Retraits observés', color: C.line(), values: dl.map((d) => d.dep) }],
     tipTitle: (i) => `${dayLabel(dl[i].day)} · ${Math.round(dl[i].slots / 2.88)} % de la journée relevée`,
-    empty: 'Pas encore de retraits comptés.', label: 'Retraits par jour',
+    empty: 'Pas encore de retraits comptés.', label: 'Retraits observés par jour',
   });
-  table($('histTable'), ['Jour', 'Relevé', 'Retraits', 'Vélos (moy. / creux / pic)', 'Vides 7–22 h', 'Pleines 7–22 h', 'Pluie'],
+  table($('histTable'), ['Jour', 'Relevé', 'Retraits observés', 'Vélos (moy. / creux / pic)', 'Vides 7–22 h', 'Pleines 7–22 h', 'Pluie'],
     dl.slice().reverse().map((d) => [dayLabel(d.day), `${Math.round(d.slots / 2.88)} %`, fmtNum(d.dep), `${fmtNum(d.availMean)} / ${fmtNum(d.availMin)} / ${fmtNum(d.availMax)}`,
       `${fmtNum(d.emptyH, 1)} h`, `${fmtNum(d.fullH, 1)} h`, `${fmtNum(d.rainH, 1)} h`]));
   // service (résumés de la carte, 60 jours) : disponibilité par jour

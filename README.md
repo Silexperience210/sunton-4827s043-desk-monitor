@@ -59,6 +59,9 @@ compilé en WebAssembly) sur une machine allumée en permanence — Umbrel, Rasp
 
 ![Jumeau de l'écran](docs/en-ligne.png)
 
+**La suite** (interventions déclarées par les régulateurs, tournées, rapport mensuel, mises à jour sans câble…) et
+la règle qui la gouverne — rien d'approximatif présenté comme un fait : [`docs/feuille-de-route.md`](docs/feuille-de-route.md).
+
 ## Ce qui est repris de VelohNav
 
 - **Design system v4** à l'identique : jetons de `src/ui/tokens.js` / `ui.css` (noir #07090B, surfaces
