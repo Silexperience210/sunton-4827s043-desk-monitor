@@ -136,7 +136,23 @@ Bouton « Je m'en occupe » dans la notification ntfy et sur les Sunton ; « Ham
   l'écran l'affiche (« à bord : 14 / 25 ») et refuse une validation qui le rendrait négatif ou supérieur à la
   capacité, avec un message plutôt qu'une correction silencieuse.
 
+- **L'atelier fait partie de la tournée.** Le régulateur y dépose des vélos et en reprend de temps en temps des
+  neufs. La tournée a donc deux sortes d'arrêts :
+  - **station** : vélos en service déposés ou pris, et vélos **hors service** pris (le flux donne
+    `num_vehicles_disabled` par station : de quoi recouper, comme pour les autres) ;
+  - **atelier** : vélos déposés (hors service ou à réviser), vélos **neufs** (ou réparés) repris.
+
+  Le chargement à bord se tient par catégorie (en service / hors service), dans la même capacité. Le serveur
+  planifie un passage à l'atelier quand le camion doit décharger des vélos hors service ou recharger des vélos
+  neufs, et seulement s'il y en a de prêts — le stock prêt à l'atelier est **déclaré** (le flux GBFS ne voit pas
+  l'atelier).
+
+  Ce que ça apporte en plus, sans rien deviner : les vélos absents des stations se décomposent en
+  « à l'atelier » (**déclaré** : entrés − sortis) et le reste (en trajet ou inconnu, **estimé** comme aujourd'hui),
+  et les vélos neufs mis en service sont comptés (**déclaré**) au lieu d'apparaître comme un parc qui grossit.
+
 ## Encore à trancher
 
 1. JCDecaux enregistre-t-il déjà les interventions dans un outil interne, et peut-on y accéder ? (à demander en
    interne ; si oui, cette source remplace la ressaisie, le Sunton régulateur ne sert plus qu'à la tournée).
+2. Adresse de l'atelier (un seul ou plusieurs ?), pour le placer sur la tournée.
