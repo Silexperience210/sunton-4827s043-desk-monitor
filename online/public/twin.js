@@ -98,6 +98,8 @@ const touchQ = [];
 let touchHeldSince = 0, touchDown = false, lastXY = [0, 0];
 function toScreen(e) {
   const r = canvas.getBoundingClientRect();
+  // écran tourné d'un quart de tour (plein écran, téléphone en portrait) : le haut de la dalle est à droite
+  if (rotated) return [Math.round((e.clientY - r.top) * 480 / r.height), Math.round((1 - (e.clientX - r.left) / r.width) * 272)];
   return [Math.round((e.clientX - r.left) * 480 / r.width), Math.round((e.clientY - r.top) * 272 / r.height)];
 }
 canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); touchQ.push([...toScreen(e), true]); e.preventDefault(); });
@@ -125,8 +127,8 @@ function pumpTouch(now) {
 // ── Rendu : RGB565 → RGBA, puis agrandi sans flou ──
 let scaleK = 1, crisp = true;
 function resize() {
-  const r = canvas.getBoundingClientRect();
-  const k = Math.max(1, Math.min(6, Math.ceil(r.width * (window.devicePixelRatio || 1) / 480)));
+  const w = canvas.clientWidth;                       // largeur de mise en page (une rotation CSS ne la change pas)
+  const k = Math.max(1, Math.min(6, Math.ceil(w * (window.devicePixelRatio || 1) / 480)));
   if (k !== scaleK || canvas.width !== 480 * k) { scaleK = k; canvas.width = 480 * k; canvas.height = 272 * k; present(); }
 }
 function present() {
@@ -154,11 +156,50 @@ $('btnCrisp').addEventListener('click', (e) => {
   bezel.classList.toggle('is-crisp', crisp);
   present();
 });
-if (!bezel.requestFullscreen) $('btnFull').hidden = true;     // iPhone : pas de plein écran pour un élément
-$('btnFull').addEventListener('click', () => {
-  if (document.fullscreenElement) document.exitFullscreen?.();
-  else bezel.requestFullscreen?.().catch(() => {});
-});
+// ── Plein écran ──
+// L'API du navigateur quand elle est permise ; sinon — page ouverte dans un cadre (aperçu, application),
+// iPhone (pas de plein écran pour un élément) — l'écran occupe toute la fenêtre. Téléphone tenu en portrait :
+// la dalle tourne d'un quart de tour pour prendre toute la hauteur (le toucher suit la rotation).
+let maxMode = false, rotated = false;
+const screenBox = canvas.parentElement;
+function layoutMax() {
+  const full = maxMode || document.fullscreenElement === bezel;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  rotated = full && vh > vw * 1.15;           // portrait (orientation non verrouillable : iPhone, ordinateur)
+  bezel.classList.toggle('is-rot', rotated);
+  if (full) {
+    const W = rotated ? vh : vw, H = rotated ? vw : vh;
+    screenBox.style.width = `${Math.floor(Math.min(W, H * 480 / 272))}px`;
+  } else screenBox.style.width = '';
+}
+function setMax(on) {
+  maxMode = on;
+  bezel.classList.toggle('is-max', on);
+  document.documentElement.classList.toggle('vn-max', on);
+  layoutMax();
+  fullLabel();
+  resize();
+}
+const fullLabel = () => { $('btnFull').textContent = maxMode || document.fullscreenElement ? 'Quitter le plein écran' : 'Plein écran'; };
+async function enterFull() {
+  if (document.fullscreenEnabled && bezel.requestFullscreen) {
+    try {
+      await bezel.requestFullscreen({ navigationUI: 'hide' });
+      screen.orientation?.lock?.('landscape').catch(() => {});      // téléphones : paysage si permis
+      return;
+    } catch { /* refusé (cadre sans permission) : plein écran dans la fenêtre */ }
+  }
+  setMax(true);
+}
+function leaveFull() {
+  if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  if (maxMode) setMax(false);
+}
+$('btnFull').addEventListener('click', () => (maxMode || document.fullscreenElement ? leaveFull() : enterFull()));
+bezel.querySelector('.bezel__close')?.addEventListener('click', leaveFull);
+document.addEventListener('fullscreenchange', () => { fullLabel(); layoutMax(); resize(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && maxMode) setMax(false); });
+window.addEventListener('resize', () => { if (maxMode || document.fullscreenElement) { layoutMax(); resize(); } });
 
 // ── Boucle d'affichage ──
 let settingsSaved = '', settingsAt = 0;

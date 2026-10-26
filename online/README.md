@@ -90,6 +90,24 @@ fraîcheur) restent dans ce navigateur.
 Sunton qui se sont synchronisés** (dernière synchro, fichiers adoptés ou envoyés) et les fichiers de la
 carte à télécharger.
 
+## Exposer la page sur Internet (Cloudflare Tunnel)
+
+Le serveur doit tourner en continu (il relève toutes les 60 s et écrit sur disque) : c'est le rôle de
+l'Umbrel, pas d'un hébergeur « serverless » comme Vercel (pas de processus permanent, pas de disque). Pour
+ouvrir la page depuis le téléphone hors de chez soi, **Cloudflare Tunnel** la publie en https sans ouvrir
+de port sur la box :
+
+1. **Définir `VN_TOKEN`** dans `docker-compose.yml` (un long mot de passe) : la page le demandera une fois,
+   les Sunton aussi (`sync jeton …`). Indispensable dès que la page sort du réseau local.
+2. Essai sans compte : `docker compose --profile essai up -d`, puis
+   `docker compose logs tunnel-essai | grep trycloudflare` → une adresse `https://….trycloudflare.com`
+   (au hasard, change à chaque redémarrage).
+3. Adresse fixe : compte Cloudflare gratuit et un domaine géré par Cloudflare ; Zero Trust → Networks →
+   Tunnels → *Create a tunnel* (cloudflared) → copier le jeton ; *Public hostname* → service
+   `http://velohnav-ops:8790`. Puis `TUNNEL_TOKEN=… docker compose --profile tunnel up -d` (ou le jeton dans
+   un fichier `.env` à côté du compose). Mettre cette adresse dans `VN_PUBLIC_URL` pour que les
+   notifications l'ouvrent.
+
 ## Historique long (onglet Historique)
 
 La carte ne garde que 24 h ; le serveur écrit **chaque tranche de 5 min** de l'anneau dans

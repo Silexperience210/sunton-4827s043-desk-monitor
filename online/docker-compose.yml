@@ -23,3 +23,25 @@ services:
       # VN_NTFY_TOKEN: ""            # serveur ntfy protégé
       # VN_PUBLIC_URL: "http://umbrel.local:8790"   # ouvert en touchant une notification
       # VN_NOTIFY_DIGEST: "07:30"    # résumé du matin ; vide = aucun
+
+  # ── Facultatif : la page sur Internet, sans ouvrir de port, par Cloudflare Tunnel ────────────────
+  # Toujours avec VN_TOKEN défini ci-dessus : la page demandera le jeton, les Sunton aussi (sync jeton …).
+  #   Essai, adresse au hasard en *.trycloudflare.com (change à chaque redémarrage, sans compte) :
+  #     docker compose --profile essai up -d   puis   docker compose logs tunnel-essai | grep trycloudflare
+  #   Adresse fixe (compte Cloudflare gratuit + un domaine chez Cloudflare) : Zero Trust → Networks → Tunnels →
+  #   Create tunnel → copier le jeton ; Public hostname → service http://velohnav-ops:8790 ; puis
+  #     TUNNEL_TOKEN=… docker compose --profile tunnel up -d
+  tunnel-essai:
+    image: cloudflare/cloudflared:latest
+    profiles: ["essai"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://velohnav-ops:8790
+    depends_on: [velohnav-ops]
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}     # jeton du tunnel (Zero Trust → Networks → Tunnels), ou dans un fichier .env
+    depends_on: [velohnav-ops]
