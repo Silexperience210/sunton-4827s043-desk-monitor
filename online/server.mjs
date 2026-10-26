@@ -271,6 +271,9 @@ function serveStatic(req, res, path) {
   const file = join(PUBLIC, rel);
   if (!existsSync(file) || !statSync(file).isFile()) return send(req, res, 404, 'introuvable', 'text/plain; charset=utf-8');
   const type = MIME[extname(file)] || 'application/octet-stream';
+  // Les assets portent un ?v= dans index.html : le navigateur peut les garder longtemps, et une
+  // nouvelle version change l'URL. Cloudflare pose max-age=14400 sur les .js/.css, d'où ce numéro —
+  // sans lui, un twin.js périmé reste 4 h en mémoire et le bouton garde l'ancien comportement.
   const st = statSync(file);
   const key = `${file}:${st.mtimeMs}`;
   const acceptGz = /\bgzip\b/.test(req.headers['accept-encoding'] || '');
