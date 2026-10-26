@@ -1315,6 +1315,28 @@ static void mapSids(Model & m, const uint8_t * sids, int nSt, int16_t * map) {
   }
 }
 
+bool Model::profFileOk(const uint8_t * b, size_t len) {
+  if (!b || len <= sizeof(FileHdr)) return false;
+  FileHdr h; memcpy(&h, b, sizeof(h));
+  size_t cell = h.ver >= 3 ? sizeof(ProfCell) : PROF_CELL_V12;
+  size_t need = sizeof(h) + (size_t)h.nSt * 8 + (size_t)h.nSt * PROF_STRIDE * cell + PROF_STRIDE;
+  // statistiques météo : le parc, puis (versions 2 et 3 seulement) une par station
+  const size_t wxPerSt = h.ver == 2 || h.ver == 3 ? (size_t)h.nSt : 0;
+  if (h.ver >= 2) need += sizeof(WxClimate) + sizeof(WxStats) * (1 + wxPerSt);
+  if (h.ver >= 3) need += sizeof(int64_t) * (size_t)h.nSt;
+  return h.magic == PROF_MAGIC && h.ver >= 1 && h.ver <= PROF_VER && h.nSt <= VN_MAX_ST && len == need;
+}
+
+bool Model::histFileOk(const uint8_t * b, size_t len, int64_t now) {
+  if (!b || len <= sizeof(FileHdr)) return false;
+  FileHdr h; memcpy(&h, b, sizeof(h));
+  size_t nsz = h.ver == 1 ? sizeof(NetSampleV1) : sizeof(NetSample);
+  size_t need = sizeof(h) + (size_t)h.nSt * 8 + VN_RING_SLOTS * (8 + nsz + (size_t)h.nSt);
+  bool fresh = now <= 0 || (h.savedAt > 0 && now - h.savedAt < 20 * 3600);
+  return h.magic == HIST_MAGIC && (h.ver == 1 || h.ver == HIST_VER) && h.nSt <= VN_MAX_ST && len == need && fresh
+         && h.head >= 0 && h.head < VN_RING_SLOTS && h.count >= 0 && h.count <= VN_RING_SLOTS;
+}
+
 bool Model::load(int64_t now) {
   bool any = false;
   static int16_t map[VN_MAX_ST];
@@ -1324,12 +1346,9 @@ bool Model::load(int64_t now) {
     if (b && plat::fsRead(PROF_PATH, b, psz)) {
       FileHdr h; memcpy(&h, b, sizeof(h));
       size_t cell = h.ver >= 3 ? sizeof(ProfCell) : PROF_CELL_V12;
-      size_t need = sizeof(h) + (size_t)h.nSt * 8 + (size_t)h.nSt * PROF_STRIDE * cell + PROF_STRIDE;
       // statistiques météo : le parc, puis (versions 2 et 3 seulement) une par station
       const size_t wxPerSt = h.ver == 2 || h.ver == 3 ? (size_t)h.nSt : 0;
-      if (h.ver >= 2) need += sizeof(WxClimate) + sizeof(WxStats) * (1 + wxPerSt);
-      if (h.ver >= 3) need += sizeof(int64_t) * (size_t)h.nSt;
-      if (h.magic == PROF_MAGIC && h.ver >= 1 && h.ver <= PROF_VER && h.nSt <= VN_MAX_ST && (size_t)psz == need) {
+      if (profFileOk(b, (size_t)psz)) {
         mapSids(*this, b + sizeof(h), h.nSt, map);
         const uint8_t * pp = b + sizeof(h) + (size_t)h.nSt * 8;
         for (int j = 0; j < h.nSt; j++) {
@@ -1381,10 +1400,7 @@ bool Model::load(int64_t now) {
     if (b && plat::fsRead(HIST_PATH, b, hsz)) {
       FileHdr h; memcpy(&h, b, sizeof(h));
       size_t nsz = h.ver == 1 ? sizeof(NetSampleV1) : sizeof(NetSample);
-      size_t need = sizeof(h) + (size_t)h.nSt * 8 + VN_RING_SLOTS * (8 + nsz + (size_t)h.nSt);
-      bool fresh = now <= 0 || (h.savedAt > 0 && now - h.savedAt < 20 * 3600);
-      if (h.magic == HIST_MAGIC && (h.ver == 1 || h.ver == HIST_VER) && h.nSt <= VN_MAX_ST && (size_t)hsz == need && fresh
-          && h.head >= 0 && h.head < VN_RING_SLOTS && h.count >= 0 && h.count <= VN_RING_SLOTS) {
+      if (histFileOk(b, (size_t)hsz, now)) {
         mapSids(*this, b + sizeof(h), h.nSt, map);
         size_t o = sizeof(h) + (size_t)h.nSt * 8;
         memcpy(ringT, b + o, VN_RING_SLOTS * 8); o += VN_RING_SLOTS * 8;

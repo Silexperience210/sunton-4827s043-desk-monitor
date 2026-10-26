@@ -5,10 +5,13 @@
 // écriture série qui attend la liaison cède le processeur, rien d'autre n'attend le vidage.
 #ifdef ARDUINO
 #include <Arduino.h>
+#include <stdlib.h>
 #include "serial_cmd.h"
 #include "config.h"
 #include "core/dump.h"
 #include "core/model.h"
+#include "core/sync.h"
+#include "net/net.h"
 #include "platform/platform.h"
 
 namespace serialcmd {
@@ -48,6 +51,49 @@ bool dumping() { return s_running; }
 
 static void reply(const char * s) { writeLine(s, strlen(s)); }
 
+// ── Synchronisation avec le serveur en ligne (core/sync.h) ───────────
+// « sync » la lance (la tâche réseau s'en charge ; adoption = redémarrage), « sync etat » dit la dernière,
+// « sync url … », « sync jeton … », « sync boot 0/1 », « sync envoi 0/1 » règlent /vn_sync.cfg.
+static void syncCommand(const char * a) {
+  char b[200];
+  while (*a == ' ') a++;
+  if (!*a) {
+    if (!vn::g_sync.url[0]) { reply("VNSYNC REFUS aucun serveur : sync url http://<adresse>:8790\n"); return; }
+    net::requestSync();
+    snprintf(b, sizeof(b), "VNSYNC DEMANDE %s/sync/manifest (resultat : sync etat)\n", vn::g_sync.url);
+    reply(b);
+  } else if (!strcmp(a, "etat")) {
+    char line[160];
+    net::Status ns = net::status();
+    vn::syncStatusLine(ns.sync, plat::now(), line, sizeof(line));
+    snprintf(b, sizeof(b), "VNSYNC ETAT url=%s boot=%d envoi=%d jeton=%s | %s\n", vn::g_sync.url[0] ? vn::g_sync.url : "-",
+             vn::g_sync.atBoot, vn::g_sync.push, vn::g_sync.token[0] ? "oui" : "non", line);
+    reply(b);
+  } else if (!strncmp(a, "url ", 4)) {
+    char u[128];
+    if (!vn::syncNormalizeUrl(a + 4, u, sizeof(u))) { reply("VNSYNC REFUS adresse http(s) attendue\n"); return; }
+    snprintf(vn::g_sync.url, sizeof(vn::g_sync.url), "%s", u);
+    snprintf(b, sizeof(b), "VNSYNC OK url=%s (%s)\n", u, vn::syncCfgSave() ? "enregistree" : "ECHEC d'ecriture");
+    reply(b);
+  } else if (!strcmp(a, "url")) {
+    vn::g_sync.url[0] = 0;
+    snprintf(b, sizeof(b), "VNSYNC OK aucun serveur (%s)\n", vn::syncCfgSave() ? "enregistre" : "ECHEC d'ecriture");
+    reply(b);
+  } else if (!strncmp(a, "jeton", 5)) {
+    const char * v = a + 5;
+    while (*v == ' ') v++;
+    snprintf(vn::g_sync.token, sizeof(vn::g_sync.token), "%s", v);
+    snprintf(b, sizeof(b), "VNSYNC OK jeton %s (%s)\n", *v ? "enregistre" : "efface", vn::syncCfgSave() ? "ok" : "ECHEC d'ecriture");
+    reply(b);
+  } else if (!strncmp(a, "boot ", 5) || !strncmp(a, "envoi ", 6)) {
+    bool boot = a[0] == 'b';
+    bool on = atoi(a + (boot ? 5 : 6)) != 0;
+    if (boot) vn::g_sync.atBoot = on; else vn::g_sync.push = on;
+    snprintf(b, sizeof(b), "VNSYNC OK %s=%d (%s)\n", boot ? "boot" : "envoi", on ? 1 : 0, vn::syncCfgSave() ? "enregistre" : "ECHEC d'ecriture");
+    reply(b);
+  } else reply("VNSYNC INCONNU (aide)\n");
+}
+
 static void run(const char * c) {
   char b[96];
   if (!strcmp(c, "dump")) {
@@ -62,8 +108,11 @@ static void run(const char * c) {
   } else if (!strcmp(c, "ping")) {
     snprintf(b, sizeof(b), "VNDUMP PRET proto=%d version=%s\n", vn::DUMP_PROTO, VN_VERSION);
     reply(b);
+  } else if (!strncmp(c, "sync", 4) && (c[4] == 0 || c[4] == ' ')) {
+    syncCommand(c[4] ? c + 5 : "");
   } else if (!strcmp(c, "aide") || !strcmp(c, "help")) {
     reply("VNDUMP AIDE commandes : dump (donnees apprises, lecture seule) | stop | ping | aide\n");
+    reply("VNSYNC AIDE sync (maintenant) | sync etat | sync url <adresse> | sync jeton <jeton> | sync boot 0/1 | sync envoi 0/1\n");
   } else {
     reply("VNDUMP INCONNU commande inconnue (aide)\n");
   }

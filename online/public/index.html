@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>VelohNav Ops en ligne</title>
+<meta name="theme-color" content="#07090B">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="app.css?v=20261026c">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img src="logo.svg" alt="" width="26" height="26">
+    <div>
+      <div class="brand__name">VELOH<span>NAV</span></div>
+      <div class="eyebrow">OPS · EN LIGNE</div>
+    </div>
+  </div>
+  <div class="top__right">
+    <span class="pill" id="pill"><span class="dot" id="pillDot"></span><span id="pillTxt">CONNEXION</span></span>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="stage" aria-label="Écran Sunton en ligne">
+    <div class="stage__bar">
+      <span class="eyebrow">JUMEAU DE L'ÉCRAN · 480 × 272</span>
+      <span class="stage__meta" id="twinMeta">chargement du moteur…</span>
+      <span class="stage__tools">
+        <button class="btn btn--ghost" id="btnCrisp" type="button" aria-pressed="true" title="Pixels nets ou lissés">Pixels nets</button>
+        <button class="btn btn--ghost" id="btnFull" type="button" title="Plein écran">Plein écran</button>
+      </span>
+    </div>
+    <div class="bezel is-crisp" id="bezel">
+      <button class="bezel__close" type="button" aria-label="Quitter le plein écran"><span aria-hidden="true">&times;</span> Quitter</button>
+      <div class="screen">
+        <canvas id="screen" width="480" height="272" aria-label="Écran de la carte, interactif : toucher ou cliquer comme sur la dalle"></canvas>
+        <div class="veil" id="veil"><div class="veil__box"><div class="spinner"></div><div id="veilTxt">Chargement du moteur…</div></div></div>
+      </div>
+    </div>
+    <p class="rotate">En paysage, l'écran prend toute la largeur du téléphone.</p>
+    <p class="hint">Même code que la carte (src/ui et src/core, compilés en WebAssembly) : toucher, glisser et ouvrir les fiches comme sur la dalle. Les chiffres viennent du serveur, qui relève les flux en continu.</p>
+  </section>
+
+  <aside class="side" aria-label="Serveur et synchronisation">
+    <div class="card">
+      <div class="card__head"><span class="eyebrow">CE SERVEUR</span><span class="badge" id="srvBadge">—</span></div>
+      <dl class="kv" id="srvKv">
+        <dt>Dernier relevé</dt><dd id="kvLast">—</dd>
+        <dt>Relevés appris</dt><dd id="kvSamples">—</dd>
+        <dt>Profil hebdomadaire</dt><dd id="kvLearn">—</dd>
+        <dt>Jours résumés</dt><dd id="kvDays">—</dd>
+        <dt>Météo apprise</dt><dd id="kvWx">—</dd>
+        <dt>Archive pour le banc</dt><dd id="kvArch">—</dd>
+        <dt>En service depuis</dt><dd id="kvUp">—</dd>
+      </dl>
+    </div>
+
+    <div class="card">
+      <div class="card__head"><span class="eyebrow">ÉCRANS SUNTON</span><span class="count" id="devCount">0</span></div>
+      <ul class="devs" id="devs"><li class="empty">Aucun écran ne s'est encore synchronisé.</li></ul>
+    </div>
+
+    <div class="card">
+      <div class="card__head"><span class="eyebrow">BRANCHER UN SUNTON</span></div>
+      <p class="txt">Au démarrage, la carte demande l'état du serveur et reprend ce qui est meilleur que le sien : profils plus appris, historique 24 h plus récent, plus de jours résumés. Une carte éteinte le week-end repart ainsi le lundi avec le week-end appris.</p>
+      <div class="copy">
+        <code id="syncUrl">—</code>
+        <button class="btn btn--tonal" id="btnCopy" type="button">Copier</button>
+      </div>
+      <p class="txt txt--dim">Réglages → Synchro sur l'écran, ou en série : <code>sync url …</code> puis <code>sync</code>.</p>
+    </div>
+
+    <div class="card">
+      <div class="card__head"><span class="eyebrow">FICHIERS DE LA CARTE</span></div>
+      <p class="txt txt--dim">Octets exacts de la carte (Model::serialize), pour le banc <code>bench_prevision --reel</code> ou une restauration.</p>
+      <div class="files">
+        <a class="file" href="api/export/vn_prof.bin" download>vn_prof.bin</a>
+        <a class="file" href="api/export/vn_hist.bin" download>vn_hist.bin</a>
+        <a class="file" href="api/export/vn_days.bin" download>vn_days.bin</a>
+        <a class="file" href="api/export/vn_stations.csv" download>vn_stations.csv</a>
+      </div>
+    </div>
+
+    <div class="card card--warn" id="tokenCard" hidden>
+      <div class="card__head"><span class="eyebrow">JETON REQUIS</span></div>
+      <p class="txt">Ce serveur protège la synchronisation par un jeton (VN_TOKEN).</p>
+      <form class="copy" id="tokenForm">
+        <input id="tokenInput" type="password" autocomplete="off" placeholder="jeton" aria-label="Jeton">
+        <button class="btn btn--primary" type="submit">Valider</button>
+      </form>
+    </div>
+  </aside>
+</main>
+
+<section class="board" id="board" aria-label="Historique, prévisions et notifications">
+  <div class="board__bar">
+    <div class="tabs" role="tablist" aria-label="Tableau de bord">
+      <button type="button" role="tab" data-tab="hist" aria-controls="tab-hist" aria-selected="true">Historique</button>
+      <button type="button" role="tab" data-tab="prev" aria-controls="tab-prev" aria-selected="false">Prévisions</button>
+      <button type="button" role="tab" data-tab="notif" aria-controls="tab-notif" aria-selected="false">Notifications</button>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-hist" role="tabpanel">
+    <div class="filters">
+      <div class="seg" id="histRange" role="group" aria-label="Période">
+        <button type="button" data-r="1">24 h</button>
+        <button type="button" data-r="7">7 jours</button>
+        <button type="button" data-r="28">4 semaines</button>
+        <button type="button" data-r="90">3 mois</button>
+      </div>
+      <div class="pick">
+        <input id="histStation" list="stList" type="search" placeholder="Tout le réseau — ou une station…" aria-label="Station" autocomplete="off">
+        <button class="btn btn--ghost" id="histClear" type="button" title="Revenir au réseau entier">Réseau</button>
+      </div>
+      <datalist id="stList"></datalist>
+      <a class="btn btn--ghost" id="histCsv" href="api/history/export.csv?days=7" download>Exporter (CSV)</a>
+    </div>
+    <p class="txt txt--dim" id="histMeta"></p>
+    <div class="kpis" id="histKpis"></div>
+    <div id="histMain" class="grid1">
+      <figure class="card vcard">
+        <figcaption class="vcard__title" id="histTitle">Vélos disponibles sur le réseau</figcaption>
+        <div class="vbox" id="histChart"></div>
+      </figure>
+      <div class="grid2">
+        <figure class="card vcard">
+          <figcaption class="vcard__title">Stations·heures en rupture, par jour (7 h – 22 h)</figcaption>
+          <div class="vbox" id="histRupt"></div>
+        </figure>
+        <figure class="card vcard">
+          <figcaption class="vcard__title">Retraits par jour</figcaption>
+          <div class="vbox" id="histDep"></div>
+        </figure>
+      </div>
+      <p class="txt txt--dim" id="histSvc"></p>
+      <details class="card vdetails">
+        <summary>Tableau jour par jour</summary>
+        <div class="vscroll" id="histTable"></div>
+      </details>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-prev" role="tabpanel" hidden>
+    <p class="txt">Tous les quarts d'heure de 6 h à 22 h, le serveur note ce que l'écran affiche à +15 min, +30 min, +1 h, +2 h et +4 h. Quand l'heure visée arrive, il compare au relevé : erreur moyenne en vélos, contre deux références — afficher simplement le relevé (persistance) et le profil appris seul. Même règle que le banc (<code>bench_prevision --reel</code>).</p>
+    <p class="txt txt--dim" id="prevMeta"></p>
+    <div class="kpis" id="prevKpis"></div>
+    <div class="grid2">
+      <figure class="card vcard">
+        <figcaption class="vcard__title">Erreur moyenne selon l'horizon (vélos)</figcaption>
+        <div class="vbox" id="prevHorizon"></div>
+      </figure>
+      <figure class="card vcard">
+        <figcaption class="vcard__title">Erreur à +1 h, jour par jour (vélos)</figcaption>
+        <div class="vbox" id="prevDays"></div>
+      </figure>
+    </div>
+    <div class="grid2">
+      <figure class="card vcard">
+        <figcaption class="vcard__title">Erreur à +1 h selon l'heure de la prévision</figcaption>
+        <div class="vbox" id="prevHours"></div>
+      </figure>
+      <div class="card vcard">
+        <div class="vcard__title">Stations les plus dures à prévoir (+1 h)</div>
+        <div class="vscroll" id="prevHard"></div>
+      </div>
+    </div>
+    <details class="card vdetails">
+      <summary>Tableau des erreurs par horizon</summary>
+      <div class="vscroll" id="prevTable"></div>
+    </details>
+    <div class="card vcard">
+      <div class="card__head"><span class="eyebrow">BANC DE NUIT · ARCHIVE REJOUÉE</span><button class="btn btn--ghost" id="benchRun" type="button" hidden>Lancer maintenant</button></div>
+      <div id="benchBody"></div>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-notif" role="tabpanel" hidden>
+    <div class="grid2">
+      <form class="card" id="notifForm" autocomplete="off">
+        <div class="card__head"><span class="eyebrow">RÉGLAGES</span></div>
+        <p class="txt" id="notifStatus"></p>
+        <label class="field"><span>Adresse ntfy (sujet)</span><input name="url" type="url" inputmode="url" placeholder="https://ntfy.sh/un-sujet-difficile-a-deviner"></label>
+        <label class="field"><span>Jeton ntfy (serveur protégé, facultatif)</span><input name="token" type="password" placeholder="tk_…"></label>
+        <fieldset class="checks">
+          <legend>Prévenir quand…</legend>
+          <label><input type="checkbox" name="ruptures"> une station reste vide ou pleine</label>
+          <label><input type="checkbox" name="resolved"> elle est rétablie</label>
+          <label><input type="checkbox" name="predicted"> une rupture est prévue dans 30 min</label>
+          <label><input type="checkbox" name="feed"> le flux Vel'OH! se tait ou se fige</label>
+          <label><input type="checkbox" name="devices"> un Sunton reprend l'état du serveur</label>
+        </fieldset>
+        <div class="row3">
+          <label class="field"><span>Rupture depuis (min)</span><input name="minEpisode" type="number" min="5" max="240" step="5"></label>
+          <label class="field"><span>Heures</span><input name="hours" placeholder="7-22"></label>
+          <label class="field"><span>Au plus / heure</span><input name="maxPerHour" type="number" min="1" max="60"></label>
+        </div>
+        <div class="row3">
+          <label class="field"><span>Résumé du matin</span><input name="digest" placeholder="07:30"></label>
+          <label class="field field--wide"><span>Stations suivies (numéros, vide = toutes)</span><input name="stations" placeholder="12, 14, 48"></label>
+        </div>
+        <details class="more">
+          <summary>Plus</summary>
+          <label class="field"><span>Webhook (JSON, facultatif)</span><input name="webhook" type="url" placeholder="http://homeassistant.local:8123/api/webhook/…"></label>
+          <label class="field"><span>Lien ouvert en touchant la notification</span><input name="link" type="url" placeholder="http://umbrel.local:8790"></label>
+        </details>
+        <div class="actions">
+          <button class="btn btn--primary" type="submit">Enregistrer</button>
+          <button class="btn btn--tonal" type="button" id="notifTest">Envoyer un test</button>
+          <button class="btn btn--ghost" type="button" id="notifDigest">Voir le résumé du matin</button>
+        </div>
+        <p class="txt txt--dim" id="notifSay" role="status"></p>
+        <div class="preview" id="notifPreview" hidden></div>
+      </form>
+      <div class="side-col">
+        <div class="card">
+          <div class="card__head"><span class="eyebrow">SUR LE TÉLÉPHONE, EN 3 ÉTAPES</span></div>
+          <ol class="steps">
+            <li>Installer l'application <b>ntfy</b> (gratuite, iPhone et Android).</li>
+            <li>Inventer un sujet difficile à deviner, par exemple <code>velohnav-ops-7f3k</code>, et s'y abonner dans l'application.</li>
+            <li>Coller ici <code>https://ntfy.sh/velohnav-ops-7f3k</code>, enregistrer, puis « Envoyer un test ».</li>
+          </ol>
+          <p class="txt txt--dim">Sur Umbrel, l'app ntfy peut servir de serveur privé : adresse <code>http://umbrel.local:…/sujet</code>. Le sujet est le seul secret sur ntfy.sh : ne pas le partager.</p>
+        </div>
+        <div class="card">
+          <div class="card__head"><span class="eyebrow">DERNIERS MESSAGES</span></div>
+          <ul class="msgs" id="notifRecent"></ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script type="module" src="plein.js?v=20261026c"></script>
+<script type="module" src="twin.js?v=20261026c"></script>
+<script type="module" src="board.js?v=20261026c"></script>
+</body>
+</html>

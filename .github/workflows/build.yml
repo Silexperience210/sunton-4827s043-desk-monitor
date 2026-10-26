@@ -104,3 +104,36 @@ jobs:
           python3 tools/test_carte_dump.py
           python3 tools/test_bench_reel.py
           python3 tools/test_sauvegarde_littlefs.py
+
+  # Version en ligne : moteurs WebAssembly reconstruits depuis src/, réplication serveur ⇄ jumeau au bit près,
+  # la synchro du firmware (sim/sync_sim, même code que la carte) contre le vrai serveur, l'historique long,
+  # la note des prévisions, les notifications, le banc de nuit et l'image Docker.
+  en-ligne:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Dépendances (LVGL 8.3.11, ArduinoJson 7, lld)
+        run: |
+          git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
+          git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
+          sudo apt-get install -y lld >/dev/null
+      - name: Moteurs WebAssembly (clang + wasi-sysroot)
+        run: bash online/engine/build.sh
+      - name: Réplication serveur ⇄ jumeau
+        run: node online/test/replication.test.mjs
+      - name: Synchro de bout en bout (carte simulée ⇄ serveur)
+        run: |
+          make -C sim -j4 sync_sim
+          node online/test/sync.e2e.mjs
+      - name: Historique long, erreur des prévisions, notifications, banc de nuit
+        run: |
+          make -C sim -j4 bench_prevision
+          node online/test/features.test.mjs
+      - name: Image Docker (serveur + banc natif compilé sous Alpine)
+        run: |
+          docker build -f online/Dockerfile -t velohnav-ops-online .
+          docker run --rm --entrypoint /opt/banc/sim/bench_prevision velohnav-ops-online --jours 2 --court > /tmp/banc.md
+          head -5 /tmp/banc.md

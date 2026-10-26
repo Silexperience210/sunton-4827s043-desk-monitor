@@ -10,6 +10,7 @@
 #include "../src/ui/ui_internal.h"
 #include "../src/core/model.h"
 #include "../src/core/settings.h"
+#include "../src/core/sync.h"
 #include "../src/core/gbfs.h"
 #include "../src/core/weather.h"
 #include "../src/platform/platform.h"
@@ -373,7 +374,7 @@ static int totauxScenario(const std::string & in) {
 
   sim::g_epoch0 = lastUpd ? lastUpd : 1791894641;
   sim::g_timeOk = true;
-  settingsDefaults(g_set);
+  settingsDefaults(g_set); syncCfgDefaults(g_sync);
   if (!g_model.init()) { fprintf(stderr, "init modèle\n"); return 1; }
 
   int64_t now = plat::now();
@@ -423,7 +424,7 @@ static int bootScenario(const std::string & in, const char * variant) {
 
   sim::g_epoch0 = 0;                    // heure inconnue
   sim::g_timeOk = false;
-  settingsDefaults(g_set);
+  settingsDefaults(g_set); syncCfgDefaults(g_sync);
   if (savedSsid) {                      // réseau enregistré mais injoignable (mauvais mot de passe…)
     strcpy(g_set.ssid, "BUREAU");
     sim::g_wifiState = net::W_CONNECTING; sim::g_stage = "Connexion Wi-Fi\xE2\x80\xA6";
@@ -748,7 +749,7 @@ static int serviceScenario(const std::string & in) {
   static InfoRec irecs[VN_MAX_ST];
   static StatusRec sr[VN_MAX_ST];
   int ni = gbfsParseInfo(info.data(), info.size(), irecs, VN_MAX_ST);
-  settingsDefaults(g_set);
+  settingsDefaults(g_set); syncCfgDefaults(g_sync);
   strcpy(g_set.ssid, "VELOH-OPS");
   if (!g_model.init()) return 1;
   lv_init();
@@ -912,7 +913,7 @@ static int horsLigneScenario(const std::string & in) {
 
   sim::g_epoch0 = lastUpd ? lastUpd : 1791894641;   // heure connue, comme sur la photo de la carte
   sim::g_timeOk = true;
-  settingsDefaults(g_set);
+  settingsDefaults(g_set); syncCfgDefaults(g_sync);
   strcpy(g_set.ssid, "BUREAU");
   sim::g_wifiState = net::W_CONNECTING; sim::g_stage = "Connexion Wi-Fi\xE2\x80\xA6";
   if (!g_model.init()) { fprintf(stderr, "init mod\xC3\xA8le\n"); return 1; }
@@ -1067,7 +1068,7 @@ static int horsLigneScenario(const std::string & in) {
 // nom illisible et badge pris au hasard, sans plantage. ASan le voyait à chaque rafraîchissement.
 // Ce scénario fige la règle : la ligne existe, elle est nommée « Réseau » et ne porte pas de badge.
 static int prioScenario() {
-  settingsDefaults(g_set);
+  settingsDefaults(g_set); syncCfgDefaults(g_sync);
   strcpy(g_set.ssid, "VELOH-OPS");
   const int64_t T = 1791842400 + 12 * 3600;              // 13/10/2026 12:00, heures actives
   if (!g_model.init()) { fprintf(stderr, "init modèle\n"); return 1; }
@@ -1215,7 +1216,7 @@ static int realMain(int argc, char ** argv) {
          ni, ns, (long long)lastUpd, et.n, et.n ? et.id[0] : "-");
   sim::g_epoch0 = lastUpd ? lastUpd : 1791894641;
 
-  settingsDefaults(g_set);
+  settingsDefaults(g_set); syncCfgDefaults(g_sync);
   strcpy(g_set.ssid, "VELOH-OPS");
   if (!g_model.init()) { fprintf(stderr, "init modèle\n"); return 1; }
 

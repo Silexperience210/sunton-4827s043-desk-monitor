@@ -30,6 +30,7 @@ void showTab(int tab);
 void openStation(int st);                      // fiche station (bottom sheet)
 void openTransfers();                          // plan de régulation
 void openWifi();                               // configuration Wi-Fi
+void openSyncUrl();                            // adresse du serveur en ligne (core/sync.h)
 void openStationsFiltered(int sortMode);       // onglet Stations avec tri
 void mapFocus(int st);                         // onglet Carte centré sur une station
 void toast(const char * title, const char * msg, Tone tone, const lv_img_dsc_t * ic);
