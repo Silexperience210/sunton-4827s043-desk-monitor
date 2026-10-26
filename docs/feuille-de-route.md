@@ -121,9 +121,17 @@ Bouton « Je m'en occupe » dans la notification ntfy et sur les Sunton ; « Ham
 - Classement : mettre à part les stations hors service tout le mois.
 - « Coefficient appris, à confirmer » tant qu'il n'a pas tenu 14 jours.
 
-## Questions à trancher avant le chantier 1
+## Décisions (26/10/2026)
 
-1. Combien de camions et de régulateurs, et quelle capacité par camion ?
-2. Quelle connexion dans les camions (partage du téléphone, routeur 4G) ?
-3. JCDecaux enregistre-t-il déjà les interventions, et peut-on y accéder ?
-4. Terminal du régulateur : Sunton dédié, téléphone, ou les deux ?
+- **1 à 2 camions** en même temps : le plan des tournées (chantier 2) reste un petit problème, résolu
+  exactement ou presque sur le serveur, pas une heuristique grossière.
+- **Connexion : partage du téléphone du régulateur.** Le Sunton régulateur doit donc supporter les coupures
+  (tunnel, téléphone en veille, batterie) : chaque validation est écrite en flash d'abord, envoyée ensuite, et
+  l'écran dit combien attendent l'envoi. Réglage Wi-Fi du Sunton : le point d'accès du téléphone.
+- **Terminal : Sunton dédié dans le camion, téléphone en secours** (même API, même registre).
+
+## Encore à trancher
+
+1. Capacité de chaque camion (vélos).
+2. JCDecaux enregistre-t-il déjà les interventions dans un outil interne, et peut-on y accéder ? (à demander en
+   interne ; si oui, cette source remplace la ressaisie, le Sunton régulateur ne sert plus qu'à la tournée).
