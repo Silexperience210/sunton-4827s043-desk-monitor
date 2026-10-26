@@ -681,3 +681,27 @@ EXPORT(vn_digest_json) size_t vn_digest_json(int day) {
 }
 
 EXPORT(vn_local_day) int vn_local_day(double t) { return localDay((int64_t)t); }
+
+// Courbes prévues de chaque station, 0 → 240 min au pas de 5 min (Model::project, la règle de la prévision
+// 2 h prolongée), pour le planificateur de tournées : [capacité utile, vélos, bornes, vélos HS, statut,
+// courbe ×49 au dixième]. null = station inconnue du flux ou sans relevé.
+EXPORT(vn_curves_json) size_t vn_curves_json() {
+  s_out.clear();
+  const int64_t t = plat::now();
+  char b[64];
+  snprintf(b, sizeof(b), "{\"t\":%lld,\"st\":[", (long long)t);
+  s_out += b;
+  static float c[49];
+  for (int i = 0; i < g_model.n; i++) {
+    if (i) s_out += ",";
+    const Station & st = g_model.st[i];
+    if (!st.active || !st.live) { s_out += "null"; continue; }
+    g_model.project(i, t, 5, 49, c, nullptr);
+    snprintf(b, sizeof(b), "[%u,%u,%u,%u,%u", st.capEff(), st.bikes, st.docks, st.bikesDis, st.status);
+    s_out += b;
+    for (int k = 0; k < 49; k++) { snprintf(b, sizeof(b), ",%.1f", c[k] < 0 ? 0.f : c[k]); s_out += b; }
+    s_out += "]";
+  }
+  s_out += "]}";
+  return s_out.size();
+}

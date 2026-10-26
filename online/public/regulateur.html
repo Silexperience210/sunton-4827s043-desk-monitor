@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Régulation · VelohNav Ops</title>
+<meta name="theme-color" content="#07090B">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="app.css">
+<style>
+  body { max-width: 560px; margin-inline: auto; padding-bottom: max(24px, env(safe-area-inset-bottom)); }
+  .rg { display: flex; flex-direction: column; gap: 12px; padding-block: 12px 24px; }
+  .rg h2 { margin: 0; font: 600 13px/1.2 var(--sans); color: var(--text2); }
+  .load { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .load b { font: 700 28px/1 var(--sans); }
+  .load small { color: var(--text3); font-size: 12px; }
+  .bar { height: 8px; border-radius: 99px; background: var(--s3); overflow: hidden; display: flex; }
+  .bar i { display: block; height: 100%; }
+  .stop__name { font: 700 22px/1.2 var(--sans); }
+  .stop__eta { color: var(--text2); font-size: 13px; }
+  .stop__act { font: 700 30px/1.1 var(--sans); color: var(--accent); }
+  .stop__act.take { color: var(--elec); }
+  .stop__why { color: var(--text2); font-size: 13px; }
+  .stop__now { font: 12px var(--mono); color: var(--text3); }
+  .steppers { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .stepper { background: var(--bg); border: 1px solid var(--border-strong); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .stepper span { font-size: 12px; color: var(--text2); }
+  .stepper div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .stepper button { width: 52px; height: 52px; border-radius: 12px; border: 1px solid var(--border-strong); background: var(--s2); color: var(--text); font: 600 24px/1 var(--sans); cursor: pointer; }
+  .stepper output { font: 700 28px/1 var(--sans); min-width: 2ch; text-align: center; }
+  .big { width: 100%; min-height: 56px; font-size: 17px; border-radius: 14px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+  .pick button { min-height: 52px; border-radius: 12px; border: 1px solid var(--border-strong); background: var(--s2); color: var(--text); font: 600 14px/1.2 var(--sans); cursor: pointer; padding: 8px; }
+  .pick button[aria-pressed=true] { border-color: var(--accent); background: rgba(245, 130, 13, .14); color: var(--accent); }
+  .next { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+  .next li { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 8px; padding: 9px 0; border-top: 1px solid var(--border); font-size: 13px; align-items: baseline; }
+  .next li:first-child { border-top: 0; }
+  .next li.empty { display: block; color: var(--text3); }
+  #vStart, #vTour, #vEnd { display: flex; flex-direction: column; gap: 12px; }
+  .next .n { font: 600 12px var(--mono); color: var(--text3); }
+  .next .a { font: 600 13px var(--mono); }
+  .q { font-size: 12px; color: var(--warn); }
+  .rej { border-color: rgba(240, 82, 74, .45); }
+  .search { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: 10px; padding: 12px; font: 15px var(--sans); }
+  .slist { max-height: 300px; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+  .slist button { text-align: left; min-height: 44px; border-radius: 10px; border: 1px solid var(--border); background: var(--s2); color: var(--text); font: 14px var(--sans); padding: 8px 10px; cursor: pointer; }
+  .legend3 { font-size: 11px; color: var(--text3); }
+  .verdict { font: 600 10px/1 var(--mono); letter-spacing: .08em; padding: 3px 6px; border-radius: 5px; background: var(--s3); color: var(--text2); white-space: nowrap; }
+  .verdict.concordant { color: var(--good); background: rgba(46, 204, 143, .12); }
+  .verdict.ecart { color: var(--warn); background: rgba(242, 179, 61, .12); }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img src="logo.svg" alt="" width="26" height="26">
+    <div>
+      <div class="brand__name">VELOH<span>NAV</span></div>
+      <div class="eyebrow">OPS · RÉGULATION</div>
+    </div>
+  </div>
+  <span class="pill" id="pill"><span class="dot"></span><span id="pillTxt">CONNEXION</span></span>
+</header>
+
+<main class="rg" id="app">
+  <div class="card card--warn" id="tokenCard" hidden>
+    <div class="card__head"><span class="eyebrow">JETON REQUIS</span></div>
+    <form class="copy" id="tokenForm">
+      <input id="tokenInput" type="password" autocomplete="off" placeholder="jeton du serveur" aria-label="Jeton">
+      <button class="btn btn--primary" type="submit">Valider</button>
+    </form>
+  </div>
+
+  <!-- début de tournée -->
+  <section id="vStart" hidden>
+    <div class="card" id="joinCard" hidden>
+      <h2>Tournée déjà commencée sur le Sunton du camion</h2>
+      <div class="pick" id="joinList"></div>
+      <p class="txt txt--dim">La rejoindre : les arrêts déclarés ici s'ajoutent à la même tournée.</p>
+    </div>
+    <div class="card">
+      <h2>Régulateur</h2>
+      <div class="pick" id="pickReg"></div>
+      <h2>Camion du jour</h2>
+      <div class="pick" id="pickTruck"></div>
+      <h2>Déjà à bord au départ</h2>
+      <div class="steppers">
+        <div class="stepper" data-k="l_ok"><span>Vélos en service</span><div><button type="button" data-d="-1" aria-label="moins">−</button><output>0</output><button type="button" data-d="1" aria-label="plus">+</button></div></div>
+        <div class="stepper" data-k="l_hs"><span>Vélos hors service</span><div><button type="button" data-d="-1" aria-label="moins">−</button><output>0</output><button type="button" data-d="1" aria-label="plus">+</button></div></div>
+      </div>
+      <button class="btn btn--primary big" id="btnStart" type="button">Commencer la tournée</button>
+      <p class="txt txt--dim" id="startSay" role="status"></p>
+      <p class="txt txt--dim" id="startHelp"></p>
+    </div>
+  </section>
+
+  <!-- tournée en cours -->
+  <section id="vTour" hidden>
+    <div class="card">
+      <div class="load"><div><small>À bord</small><br><b id="loadTxt">0 / 0</b></div><small id="loadSub"></small></div>
+      <div class="bar" aria-hidden="true"><i id="barOk" style="background: var(--accent)"></i><i id="barHs" style="background: var(--text3)"></i></div>
+      <p class="q" id="queueTxt" hidden></p>
+    </div>
+
+    <div class="card" id="stopCard">
+      <div class="card__head"><span class="eyebrow" id="stopEyebrow">PROCHAIN ARRÊT</span><span class="badge" id="stopBadge">PLAN ESTIMÉ</span></div>
+      <div class="stop__name" id="stopName">—</div>
+      <div class="stop__eta" id="stopEta"></div>
+      <div class="stop__act" id="stopAct"></div>
+      <div class="stop__why" id="stopWhy"></div>
+      <div class="stop__now" id="stopNow"></div>
+    </div>
+
+    <div class="card" id="validCard">
+      <h2 id="validTitle">Ce qui a vraiment été fait</h2>
+      <div class="steppers" id="validSteppers"></div>
+      <button class="btn btn--primary big" id="btnDone" type="button">Fait</button>
+      <div class="row2">
+        <button class="btn btn--ghost big" id="btnImpossible" type="button">Impossible</button>
+        <button class="btn btn--ghost big" id="btnOther" type="button">Autre arrêt</button>
+      </div>
+      <p class="txt txt--dim" id="validSay" role="status"></p>
+    </div>
+
+    <div class="card" id="impCard" hidden>
+      <h2>Pourquoi l'arrêt n'a pas pu être fait ?</h2>
+      <div class="pick" id="pickWhy"></div>
+      <button class="btn btn--ghost" id="impCancel" type="button">Annuler</button>
+    </div>
+
+    <div class="card" id="otherCard" hidden>
+      <h2>Arrêt hors tournée</h2>
+      <button class="btn btn--tonal big" id="otherAtelier" type="button">Atelier</button>
+      <input class="search" id="otherSearch" type="search" placeholder="Station : nom ou numéro" autocomplete="off" aria-label="Chercher une station">
+      <div class="slist" id="otherList"></div>
+      <button class="btn btn--ghost" id="otherCancel" type="button">Annuler</button>
+    </div>
+
+    <div class="card">
+      <div class="card__head"><span class="eyebrow">ENSUITE</span><span class="legend3" id="planMeta"></span></div>
+      <ul class="next" id="nextList"></ul>
+      <p class="txt txt--dim" id="method"></p>
+    </div>
+
+    <div class="card">
+      <div class="card__head"><span class="eyebrow">MES DÉCLARATIONS</span></div>
+      <ul class="next" id="doneList"></ul>
+      <p class="legend3">Chaque arrêt déclaré est recoupé avec le flux public 10 min plus tard : « déclaré +6, observé +6 ». Rien n'est corrigé en silence.</p>
+    </div>
+
+    <button class="btn btn--ghost big" id="btnEnd" type="button">Fin de tournée</button>
+  </section>
+
+  <section id="vEnd" hidden>
+    <div class="card">
+      <h2>Fin de tournée : ce qui reste à bord</h2>
+      <div class="steppers">
+        <div class="stepper" data-k="e_ok"><span>Vélos en service</span><div><button type="button" data-d="-1" aria-label="moins">−</button><output>0</output><button type="button" data-d="1" aria-label="plus">+</button></div></div>
+        <div class="stepper" data-k="e_hs"><span>Vélos hors service</span><div><button type="button" data-d="-1" aria-label="moins">−</button><output>0</output><button type="button" data-d="1" aria-label="plus">+</button></div></div>
+      </div>
+      <p class="txt txt--dim">Le compte calculé à partir des arrêts déclarés est proposé ; s'il ne correspond pas, corriger : les deux seront gardés côte à côte.</p>
+      <button class="btn btn--primary big" id="btnEndOk" type="button">Terminer</button>
+      <button class="btn btn--ghost" id="btnEndCancel" type="button">Annuler</button>
+    </div>
+  </section>
+</main>
+<script type="module" src="regulateur.js"></script>
+</body>
+</html>

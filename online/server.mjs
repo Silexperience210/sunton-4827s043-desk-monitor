@@ -23,6 +23,8 @@ import { History, importArchive, snapshotDirs, dayOf } from './lib/history.mjs';
 import { ForecastLog } from './lib/forecast.mjs';
 import { Notifier } from './lib/notify.mjs';
 import { NightBench } from './lib/bench.mjs';
+import { Regulation } from './lib/regulation.mjs';
+import { planTours, measuredSpeed, errorProfile } from './lib/planner.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, 'public');
@@ -46,6 +48,7 @@ const forecasts = new ForecastLog(CONFIG.dataDir, history, log);
 const scratchEngine = async () => loadEngine(CORE_WASM, { onLog: () => {} });
 const notifier = new Notifier({ dataDir: CONFIG.dataDir, log });
 const bench = new NightBench({ dataDir: CONFIG.dataDir, archiveDir: store.archiveDir, log });
+const regulation = new Regulation({ dataDir: CONFIG.dataDir, history, log });
 
 // ── Import d'un vidage de carte ──────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -134,6 +137,7 @@ const collector = new Collector({
     engine.clock(nowS(), mono());
     try { history.capture(engine); } catch (err) { log(`[historique] échec : ${err.message}`); }
     try { forecasts.capture(engine); } catch (err) { log(`[prévision] échec : ${err.message}`); }
+    try { regulation.onCycle(engine.stations(), nowS()); } catch (err) { log(`[régulation] échec : ${err.message}`); }
     if (notifier.enabled) {
       notifier.evaluate({ stations: engine.stations(), summary: engine.summary(), alerts: engine.alerts(), refreshS: CONFIG.refreshS })
         .catch((err) => log(`[notif] échec : ${err.message}`));
@@ -263,6 +267,29 @@ function serveStatic(req, res, path) {
 function baseUrl(req) {
   const proto = req.headers['x-forwarded-proto'] || 'http';
   return `${proto}://${req.headers['x-forwarded-host'] || req.headers.host}`;
+}
+
+// ── Plans de tournée (lib/planner.mjs) : recalculés au plus toutes les 30 s, et après chaque déclaration ──
+let planCache = null, errCache = null;
+const prevPlans = new Map();
+function computePlans(force = false) {
+  const t = nowS();
+  if (!force && planCache && t - planCache.at < 30) return planCache;
+  engine.clock(t, mono());
+  const stations = engine.stations();
+  const coords = new Map(stations.map((s) => [s.sid, { lat: s.lat, lon: s.lon }]));
+  const open = regulation.state().open;
+  if (!errCache || t - errCache.at > 600) errCache = { at: t, v: errorProfile(forecasts.report(14)) };
+  const tours = open.map((o) => ({ id: o.id, truckName: o.truckName, capacity: o.capacity, load: o.load, position: regulation.positionOf(o.id, coords) }));
+  const speed = measuredSpeed(regulation.travelSamples(coords), regulation.cfg.plan);
+  planCache = open.length ? planTours({ now: t, curves: engine.curves(), stations, tours, cfg: regulation.cfg, speed, previous: prevPlans, error: errCache.v, exclude: regulation.recentStops(t) })
+    : { at: t, plans: [], atelierSet: Number.isFinite(regulation.cfg.atelier.lat), error: errCache.v.source };
+  for (const p of planCache.plans) prevPlans.set(p.tour, p);
+  return planCache;
+}
+const deviceOf = (req) => String(req.headers['x-vn-device'] || 'inconnu').replace(/[^\w.-]/g, '').slice(0, 40) || 'inconnu';
+async function jsonBody(req) {
+  try { return JSON.parse((await readBody(req, 256 << 10)).toString('utf8') || '{}'); } catch { return null; }
 }
 
 // ?from=AAAA-MM-JJ&to=AAAA-MM-JJ ou ?days=N (défaut : les 7 derniers jours de l'historique)
@@ -426,6 +453,70 @@ const server = createServer(async (req, res) => {
       const body = ex[1] === 'vn_stations.csv' ? Buffer.from(engine.stationsCsv(), 'utf8') : s.files[ex[1]];
       return send(req, res, 200, body, ex[1].endsWith('.csv') ? 'text/csv; charset=utf-8' : 'application/octet-stream',
         { 'Content-Disposition': `attachment; filename="${ex[1]}"` });
+    }
+    // ── Régulation : tournées, déclarations, plans (lib/regulation.mjs, lib/planner.mjs) ──
+    if (p.startsWith('/reg/')) {
+      if (!authorized(req, url)) return sendJson(req, res, { error: 'jeton requis' }, 401);
+      const dev = deviceOf(req);
+      const fail = (err) => sendJson(req, res, { ok: false, error: err.message }, err.code || 400);
+      if (p === '/reg/config' && req.method === 'GET') return sendJson(req, res, regulation.publicConfig());
+      if (p === '/reg/config' && req.method === 'POST') {
+        const b = await jsonBody(req);
+        if (!b) return sendJson(req, res, { error: 'JSON attendu' }, 400);
+        try { regulation.updateConfig(b); planCache = null; log('[régulation] réglages modifiés'); return sendJson(req, res, regulation.publicConfig()); } catch (err) { return fail(err); }
+      }
+      // Ce dont l'appareil du régulateur a besoin, en un appel : sa tournée ouverte, son chargement, son plan
+      // (?tour= : un second appareil — le téléphone de secours — rejoint la tournée du camion)
+      if (p === '/reg/tour' && req.method === 'GET') {
+        const tid = url.searchParams.get('tour');
+        const asked = tid ? regulation.tour(tid) : null;
+        const tour = asked ? (asked.endedAt ? null : asked) : regulation.openTourOf(dev);
+        const cfg = regulation.publicConfig();
+        const openTours = regulation.state().open.map((o) => ({ id: o.id, truckName: o.truckName, regulatorName: o.regulatorName, device: o.device, startedAt: o.startedAt }));
+        const base = { device: dev, trucks: cfg.trucks, regulators: cfg.regulators, atelier: cfg.atelier, atelierStock: cfg.atelierStock, openTours, now: nowS() };
+        if (!tour) return sendJson(req, res, { ...base, tour: null });
+        const plans = computePlans();
+        const plan = plans.plans.find((x) => x.tour === tour.id) || null;
+        const events = regulation.tourEvents(tour.id).slice(-8).reverse();
+        return sendJson(req, res, { ...base, tour, load: regulation.loadOf(tour.id), plan, method: plans.method, events });
+      }
+      if (p === '/reg/tour/start' && req.method === 'POST') {
+        const b = await jsonBody(req);
+        if (!b) return sendJson(req, res, { error: 'JSON attendu' }, 400);
+        try { const r = regulation.startTour({ ...b, device: dev }); planCache = null; return sendJson(req, res, { ok: true, ...r, load: regulation.loadOf(r.tour.id) }); } catch (err) { return fail(err); }
+      }
+      if (p === '/reg/tour/end' && req.method === 'POST') {
+        const b = await jsonBody(req);
+        if (!b) return sendJson(req, res, { error: 'JSON attendu' }, 400);
+        try { const r = regulation.endTour(b); planCache = null; prevPlans.delete(b.tour); return sendJson(req, res, { ok: true, ...r }); } catch (err) { return fail(err); }
+      }
+      if (p === '/reg/event' && req.method === 'POST') {
+        const b = await jsonBody(req);
+        if (!b) return sendJson(req, res, { error: 'JSON attendu' }, 400);
+        engine.clock(nowS(), mono());
+        const st = b.sid ? engine.stations().find((x) => x.sid === String(b.sid)) : null;
+        const state = st ? { bikes: st.bikes, docks: st.docks, dis: st.bikesDis, status: st.status, at: nowS() } : null;
+        try {
+          const r = regulation.declare(b, dev, state);
+          if (!r.duplicate) {
+            planCache = null;
+            const e = r.event;
+            log(`[régulation] ${regulation.tour(e.tour)?.regulatorName || e.regulator} · ${e.kind === 'atelier' ? 'atelier' : `${e.name || e.sid}`} : ${e.impossible ? `impossible (${e.impossible})` : `pris ${e.took.ok}+${e.took.hs} HS, déposé ${e.dropped.ok}${e.dropped.hs ? `+${e.dropped.hs} HS` : ''}`} · à bord ${r.load.ok}+${r.load.hs}`);
+          }
+          return sendJson(req, res, r);
+        } catch (err) { return fail(err); }
+      }
+      if (p === '/reg/plan') return sendJson(req, res, computePlans(url.searchParams.get('force') === '1'));
+      if (p === '/reg/state') {
+        const st = regulation.state();
+        // période qui finit aujourd'hui (pas au dernier jour de l'historique)
+        const today = dayOf(nowS());
+        const n = Math.min(400, Math.max(1, parseInt(url.searchParams.get('days') || '7', 10) || 7));
+        const back = new Date(`${today}T12:00:00Z`); back.setUTCDate(back.getUTCDate() - (n - 1));
+        const from = back.toISOString().slice(0, 10), to = today;
+        return sendJson(req, res, { ...st, plans: computePlans(), events: regulation.eventsBetween(from, to).slice(0, 300), kpi: regulation.kpi(from, to) });
+      }
+      return sendJson(req, res, { error: 'introuvable' }, 404);
     }
     if (p.startsWith('/api/') || p.startsWith('/sync/')) return sendJson(req, res, { error: 'introuvable' }, 404);
     return serveStatic(req, res, p);
