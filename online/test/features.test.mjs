@@ -304,7 +304,14 @@ else {
   const until = async (fn, ms = 20000) => { const t1 = Date.now() + ms; while (Date.now() < t1) { try { if (await fn()) return true; } catch { /* pas encore */ } await new Promise((r) => setTimeout(r, 250)); } return false; };
   try {
     ok(await until(async () => JSON.parse((await call('/api/history')).text).days >= 4), 'archive versée dans l\'historique au premier démarrage');
-    ok((await fetch(base + '/api/history')).status === 401, 'API protégée par le jeton');
+    // Politique d'accès : la page et les lectures sont publiques (c'est un tableau de bord ouvert),
+    // les écritures, la synchro des cartes et les réglages de notification exigent le jeton.
+    ok((await fetch(base + '/api/history')).status === 200, 'lecture publique sans jeton (historique)');
+    ok((await fetch(base + '/api/notify')).status === 401, 'réglages de notification protégés (GET)');
+    ok((await fetch(base + '/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status === 401, 'réglages de notification protégés (POST)');
+    ok((await fetch(base + '/sync/manifest')).status === 401, 'synchro des cartes protégée');
+    ok((await fetch(base + '/api/devices')).status === 401, 'écrans du réseau local protégés');
+    ok((await fetch(base + '/api/notify?token=jeton-test')).status === 401, 'jeton refusé en paramètre d\'URL');
     const ser = JSON.parse((await call('/api/history/series?days=28&step=60')).text);
     ok(ser.t.length >= 72 && ser.avail.some((v) => v > 0), `série horaire servie (${ser.t.length} points)`);
     const dly = JSON.parse((await call('/api/history/daily?days=28')).text);
