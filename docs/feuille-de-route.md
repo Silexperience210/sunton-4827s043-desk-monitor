@@ -169,11 +169,11 @@ Bouton « Je m'en occupe » dans la notification ntfy et sur les Sunton ; « Ham
   - Si JCDecaux fournit un jour un export ou une API de ses libérations, on le branche comme **seconde** source
     déclarée, pour recouper — pas pour remplacer la déclaration complète.
 
-- **Un seul atelier, à Bertrange (« route des Romains »).** Le point exact est **déclaré** dans les réglages du
-  serveur (numéro, ou point posé sur la carte) — jamais deviné par un géocodage approximatif : la rue est longue,
-  et quelques centaines de mètres changent l'ordre d'une tournée. À vérifier au passage : le plan d'aménagement de
-  la commune parle de la **rue** des Romains.
+- **Un seul atelier : rue des Romains, à Bertrange.** Le point exact est **déclaré** dans les réglages du serveur
+  (numéro, ou point posé sur la carte) — jamais deviné par un géocodage approximatif : la rue est longue, et
+  quelques centaines de mètres changent l'ordre d'une tournée.
 
 ## Encore à trancher
 
-1. Numéro (ou point sur la carte) de l'atelier.
+1. Numéro (ou point sur la carte) de l'atelier, rue des Romains : se saisit une fois dans les réglages du serveur ;
+   ne bloque pas le chantier 1.
