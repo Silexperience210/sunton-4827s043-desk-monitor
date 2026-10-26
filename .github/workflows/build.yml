@@ -106,7 +106,8 @@ jobs:
           python3 tools/test_sauvegarde_littlefs.py
 
   # Version en ligne : moteurs WebAssembly reconstruits depuis src/, réplication serveur ⇄ jumeau au bit près,
-  # et la synchro du firmware (sim/sync_sim, même code que la carte) contre le vrai serveur.
+  # la synchro du firmware (sim/sync_sim, même code que la carte) contre le vrai serveur, l'historique long,
+  # la note des prévisions, les notifications, le banc de nuit et l'image Docker.
   en-ligne:
     runs-on: ubuntu-latest
     steps:
@@ -127,3 +128,12 @@ jobs:
         run: |
           make -C sim -j4 sync_sim
           node online/test/sync.e2e.mjs
+      - name: Historique long, erreur des prévisions, notifications, banc de nuit
+        run: |
+          make -C sim -j4 bench_prevision
+          node online/test/features.test.mjs
+      - name: Image Docker (serveur + banc natif compilé sous Alpine)
+        run: |
+          docker build -f online/Dockerfile -t velohnav-ops-online .
+          docker run --rm --entrypoint /opt/banc/sim/bench_prevision velohnav-ops-online --jours 2 --court > /tmp/banc.md
+          head -5 /tmp/banc.md

@@ -39,5 +39,8 @@ export const CONFIG = {
 
   // Réplication vers les jumeaux d'écran : évènements gardés en mémoire
   eventsKept: int('VN_EVENTS_KEPT', 240),
+
+  // Tâches de nuit (heure de Luxembourg) : prévisions de la veille notées, jours finis compressés, banc natif
+  nightAt: /^([01]?\d|2[0-3]):[0-5]\d$/.test(env('VN_NIGHT_AT', '')) ? env('VN_NIGHT_AT', '') : '03:30',
   userAgent: 'VelohNavOps/%v (serveur en ligne)',
 };

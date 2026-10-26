@@ -19,6 +19,10 @@ import { loadEngine } from './public/vn-engine.js';
 import { Collector, EventLog } from './lib/collector.mjs';
 import { Store, STATE_FILES, CARD_FILES, luxParts } from './lib/store.mjs';
 import { SyncHub, profHeader, daysHeader } from './lib/sync.mjs';
+import { History, importArchive, snapshotDirs, dayOf } from './lib/history.mjs';
+import { ForecastLog } from './lib/forecast.mjs';
+import { Notifier } from './lib/notify.mjs';
+import { NightBench } from './lib/bench.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, 'public');
@@ -37,6 +41,11 @@ const flushEngineLog = () => { const l = engine.logs(); if (l) for (const line o
 
 const store = new Store(CONFIG.dataDir, log);
 const events = new EventLog(CONFIG.eventsKept);
+const history = new History(CONFIG.dataDir, log);
+const forecasts = new ForecastLog(CONFIG.dataDir, history, log);
+const scratchEngine = async () => loadEngine(CORE_WASM, { onLog: () => {} });
+const notifier = new Notifier({ dataDir: CONFIG.dataDir, log });
+const bench = new NightBench({ dataDir: CONFIG.dataDir, archiveDir: store.archiveDir, log });
 
 // ── Import d'un vidage de carte ──────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -64,6 +73,17 @@ if (imp >= 0) {
   if (!argv.includes('--serve')) process.exit(0);
 }
 
+// ── Import d'une archive d'instantanés dans l'historique long ────────
+// node online/server.mjs --import-archive [dossier]   (défaut : <données>/archive ; vidages de cartes acceptés)
+const ia = argv.indexOf('--import-archive');
+if (ia >= 0) {
+  const root = argv[ia + 1] && !argv[ia + 1].startsWith('--') ? argv[ia + 1] : store.archiveDir;
+  const dirs = snapshotDirs(root);
+  if (!dirs.length) { log(`--import-archive : aucun instantané (vn_hist.bin) sous ${root}`); process.exit(2); }
+  await importArchive({ dirs, history, makeEngine: scratchEngine, log });
+  if (!argv.includes('--serve')) process.exit(0);
+}
+
 // ── Reprise de l'état sur disque ─────────────────────────────────────
 {
   const names = store.restoreInto(engine);
@@ -73,6 +93,9 @@ if (imp >= 0) {
   const s = engine.summary();
   if (names.length) log(`[fs] état relu (${names.join(', ')}) : profils ${r & 1 ? 'oui' : 'non'}, état vivant ${r & 2 ? 'oui' : 'non'} · ${s.stations} stations · ${s.learnSamples} relevés appris · ${s.daysKept} jour(s) résumés`);
   else log(`[fs] aucun état dans ${store.dir} : apprentissage depuis zéro`);
+  // l'anneau relu comble l'historique long depuis sa dernière tranche écrite
+  const n = history.capture(engine);
+  if (n) log(`[historique] ${n} tranche(s) reprises de l'anneau relu`);
 }
 
 // ── Sauvegarde, archive ──────────────────────────────────────────────
@@ -108,11 +131,49 @@ const collector = new Collector({
   onCycle: () => {
     flushEngineLog();
     cyclesSinceSave++;
+    engine.clock(nowS(), mono());
+    try { history.capture(engine); } catch (err) { log(`[historique] échec : ${err.message}`); }
+    try { forecasts.capture(engine); } catch (err) { log(`[prévision] échec : ${err.message}`); }
+    if (notifier.enabled) {
+      notifier.evaluate({ stations: engine.stations(), summary: engine.summary(), alerts: engine.alerts(), refreshS: CONFIG.refreshS })
+        .catch((err) => log(`[notif] échec : ${err.message}`));
+    }
     if (Date.now() - lastSave >= CONFIG.savePeriodS * 1000) saveNow('période');
     try { maybeArchive(); } catch (err) { log(`[archive] échec : ${err.message}`); }
   },
 });
 const hub = new SyncHub({ engine, store, events, cfg: CONFIG, log, beforeSnapshot: () => engine.clock(nowS(), mono()) });
+
+// ── Tâches de nuit et résumé du matin ────────────────────────────────
+// À CONFIG.nightAt (heure de Luxembourg) : jours finis compressés, prévisions de la veille notées,
+// banc natif sur l'archive. Le résumé du matin part à l'heure réglée dans les notifications.
+let lastNightDay = '';
+async function nightly(force = false) {
+  const t = nowS(), lp = luxParts(t), day = `${lp.y}-${lp.mo}-${lp.d}`;
+  const [hh, mm] = CONFIG.nightAt.split(':').map(Number);
+  if (!force && (day === lastNightDay || lp.h * 60 + lp.mi < hh * 60 + mm)) return;
+  lastNightDay = day;
+  try { history.compressDone(day); forecasts.compressDone(day); } catch (err) { log(`[nuit] compression : ${err.message}`); }
+  try { forecasts.scorePending(); } catch (err) { log(`[nuit] notes de prévision : ${err.message}`); }
+  if (bench.available && !bench.read(day)) await bench.run(day).catch((err) => log(`[banc] échec : ${err.message}`));
+}
+async function morningDigest() {
+  if (!notifier.digestDue()) return;
+  engine.clock(nowS(), mono());
+  const today = engine.localDay(nowS());
+  try { forecasts.scorePending(); } catch { /* note partielle */ }
+  const yday = dayOf(nowS() - 86400);
+  const lp = luxParts(nowS());
+  const label = new Intl.DateTimeFormat('fr-FR', { timeZone: 'Europe/Luxembourg', weekday: 'long', day: 'numeric', month: 'long' }).format(new Date());
+  await notifier.sendDigest({ digest: engine.digest(today - 1), note: forecasts.readNote(yday), stations: engine.stations(),
+    devices: Object.values(hub.devices), dateLabel: label || `${lp.d}/${lp.mo}` });
+}
+setInterval(() => {
+  nightly().catch((err) => log(`[nuit] ${err.message}`));
+  morningDigest().catch((err) => log(`[notif] résumé : ${err.message}`));
+}, 30000).unref();
+// au démarrage : ce qui n'a pas été noté pendant l'arrêt
+setTimeout(() => { try { forecasts.scorePending(); history.compressDone(); forecasts.compressDone(); } catch (err) { log(`[prévision] ${err.message}`); } }, 5000).unref();
 
 // ── Fichiers envoyés par une carte ───────────────────────────────────
 // Contrôlés par le chemin de la carte (Model::load dans un moteur à part), puis adoptés seulement s'ils
@@ -204,11 +265,24 @@ function baseUrl(req) {
   return `${proto}://${req.headers['x-forwarded-host'] || req.headers.host}`;
 }
 
+// ?from=AAAA-MM-JJ&to=AAAA-MM-JJ ou ?days=N (défaut : les 7 derniers jours de l'historique)
+function dayRange(url) {
+  const re = /^\d{4}-\d{2}-\d{2}$/;
+  const last = history.range().to || dayOf(nowS());
+  let to = re.test(url.searchParams.get('to') || '') ? url.searchParams.get('to') : last;
+  const n = Math.min(400, Math.max(1, parseInt(url.searchParams.get('days') || '7', 10) || 7));
+  const back = new Date(`${to}T12:00:00Z`); back.setUTCDate(back.getUTCDate() - (n - 1));
+  let from = re.test(url.searchParams.get('from') || '') ? url.searchParams.get('from') : back.toISOString().slice(0, 10);
+  if (from > to) [from, to] = [to, from];
+  return { from, to };
+}
+
 function serverInfo() {
   return {
     name: CONFIG.name, uptimeS: Math.floor((Date.now() - started) / 1000), seq: events.seq, cycles: collector.cycles,
     refreshS: CONFIG.refreshS, lastSaveAt: lastSaveOk, archives: store.archives().length, dataDir: CONFIG.dataDir,
     tokenRequired: !!CONFIG.token, devices: Object.keys(hub.devices).length,
+    history: history.range(), forecastsLogged: forecasts.lastSlot, notify: notifier.enabled, bench: bench.available,
   };
 }
 
@@ -216,7 +290,7 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
   try {
-    if (req.method === 'OPTIONS') return send(req, res, 204, '', 'text/plain', { 'Access-Control-Allow-Headers': 'Authorization, X-VN-Token, X-VN-Device, X-VN-Fw, X-VN-Local', 'Access-Control-Allow-Methods': 'GET, POST' });
+    if (req.method === 'OPTIONS') return send(req, res, 204, '', 'text/plain', { 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-VN-Token, X-VN-Device, X-VN-Fw, X-VN-Local', 'Access-Control-Allow-Methods': 'GET, POST' });
     if (p === '/healthz') {
       const s = engine.summary();
       const fresh = s.lastUpdate && nowS() - s.lastUpdate < 3 * CONFIG.refreshS + 60;
@@ -232,6 +306,68 @@ const server = createServer(async (req, res) => {
     if (p === '/api/devices') return sendJson(req, res, Object.values(hub.devices).sort((a, b) => b.last - a.last));
     if (p === '/api/archive') return sendJson(req, res, store.archives());
     if (p === '/api/refresh' && req.method === 'POST') { collector.refreshReq = true; return sendJson(req, res, { ok: true }); }
+
+    // ── Historique long (lib/history.mjs) ──
+    if (p === '/api/history') return sendJson(req, res, { ...history.range(), list: history.list() });
+    if (p === '/api/history/series' || p === '/api/history/daily' || p === '/api/history/export.csv') {
+      const { from, to } = dayRange(url);
+      if (p === '/api/history/series') {
+        const step = [5, 15, 30, 60, 180, 1440].includes(+url.searchParams.get('step')) ? +url.searchParams.get('step') : 60;
+        return sendJson(req, res, history.series({ from, to, step, sid: url.searchParams.get('sid') || null }));
+      }
+      if (p === '/api/history/daily') {
+        engine.clock(nowS(), mono());
+        return sendJson(req, res, { from, to, days: history.dailySummary(from, to), service: engine.days().filter((d) => d.date >= from && d.date <= to) });
+      }
+      const per = url.searchParams.get('stations') === '1';
+      return send(req, res, 200, history.csv(from, to, per), 'text/csv; charset=utf-8',
+        { 'Content-Disposition': `attachment; filename="velohnav-${per ? 'stations' : 'reseau'}-${from}_${to}.csv"` });
+    }
+    if (p === '/api/stations') { engine.clock(nowS(), mono()); return sendJson(req, res, engine.stations()); }
+
+    // ── Erreur des prévisions (lib/forecast.mjs) et banc de nuit (lib/bench.mjs) ──
+    if (p === '/api/forecast') {
+      const days = Math.min(90, Math.max(1, parseInt(url.searchParams.get('days') || '14', 10) || 14));
+      const r = forecasts.report(days);
+      const names = Object.fromEntries(engine.stations().map((x) => [x.sid, x.name]));
+      for (const x of [...r.hardest, ...r.easiest]) x.name = names[x.sid] || x.sid;
+      return sendJson(req, res, r);
+    }
+    if (p === '/api/bench') {
+      const list = bench.reports();
+      return sendJson(req, res, { available: bench.available, running: bench.running, nightAt: CONFIG.nightAt, reports: list, latest: bench.latest(), inputs: bench.inputs().why || null });
+    }
+    if (p === '/api/bench/report.md') {
+      const day = url.searchParams.get('day') || bench.reports().at(-1);
+      const md = day && /^\d{4}-\d{2}-\d{2}$/.test(day) ? bench.markdown(day) : null;
+      return md ? send(req, res, 200, md, 'text/markdown; charset=utf-8') : sendJson(req, res, { error: 'aucun rapport' }, 404);
+    }
+    if (p === '/api/bench/run' && req.method === 'POST') {
+      if (!bench.available) return sendJson(req, res, { ok: false, why: 'banc absent (VN_BENCH_BIN)' }, 400);
+      if (bench.running) return sendJson(req, res, { ok: false, why: 'banc déjà en cours' }, 409);
+      bench.run(dayOf(nowS())).catch((err) => log(`[banc] échec : ${err.message}`));
+      return sendJson(req, res, { ok: true, started: true });
+    }
+
+    // ── Notifications (lib/notify.mjs) ──
+    if (p === '/api/notify' && req.method === 'GET') return sendJson(req, res, notifier.status());
+    if (p === '/api/notify' && req.method === 'POST') {
+      let patch;
+      try { patch = JSON.parse((await readBody(req, 64 << 10)).toString('utf8') || '{}'); } catch { return sendJson(req, res, { error: 'JSON attendu' }, 400); }
+      try { notifier.update(patch); } catch (err) { return sendJson(req, res, { error: err.message }, 400); }
+      log('[notif] réglages modifiés depuis la page');
+      return sendJson(req, res, notifier.status());
+    }
+    if (p === '/api/notify/test' && req.method === 'POST') return sendJson(req, res, await notifier.test());
+    if (p === '/api/notify/digest' && req.method === 'POST') {
+      engine.clock(nowS(), mono());
+      const today = engine.localDay(nowS());
+      const label = new Intl.DateTimeFormat('fr-FR', { timeZone: 'Europe/Luxembourg', weekday: 'long', day: 'numeric', month: 'long' }).format(new Date());
+      const msg = notifier.buildDigest({ digest: engine.digest(today - 1), note: forecasts.readNote(dayOf(nowS() - 86400)) || forecasts.score(dayOf(nowS() - 86400)),
+        stations: engine.stations(), devices: Object.values(hub.devices), dateLabel: label });
+      const r = url.searchParams.get('send') === '1' ? await notifier.send(msg, { force: true, kind: 'resume' }) : { ok: true, preview: true };
+      return sendJson(req, res, { ...r, message: msg });
+    }
 
     // ── Jumeau d'écran : instantané + évènements ──
     if (p === '/api/twin/snapshot') {
@@ -273,6 +409,7 @@ const server = createServer(async (req, res) => {
       if (mf[2] === 'report') {
         const d = hub.seen(req, { lastReport: nowS(), took: url.searchParams.get('took') || '', result: url.searchParams.get('result') || '' });
         log(`[sync] ${d.id} (${d.fw || '?'}) : ${d.result || '?'} · adopté : ${d.took || 'rien'}`);
+        notifier.device(d).catch(() => {});
         return sendJson(req, res, { ok: true });
       }
       if (!s || !s.files[mf[2]]) return sendJson(req, res, { error: 'instantané expiré : relire /sync/manifest' }, 410);
@@ -304,6 +441,11 @@ server.listen(CONFIG.port, CONFIG.host, () => {
   log(`VelohNav Ops en ligne ${engine.version()} · http://${CONFIG.host}:${CONFIG.port} · données ${CONFIG.dataDir}` +
       `${CONFIG.token ? ' · jeton requis pour /sync et /api' : ''}`);
   collector.start();
+  // premier démarrage avec une archive d'instantanés mais sans historique long : l'archive le remplit
+  if (!history.files().length && store.archives().length) {
+    importArchive({ dirs: snapshotDirs(store.archiveDir), history, makeEngine: scratchEngine, log })
+      .catch((err) => log(`[historique] import de l'archive : ${err.message}`));
+  }
 });
 
 let stopping = false;

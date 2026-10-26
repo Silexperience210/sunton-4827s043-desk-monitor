@@ -90,6 +90,16 @@ export class Engine {
   crc32(bytes) { return this._with(bytes, (p, n) => this.x.vn_crc32(p, n)) >>> 0; }
   summary() { this.x.vn_summary_json(); return JSON.parse(this._outText()); }
   ring() { this.x.vn_ring_json(); return JSON.parse(this._outText()); }
+  // ── historique long, prévisions, notifications ──
+  ringHead() { return this.x.vn_ring_head(); }              // début de la tranche 5 min la plus récente (0 = aucune)
+  slot(back) { this.x.vn_slot_json(back | 0); return JSON.parse(this._outText()); }
+  stations() { this.x.vn_stations_json(); return JSON.parse(this._outText()); }
+  forecast() { this.x.vn_forecast_json(); return JSON.parse(this._outText()); }
+  alerts() { this.x.vn_alerts_json(); return JSON.parse(this._outText()); }
+  days() { this.x.vn_days_json(); return JSON.parse(this._outText()); }
+  daysStation(i) { this.x.vn_days_station_json(i | 0); return JSON.parse(this._outText()); }
+  digest(day) { this.x.vn_digest_json(day | 0); return JSON.parse(this._outText()); }
+  localDay(t) { return this.x.vn_local_day(t); }
 
   // ── jumeau d'écran ──
   uiInit() { return this.x.vn_ui_init() === 1; }

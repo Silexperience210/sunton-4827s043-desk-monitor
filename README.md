@@ -48,7 +48,14 @@ compilé en WebAssembly) sur une machine allumée en permanence — Umbrel, Rasp
   (profils, historique 24 h, résumés par jour) est repris du serveur s'il vaut mieux que celui de la
   carte, vérifié (taille, CRC32, contrôles de `Model::load`) avant d'être écrit ; et une carte plus
   apprise que le serveur lui envoie ce qu'elle sait ;
-- **l'archive pour le banc** (`bench_prevision --reel`) se constitue toute seule, sans câble série.
+- **l'archive pour le banc** (`bench_prevision --reel`) se constitue toute seule, sans câble série ;
+- **historique long** : chaque tranche de 5 min gardée sans limite (l'archive existante y est versée au
+  premier démarrage) ; la page trace le réseau ou une station sur 24 h, 7 jours, 4 semaines, 3 mois ;
+- **erreur des prévisions mesurée en continu** : tous les quarts d'heure, ce que l'écran afficherait à
+  +15 min… +4 h est noté, puis comparé au relevé (contre la persistance et le profil seul, règle du banc) ;
+  et **chaque nuit, le banc natif rejoue l'archive** et publie son rapport ;
+- **notifications sur le téléphone** (ntfy) : station vide ou pleine qui dure, flux muet ou figé, Sunton
+  resynchronisé, et un **résumé chaque matin** (la veille, l'erreur de la prévision, l'état du moment).
 
 ![Jumeau de l'écran](docs/en-ligne.png)
 
@@ -592,6 +599,7 @@ python3 ../tools/bench_grille.py --config "N12=profil_n=12" --config "N24=" --re
 ../.venv/bin/python ../tools/test_carte_dump.py   # liaison « dump » simulée sur un pseudo-terminal (38 vérifications)
 python3 ../tools/test_bench_reel.py              # banc --reel sur 9 semaines d'une « carte simulée » (28 vérifications, ~1 min)
 make sync_sim && node ../online/test/sync.e2e.mjs # synchro du firmware contre le vrai serveur en ligne (10 vérifications)
+make bench_prevision && node ../online/test/features.test.mjs   # historique long, note des prévisions, notifications, banc de nuit (82 vérifications)
 ```
 
 ### Données réelles de la carte : vidage série et banc `--reel`

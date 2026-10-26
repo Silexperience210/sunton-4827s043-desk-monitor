@@ -367,6 +367,7 @@ EXPORT(vn_summary_json) size_t vn_summary_json() {
   j.num("lastUpdate", (double)g_model.lastUpdate);
   j.num("feedUpdated", (double)g_model.feedUpdated);
   j.num("fetchErrors", g_model.fetchErrors);
+  j.boolean("feedFrozen", g_model.alertCount[AL_FEED_FROZEN] > 0);
   j.num("version", g_model.version);
   j.num("stations", g_model.n);
   j.num("learnSince", (double)g_model.learnSince);
@@ -433,3 +434,250 @@ EXPORT(vn_ring_json) size_t vn_ring_json() {
   s_out += "]";
   return s_out.size();
 }
+
+// ════════════════════════════════════════════════════════════════════
+// Exports pour l'historique long, la mesure des prévisions, les notifications
+// ════════════════════════════════════════════════════════════════════
+static void numOrNull(std::string & s, double v, const char * fmt = "%.4g") {
+  if (!isfinite(v)) { s += "null"; return; }
+  char b[32];
+  if (v == (double)(long long)v && fabs(v) < 9e15) snprintf(b, sizeof(b), "%lld", (long long)v);
+  else snprintf(b, sizeof(b), fmt, v);
+  s += b;
+}
+
+// Instant de la tranche 5 min la plus récente de l'anneau (0 = aucune) : l'hôte détecte ainsi qu'un
+// relevé vient d'ouvrir une tranche (la précédente est alors définitive : retraits et retours compris).
+EXPORT(vn_ring_head) double vn_ring_head() {
+  int idx = g_model.ringIndex(0);
+  return idx < 0 ? 0 : (double)g_model.ringT[idx];
+}
+
+// Une tranche de l'anneau : réseau (NetSample), météo de la tranche, vélos de chaque station dans
+// l'ordre du modèle (la valeur de l'anneau : celle que Model::load relira et que le banc rejoue).
+EXPORT(vn_slot_json) size_t vn_slot_json(int back) {
+  s_out.clear();
+  int idx = g_model.ringIndex(back);
+  if (idx < 0) { s_out = "null"; return s_out.size(); }
+  const NetSample & ns = g_model.net[idx];
+  char b[96];
+  snprintf(b, sizeof(b), "{\"t\":%lld,\"n\":", (long long)g_model.ringT[idx]);
+  s_out += b;
+  if (ns.avail == 0xFFFF) s_out += "null";
+  else {
+    snprintf(b, sizeof(b), "[%u,%u,%u,%u,%u,%u,%u,%u]", ns.avail, ns.docks, ns.dis, ns.bikesRaw, ns.dep, ns.ret, ns.empty, ns.full);
+    s_out += b;
+  }
+  s_out += ",\"w\":";
+  if (!netWxKnown(ns)) s_out += "null";
+  else {
+    s_out += "[";
+    numOrNull(s_out, ns.wxTemp); s_out += ",";
+    numOrNull(s_out, ns.wxRain / 10.0, "%.1f"); s_out += ",";
+    numOrNull(s_out, ns.wxProb == WX_NA ? NAN : ns.wxProb); s_out += ",";
+    numOrNull(s_out, ns.wxWind == WX_NA ? NAN : ns.wxWind); s_out += ",";
+    numOrNull(s_out, ns.wxCode == WX_NA ? NAN : ns.wxCode);
+    s_out += "]";
+  }
+  s_out += ",\"b\":[";
+  const uint8_t * row = g_model.ring + (size_t)idx * VN_MAX_ST;
+  for (int i = 0; i < g_model.n; i++) {
+    if (i) s_out += ",";
+    if (row[i] == 255) s_out += "null"; else { snprintf(b, sizeof(b), "%u", row[i]); s_out += b; }
+  }
+  s_out += "]}";
+  return s_out.size();
+}
+
+// Stations dans l'ordre du modèle : identité, relevé courant, dérivés (statut, échéances, besoin, risque)
+EXPORT(vn_stations_json) size_t vn_stations_json() {
+  s_out.clear();
+  J j(s_out);
+  j.open(nullptr, '[');
+  for (int i = 0; i < g_model.n; i++) {
+    const Station & s = g_model.st[i];
+    j.open(nullptr, '{');
+    j.str("sid", s.sid); j.str("name", s.name); j.num("cap", s.cap);
+    j.num("lat", s.lat); j.num("lon", s.lon);
+    j.boolean("active", s.active); j.boolean("live", s.live);
+    j.num("bikes", s.bikes); j.num("elec", s.elec); j.num("docks", s.docks);
+    j.num("bikesDis", s.bikesDis); j.num("docksDis", s.docksDis);
+    j.boolean("renting", s.renting); j.boolean("returning", s.returning);
+    j.num("status", s.status); j.str("statusText", statusShort(s.status));
+    j.num("etaEmpty", s.etaEmpty); j.num("etaFull", s.etaFull);
+    j.num("need", s.need); j.num("risk", s.risk); j.num("conf", s.conf);
+    j.num("fc60", s.fc[12]);
+    j.num("emptySince", (double)s.emptySince); j.num("fullSince", (double)s.fullSince);
+    j.close('}');
+  }
+  j.close(']');
+  return s_out.size();
+}
+
+// Prévisions de chaque station, comme sim/bench_reel.cpp les note : modèle à +15/+30/+60/+120/+240 min
+// (st.fc, prolongée par Model::project au-delà de 2 h), persistance (le relevé), profil seul (relevé +
+// confiance × mouvement du profil, sans tendance). Valeurs ARRONDIES comme le banc avant de les comparer
+// (roundf) : [relevé, modèle ×5, profil seul ×5, échéance vide, échéance pleine, capacité].
+// null = station que le banc n'évalue pas (inconnue, fermée, sans valeur dans la tranche courante).
+static const int FC_HK[5] = { 3, 6, 12, 24, 48 };
+EXPORT(vn_forecast_json) size_t vn_forecast_json() {
+  s_out.clear();
+  const int64_t t = plat::now();
+  const int head = g_model.ringIndex(0);
+  char b[64];
+  snprintf(b, sizeof(b), "{\"t\":%lld,\"slot\":%lld,\"net60\":", (long long)t, head < 0 ? 0LL : (long long)g_model.ringT[head]);
+  s_out += b;
+  numOrNull(s_out, roundf(g_model.netFc[12]));
+  s_out += ",\"bikes\":";
+  numOrNull(s_out, g_model.tot.bikes);
+  s_out += ",\"st\":[";
+  static float tmp[49], cf[49];
+  const uint8_t * row = head < 0 ? nullptr : g_model.ring + (size_t)head * VN_MAX_ST;
+  for (int i = 0; i < g_model.n; i++) {
+    if (i) s_out += ",";
+    const Station & st = g_model.st[i];
+    if (!row || row[i] == 255 || !st.live || st.status == ST_CLOSED) { s_out += "null"; continue; }
+    g_model.project(i, t, 5, 49, tmp, cf);
+    float p0, n0, ph, nh;
+    const bool has0 = g_model.profileAt(i, t, p0, n0);
+    int v[16], k = 0;
+    v[k++] = st.bikes;
+    for (int h = 0; h < 5; h++) v[k++] = (int)roundf(FC_HK[h] < VN_FC_STEPS ? st.fc[FC_HK[h]] : tmp[FC_HK[h]]);
+    for (int h = 0; h < 5; h++) {
+      float pr = st.bikes;
+      if (has0 && g_model.profileAt(i, t + (int64_t)FC_HK[h] * 300, ph, nh))
+        pr = fminf((float)st.capEff(), fmaxf(0.f, st.bikes + cf[FC_HK[h]] * (ph - p0)));
+      v[k++] = (int)roundf(pr);
+    }
+    v[k++] = st.etaEmpty; v[k++] = st.etaFull; v[k++] = st.capEff();
+    s_out += "[";
+    for (int q = 0; q < k; q++) { if (q) s_out += ","; snprintf(b, sizeof(b), "%d", v[q]); s_out += b; }
+    s_out += "]";
+  }
+  s_out += "]}";
+  return s_out.size();
+}
+
+// Alertes en cours (liste de la carte, déjà triée par gravité puis risque) avec la station
+EXPORT(vn_alerts_json) size_t vn_alerts_json() {
+  s_out.clear();
+  J j(s_out);
+  j.open(nullptr, '[');
+  for (int k = 0; k < g_model.nAlerts; k++) {
+    const Alert & a = g_model.alerts[k];
+    j.open(nullptr, '{');
+    j.num("type", a.type); j.num("sev", a.sev); j.num("st", a.st);
+    j.num("minutes", a.minutes); j.num("value", a.value);
+    if (a.st >= 0 && a.st < g_model.n) {
+      const Station & s = g_model.st[a.st];
+      j.str("sid", s.sid); j.str("name", s.name);
+      j.num("bikes", s.bikes); j.num("docks", s.docks); j.num("cap", s.capEff()); j.num("need", s.need);
+      j.num("fc60", s.fc[12]);
+      if (a.type == AL_UNUSUAL) { char t[128]; anomAlertText(s, t, sizeof(t)); j.str("text", t); }
+    }
+    j.close('}');
+  }
+  j.close(']');
+  return s_out.size();
+}
+
+// Résumés par jour (vue Service) : un objet par jour stocké, du plus ancien au plus récent, sommés sur les
+// heures de service comme svcSum (jour « relevé » : au moins une heure pleinement relevée).
+EXPORT(vn_days_json) size_t vn_days_json() {
+  s_out.clear();
+  J j(s_out);
+  const DayBook & b = g_model.days;
+  j.open(nullptr, '[');
+  for (int k = b.count - 1; k >= 0; k--) {
+    const DayNet * d = b.dayAt(k);
+    if (!d || !d->day) continue;
+    SvcCount c;
+    svcSum(b, d->day, d->day, DAY_NH, c);
+    int y, m, dd;
+    dayCivil(d->day, y, m, dd);
+    char date[16], lab[24], pct[24];
+    snprintf(date, sizeof(date), "%04d-%02d-%02d", y, m, dd);
+    svcDayLabel(d->day, lab, sizeof(lab));
+    svcPct(pct, sizeof(pct), c.avail(), c.obs);
+    j.open(nullptr, '{');
+    j.num("day", d->day); j.str("date", date); j.str("label", lab); j.num("dow", d->dow);
+    j.boolean("holiday", (d->flags & DF_HOLIDAY) != 0); j.boolean("recorded", c.days > 0);
+    j.num("slots", c.slots); j.num("slotsMax", c.slotsMax);
+    j.num("obs", c.obs); j.num("avail", c.avail()); j.num("closed", c.closed); j.num("empty", c.empty); j.num("full", c.full);
+    j.num("evEmpty", c.evEmpty); j.num("evFull", c.evFull); j.str("availText", pct);
+    j.close('}');
+  }
+  j.close(']');
+  return s_out.size();
+}
+
+// Une station, jour par jour (DaySt) : tranches observées / hors service / vides / pleines
+EXPORT(vn_days_station_json) size_t vn_days_station_json(int i) {
+  s_out.clear();
+  J j(s_out);
+  const DayBook & b = g_model.days;
+  j.open(nullptr, '[');
+  if (i >= 0 && i < g_model.n) {
+    for (int k = b.count - 1; k >= 0; k--) {
+      const DayNet * d = b.dayAt(k);
+      const DaySt * r = b.stAt(k);
+      if (!d || !d->day || !r) continue;
+      const DaySt & x = r[i];
+      j.open(nullptr, '{');
+      j.num("day", d->day); j.num("obs", x.obs); j.num("closed", x.closed); j.num("empty", x.empty); j.num("full", x.full);
+      j.close('}');
+    }
+  }
+  j.close(']');
+  return s_out.size();
+}
+
+// Résumé d'un jour pour le message du matin : disponibilité, ruptures, pires stations, problèmes
+// récurrents (règles et phrases de core/service, celles de l'écran Service)
+EXPORT(vn_digest_json) size_t vn_digest_json(int day) {
+  s_out.clear();
+  J j(s_out);
+  const DayBook & b = g_model.days;
+  SvcCount c;
+  svcSum(b, day, day, DAY_NH, c);
+  char pct[24], lab[24], hrs[24];
+  svcPct(pct, sizeof(pct), c.avail(), c.obs);
+  svcDayLabel(day, lab, sizeof(lab));
+  j.open(nullptr, '{');
+  j.num("day", day); j.str("label", lab); j.boolean("recorded", c.days > 0);
+  j.str("availText", pct); j.num("evEmpty", c.evEmpty); j.num("evFull", c.evFull);
+  svcPct(pct, sizeof(pct), c.empty, c.obs); j.str("emptyText", pct);
+  svcPct(pct, sizeof(pct), c.full, c.obs); j.str("fullText", pct);
+  svcPct(pct, sizeof(pct), c.closed, c.obs); j.str("closedText", pct);
+  svcHours(hrs, sizeof(hrs), c.obs); j.str("obsHours", hrs);
+  static StRank r[VN_MAX_ST];
+  int skipped = 0;
+  int n = svcRank(b, g_model, day, day, r, VN_MAX_ST, &skipped);
+  svcSortWorst(r, n);
+  j.open("worst", '[');
+  for (int k = 0; k < n && k < 3; k++) {
+    if (!(r[k].bad() > 0)) break;
+    svcPct(pct, sizeof(pct), r[k].closed + r[k].empty + r[k].full, r[k].obs);
+    j.open(nullptr, '{');
+    j.str("name", g_model.st[r[k].st].name); j.str("sid", g_model.st[r[k].st].sid); j.str("badText", pct);
+    j.close('}');
+  }
+  j.close(']');
+  static Recur rec[24];
+  int nr = svcRecurrent(b, g_model, day + 1, rec, 24);
+  j.num("recurrent", nr);
+  j.open("recur", '[');
+  for (int k = 0; k < nr && k < 5; k++) {
+    char t[160];
+    svcRecurText(rec[k], t, sizeof(t));
+    j.open(nullptr, '{');
+    j.str("name", rec[k].st >= 0 && rec[k].st < g_model.n ? g_model.st[rec[k].st].name : "?");
+    j.str("text", t);
+    j.close('}');
+  }
+  j.close(']');
+  j.close('}');
+  return s_out.size();
+}
+
+EXPORT(vn_local_day) int vn_local_day(double t) { return localDay((int64_t)t); }
