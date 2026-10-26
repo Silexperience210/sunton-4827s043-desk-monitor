@@ -69,7 +69,8 @@ async function startEngine(snap) {
   engine.clock(epoch(), mono());
   engine.uiNet(WIFI.CONNECTED, -48, snap.name || 'serveur en ligne', 'Disponibilités en temps réel…');
   engine.uiInit();
-  engine.uiSync(new URL('.', location.href).href.replace(/\/$/, ''), 2, snap.t,
+  if (demo) engine.uiSync('aperçu autonome (sans serveur)', 2, snap.t, 'Aperçu : instantané réel du serveur, rejoué à son heure');
+  else engine.uiSync(new URL('.', location.href).href.replace(/\/$/, ''), 2, snap.t,
     `Jumeau : état du serveur repris (évènement ${snap.seq}), puis rejoué en continu`);
   netState = WIFI.CONNECTED;
   return r;
@@ -153,6 +154,7 @@ $('btnCrisp').addEventListener('click', (e) => {
   bezel.classList.toggle('is-crisp', crisp);
   present();
 });
+if (!bezel.requestFullscreen) $('btnFull').hidden = true;     // iPhone : pas de plein écran pour un élément
 $('btnFull').addEventListener('click', () => {
   if (document.fullscreenElement) document.exitFullscreen?.();
   else bezel.requestFullscreen?.().catch(() => {});

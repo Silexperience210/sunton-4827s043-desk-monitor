@@ -51,7 +51,7 @@ node online/server.mjs --import /tmp/vidage                  # puis lancer le se
 | `VN_DATA` | `./data` (`/data` en Docker) | état appris, registre des écrans, archive |
 | `VN_TOKEN` | — | jeton exigé par `/sync` et `/api` (Bearer). À définir dès que le port sort du réseau local |
 | `VN_REFRESH_S` | `60` | période de `station_status` (30 s au moins), comme Réglages → Rafraîchissement |
-| `VN_SAVE_S` | `1800` | sauvegarde sur disque (la carte : 30 min) ; aussi à l'arrêt |
+| `VN_SAVE_S` | `600` | sauvegarde sur disque (la carte : 30 min) ; aussi à l'arrêt (`docker stop`, Ctrl-C) |
 | `VN_ARCHIVE_HOURS` | `6,18` | instantanés pour le banc (heure de Luxembourg) ; vide = aucun |
 | `VN_ARCHIVE_KEEP_DAYS` | `0` | durée de l'archive (0 = tout garder, ~0,9 Mo par jour) |
 | `VN_NAME` | `VelohNav Ops en ligne` | nom montré aux cartes et au jumeau |

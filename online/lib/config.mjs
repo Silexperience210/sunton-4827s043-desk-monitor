@@ -29,7 +29,7 @@ export const CONFIG = {
   infoRefreshS: 3600,                                    // VN_INFO_REFRESH_S
   typesRefreshS: 86400,                                  // VN_TYPES_REFRESH_S
   wxRefreshS: 900,                                       // VN_WX_REFRESH_S
-  savePeriodS: Math.max(60, int('VN_SAVE_S', 1800)),     // VN_SAVE_PERIOD_S
+  savePeriodS: Math.max(60, int('VN_SAVE_S', 600)),       // la carte : VN_SAVE_PERIOD_S (30 min) ; ici 10 min, une coupure franche coûte moins
 
   // Archive des instantanés pour le banc (sim/bench_prevision --reel) : même disposition que
   // tools/carte_dump.py — <données>/archive/AAAAMMJJ-HHMMSS/{vn_hist.bin, vn_prof.bin, vn_days.bin,
