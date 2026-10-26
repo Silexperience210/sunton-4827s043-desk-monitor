@@ -97,7 +97,7 @@ export class History {
     const recs = this._read(f);
     this.cache.delete(day);
     this.cache.set(day, { key, recs });
-    if (this.cache.size > 120) this.cache.delete(this.cache.keys().next().value);
+    if (this.cache.size > 45) this.cache.delete(this.cache.keys().next().value);   // ≈ 15 Mo au plus
     return recs;
   }
   _scanTail() {
@@ -200,9 +200,9 @@ export class History {
   // ── lecture ──
   range() {
     const fs = this.files();
-    let slots = 0, bytes = 0;
+    let bytes = 0;
     for (const f of fs) bytes += f.bytes;
-    return { days: fs.length, from: fs[0]?.day || null, to: fs.at(-1)?.day || null, bytes, lastT: this.lastT, slots };
+    return { days: fs.length, from: fs[0]?.day || null, to: fs.at(-1)?.day || null, bytes, lastT: this.lastT };
   }
   list() {
     return this.files().map((f) => ({ day: f.day, bytes: f.bytes, gz: f.gz }));

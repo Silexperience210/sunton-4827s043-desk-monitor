@@ -19,7 +19,7 @@ import { createServer } from 'node:http';
 import { cpSync } from 'node:fs';
 import { loadEngine, FEED } from '../public/vn-engine.js';
 import { History, importArchive, snapshotDirs, dayOf, parseDay } from '../lib/history.mjs';
-import { ForecastLog, HK } from '../lib/forecast.mjs';
+import { ForecastLog, HK, replayForecasts } from '../lib/forecast.mjs';
 import { Notifier } from '../lib/notify.mjs';
 import { NightBench, parseBenchReport } from '../lib/bench.mjs';
 import { luxParts } from '../lib/store.mjs';
@@ -272,6 +272,19 @@ else {
   ok(j.evalDays >= 2 && j.perDay.length >= 3 && j.verdicts.length >= 2 && j.span?.coverPct >= 95, 'jours, verdicts et couverture lus');
   ok(nb.latest()?.day === '2026-03-06' && /## 1\. Prévision/.test(nb.markdown('2026-03-06')), 'rapport Markdown et extrait gardés');
   console.log(`   banc : MAE +60 modèle ${j.rows[0].h[2][0]} / persistance ${j.rows[0].h[2][1]} sur ${j.evalDays} jours, ${j.durationS} s`);
+  // même archive, deux mesures indépendantes : le banc natif (C++) et le journal du serveur (rejeu au pas de 5 min)
+  const fl3 = new ForecastLog(join(tmp, 'banc'), H3);
+  const e3 = await loadEngine(core, quiet);
+  const days3 = H3.list().map((x) => x.day);
+  e3.clock(H3.records(days3[0], days3[0])[0].t, 1000); e3.init(); e3.settings({ refreshSec: 60 });
+  const nlog = replayForecasts({ engine: e3, history: H3, forecastLog: fl3, from: days3[0], to: days3.at(-1) });
+  const acc = { m: [0, 0], p: [0, 0], q: [0, 0] };
+  for (const d of days3) { const sc = fl3.score(d); for (const [k, col] of [['m', 'model'], ['p', 'per'], ['q', 'prof']]) { acc[k][0] += sc[col][2].s; acc[k][1] += sc[col][2].n; } }
+  const mae = (a) => a[0] / a[1];
+  const ref = j.rows[0].h[2];
+  ok(nlog > 150 && Math.abs(mae(acc.p) - ref[1]) < 0.03, `persistance +60 : serveur ${mae(acc.p).toFixed(3)} · banc ${ref[1]}`);
+  ok(Math.abs(mae(acc.m) - ref[0]) < 0.08 && Math.abs(mae(acc.q) - ref[2]) < 0.08, `prévision +60 : serveur ${mae(acc.m).toFixed(3)} · banc ${ref[0]} ; profil seul ${mae(acc.q).toFixed(3)} · ${ref[2]}`);
+  console.log(`   même archive, MAE +60 — journal du serveur : ${mae(acc.m).toFixed(3)} / ${mae(acc.p).toFixed(3)} / ${mae(acc.q).toFixed(3)} · banc natif : ${ref.join(' / ')} (prévision / persistance / profil seul)`);
 
   console.log('6. le vrai serveur : import automatique, API, jeton, notification de test vers un faux ntfy, banc à la demande');
   const got = [];

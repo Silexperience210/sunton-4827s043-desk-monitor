@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { atomicWrite, luxParts } from './store.mjs';
 import { dayOf, SLOT_S } from './history.mjs';
+import { FEED } from '../public/vn-engine.js';
 
 export const HK = [3, 6, 12, 24, 48];                     // horizons en tranches de 5 min
 export const HL = ['+15 min', '+30 min', '+60 min', '+120 min', '+240 min'];
@@ -240,4 +241,42 @@ export class ForecastLog {
       lastSlot: this.lastSlot,
     };
   }
+}
+
+// ── Rejeu de l'historique dans un moteur neuf, au pas de 5 min ──
+// Chaque tranche redevient un station_status GBFS (et station_information toutes les heures) ingéré par le
+// moteur à son heure ; le journal note les prévisions comme en direct. Sert à vérifier la mesure en continu
+// contre le banc natif (même archive, même règle : test/features.test.mjs) et à l'exemple de l'aperçu.
+// Sans météo (le banc, lui, la rejoue) : écart attendu de l'ordre du centième de vélo.
+export function replayForecasts({ engine, history, forecastLog, from, to }) {
+  const recs = history.records(from, to);
+  if (!recs.length) return 0;
+  let ms = 1000, logged = 0, infoKey = '';
+  engine.clock(recs[0].t, ms);
+  for (let k = 0; k < recs.length; k++) {
+    const r = recs[k];
+    const t = r.t + 20;
+    ms += SLOT_S * 1000;
+    engine.clock(t, ms);
+    engine.setFetching(true);
+    const key = r.st.map((s) => `${s[0]}:${s[2]}`).join(',');
+    if (key !== infoKey || k % 12 === 0) {
+      infoKey = key;
+      engine.ingest(FEED.INFO, true, 200, JSON.stringify({ last_updated: new Date(t * 1000).toISOString(), ttl: 300, version: '3.0', data: { stations: r.st.map((s) => ({
+        station_id: s[0], name: [{ text: s[1], language: 'fr' }], lat: s[3], lon: s[4], address: '', capacity: s[2] })) } }), 300, 0);
+    }
+    const iso = new Date(t * 1000).toISOString().replace('.000', '');
+    const stations = [];
+    r.st.forEach((s, i) => {
+      const b = r.b[i];
+      if (b === null || b === undefined) return;
+      const cap = Math.max(s[2], b);
+      stations.push({ station_id: s[0], num_vehicles_available: b, vehicle_types_available: [{ vehicle_type_id: 'electrical', count: b }], num_vehicles_disabled: 0,
+        num_docks_available: cap - b, num_docks_disabled: 0, is_installed: true, is_renting: true, is_returning: true, last_reported: iso });
+    });
+    engine.ingest(FEED.STATUS, true, 200, JSON.stringify({ last_updated: iso, ttl: 60, version: '3.0', data: { stations } }), 300, 900);
+    engine.setFetching(false);
+    if (forecastLog.capture(engine)) logged++;
+  }
+  return logged;
 }

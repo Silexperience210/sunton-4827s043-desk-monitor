@@ -57,6 +57,8 @@ function niceTicks(min, max, count = 4) {
   for (let v = lo; v <= hi + step / 1e6; v += step) out.push(+v.toFixed(10));
   return out;
 }
+// largeur approximative d'un libellé d'axe (11 px, Inter) + marge
+const labelWidth = (labels) => Math.max(...labels.map((l) => String(l).length)) * 6.2 + 12;
 // décimales des graduations : assez pour que deux graduations ne s'écrivent jamais pareil
 const tickDecimals = (yt) => { const st = yt.length > 1 ? yt[1] - yt[0] : 1; return st >= 1 ? 0 : st >= 0.1 ? 1 : 2; };
 // graduations de temps en heure locale : toutes les k heures ou tous les k jours, ~6 au plus
@@ -151,8 +153,14 @@ function lineChart(host, opts) {
   // axe des x
   const ax = svgEl('g');
   if (cat) {
+    // une graduation sur k, k choisi d'après la largeur des libellés ; la dernière seulement si elle tombe loin
+    // de la précédente : jamais deux libellés l'un sur l'autre
+    const lw = labelWidth(opts.x);
+    // (le premier libellé s'aligne à gauche, le dernier à droite : 1,25 et 1,5 largeurs de marge)
+    const k = n > 1 ? Math.max(1, Math.ceil(1.25 * lw / (iw / (n - 1)))) : 1;
     opts.x.forEach((lab, i) => {
-      if (n > 8 && i % Math.ceil(n / 7) !== 0 && i !== n - 1) return;
+      if (i % k !== 0 && !(i === n - 1 && ((n - 1) % k) * (iw / (n - 1)) >= 1.5 * lw)) return;
+      if (i % k === 0 && i !== n - 1 && i > 0 && (n - 1 - i) * (iw / (n - 1)) < 1.5 * lw && (n - 1) % k === 0) return;
       const tx = svgEl('text', { x: X(i), y: H - 8, 'text-anchor': i === 0 && n > 1 ? 'start' : i === n - 1 && n > 1 ? 'end' : 'middle', class: 'vaxis' });
       tx.textContent = lab;
       ax.appendChild(tx);
@@ -170,7 +178,11 @@ function lineChart(host, opts) {
   const step = opts.step || 0;
   for (const s of series) {
     let d = '', area = '', open = false, segStart = 0;
-    const closeArea = (iEnd) => { if (s.area && open) area += `L${X(iEnd).toFixed(1)},${Y(Math.max(lo, 0)).toFixed(1)}L${X(segStart).toFixed(1)},${Y(Math.max(lo, 0)).toFixed(1)}Z`; };
+    const lone = [];                                          // points isolés (entre deux trous) : un point, pas un trait
+    const closeArea = (iEnd) => {
+      if (open && iEnd === segStart) lone.push(iEnd);
+      if (s.area && open) area += `L${X(iEnd).toFixed(1)},${Y(Math.max(lo, 0)).toFixed(1)}L${X(segStart).toFixed(1)},${Y(Math.max(lo, 0)).toFixed(1)}Z`;
+    };
     let last = -1;
     s.values.forEach((v, i) => {
       if (v === null || v === undefined || !Number.isFinite(v)) { if (open) { closeArea(last); open = false; } return; }
@@ -184,6 +196,7 @@ function lineChart(host, opts) {
     if (open) closeArea(last);
     if (s.area && area) svg.appendChild(svgEl('path', { d: area, fill: s.color, 'fill-opacity': 0.1, stroke: 'none' }));
     svg.appendChild(svgEl('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+    for (const i of lone) if (i !== last) svg.appendChild(svgEl('circle', { cx: X(i), cy: Y(s.values[i]), r: 2.5, fill: s.color }));
     // point final + valeur (une seule série : l'étiquette directe suffit)
     if (last >= 0) {
       svg.appendChild(svgEl('circle', { cx: X(last), cy: Y(s.values[last]), r: 4, fill: s.color, stroke: cssVar('--s1') || '#0D1014', 'stroke-width': 2 }));
@@ -219,7 +232,7 @@ function lineChart(host, opts) {
       rows.push({ color: s.color, value: (opts.tipFmt || opts.yFmt || fmtNum)(v), label: s.name });
     });
     if (opts.extraTip) rows.push(...opts.extraTip(i));
-    const title = cat ? opts.x[i] : (opts.tipTitle ? opts.tipTitle(opts.x[i]) : fFull.format(new Date(opts.x[i] * 1000)));
+    const title = cat ? (opts.tipTitleCat ? opts.tipTitleCat(i) : opts.x[i]) : (opts.tipTitle ? opts.tipTitle(opts.x[i]) : fFull.format(new Date(opts.x[i] * 1000)));
     const topV = Math.min(...series.map((s) => (s.values[i] === null || s.values[i] === undefined ? Infinity : Y(s.values[i]))));
     showTip(r.left + window.scrollX + X(i), r.top + window.scrollY + (Number.isFinite(topV) ? topV : m.t), title, rows.length ? rows : [{ value: '—', label: 'pas de relevé' }]);
   };
@@ -291,7 +304,8 @@ function columnChart(host, opts) {
     g.addEventListener('pointerenter', showIt); g.addEventListener('pointerdown', showIt);
     g.addEventListener('pointerleave', off); g.addEventListener('focus', showIt); g.addEventListener('blur', off);
     svg.appendChild(g);
-    if (n <= 10 || i % Math.ceil(n / (W < 520 ? 5 : 9)) === 0 || i === n - 1) {
+    const kk = Math.max(1, Math.ceil(labelWidth(opts.x) / band));
+    if (i % kk === 0 || (i === n - 1 && ((n - 1) % kk) * band >= labelWidth(opts.x))) {
       const tx = svgEl('text', { x: cx, y: H - 8, 'text-anchor': 'middle', class: 'vaxis' });
       tx.textContent = lab;
       svg.appendChild(tx);
@@ -458,7 +472,7 @@ function renderForecast(f, b) {
   // erreur selon l'horizon
   const hl = f.horizons.map((h) => h.replace(' min', '').replace('+', '+ '));
   lineChart($('prevHorizon'), {
-    x: f.horizons, cat: true, yMin: 0,
+    x: ['15 min', '30 min', '1 h', '2 h', '4 h'], cat: true, yMin: 0, tipTitleCat: (i) => `Horizon ${f.horizons[i]}`,
     series: [
       { name: 'Prévision de la carte', color: C.model(), values: f.total.model.map((a) => a.mae) },
       { name: 'Persistance (le relevé)', color: C.per(), values: f.total.per.map((a) => a.mae) },
@@ -516,11 +530,12 @@ function renderBench(b) {
   const ch = el('div', 'vbox');
   box.appendChild(ch);
   lineChart(ch, {
-    x: pd.map((d) => d.day + (d.holiday ? ' (férié)' : '')), cat: true, yMin: 0,
+    x: pd.map((d) => d.day.replace(/^\S+ /, '') + (d.holiday ? '*' : '')), cat: true, yMin: 0,
+    tipTitleCat: (i) => `${pd[i].day}${pd[i].holiday ? ' (férié)' : ''}`,
     series: [{ name: 'Prévision rejouée', color: C.model(), values: pd.map((d) => d.model) }, { name: 'Persistance', color: C.per(), values: pd.map((d) => d.per) }],
     yFmt: (v, d) => fmtNum(v, Math.max(1, d)), tipFmt: (v) => `${fmtNum(v, 2)} vélo`, empty: 'Pas encore de jour évaluable (12 h relevées au moins).', label: 'Banc : erreur à une heure par jour',
   });
-  const tb = el('div');
+  const tb = el('div', 'vscroll');
   box.appendChild(tb);
   table(tb, ['Échantillon', '+15', '+30', '+60', '+120', '+240', 'n (+60)'],
     L.rows.map((r) => [r.name, ...r.h.map((c) => `${fmtNum(c[0], 2)} / ${fmtNum(c[1], 2)} / ${fmtNum(c[2], 2)}`), fmtNum(r.n60)]));
@@ -651,6 +666,13 @@ export function initBoard() {
     try { await api('api/bench/run', { method: 'POST' }); $('benchRun').disabled = true; setTimeout(loadForecast, 8000); } catch (err) { $('benchBody').prepend(el('p', 'txt txt--warn', err.message)); }
   });
   wireNotify();
+  // l'aperçu autonome change de jeu de données (serveur réel / exemple simulé) : tout relire
+  window.addEventListener('vn-board-reload', () => {
+    H.info = null; H.stations = []; H.sid = ''; H.last = null;
+    const i2 = $('histStation'); if (i2) i2.value = '';
+    loaders[current]();
+  });
+  if (DEMO) { const c = $('histCsv'); if (c) c.hidden = true; }
   select(current);
   // nouvelles tranches toutes les 5 min ; redessin à la largeur
   setInterval(() => { if (!document.hidden && current !== 'notif') { H.info = null; loaders[current](); } }, 5 * 60 * 1000);
