@@ -54,9 +54,13 @@ function build() {
       </div>
       <div class="vnfull__plot" id="fePlot"></div>
     </section>
-    <footer class="vnfull__foot" id="feFoot"></footer>`;
+    <footer class="vnfull__foot" id="feFoot"></footer>
+    <div class="vnfull__quitbar"><button class="vnfull__quit" type="button" id="feQuit">Quitter le plein écran</button></div>`;
   document.body.appendChild(root);
   root.querySelector('.vnfull__close').addEventListener('click', () => VN_FULL.leave());
+  // Sortie visible en bas au centre : le coin supérieur droit est souvent masqué par les boutons de
+  // l'application qui affiche la page (constat de Claude, valable aussi pour cette vue).
+  root.querySelector('#feQuit').addEventListener('click', () => VN_FULL.leave());
   root.addEventListener('click', (e) => { if (e.target === root) VN_FULL.leave(); });
 }
 
