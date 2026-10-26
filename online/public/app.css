@@ -103,3 +103,4 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text); }
 .frames { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
 .rotate { display: none; margin: 0; color: var(--accent); font-size: 12px; }
 @media (orientation: portrait) and (max-width: 640px) { .rotate { display: block; } }
+@media (max-width: 640px) { .stage__meta { order: 3; flex-basis: 100%; } }
