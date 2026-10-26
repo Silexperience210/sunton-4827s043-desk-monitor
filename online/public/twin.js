@@ -195,7 +195,12 @@ function leaveFull() {
   if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
   if (maxMode) setMax(false);
 }
-$('btnFull').addEventListener('click', () => (maxMode || document.fullscreenElement ? leaveFull() : enterFull()));
+// Le plein écran passe par la vue native (plein.js) : le jumeau est une image de 480 × 272, l'agrandir
+// ne peut que grossir des blocs. Repli sur l'ancien comportement si plein.js n'est pas chargé.
+$('btnFull').addEventListener('click', () => {
+  if (window.VN_FULL) return window.VN_FULL.toggle();
+  return maxMode || document.fullscreenElement ? leaveFull() : enterFull();
+});
 bezel.querySelector('.bezel__close')?.addEventListener('click', leaveFull);
 document.addEventListener('fullscreenchange', () => { fullLabel(); layoutMax(); resize(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && maxMode) setMax(false); });

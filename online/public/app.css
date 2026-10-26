@@ -203,3 +203,100 @@ html.vn-max, html.vn-max body { overflow: hidden; }
 .msg__top .when { color: var(--text3); font: 11px var(--mono); }
 .msg__body { margin: 4px 0 0; color: var(--text2); white-space: pre-line; font-size: 12px; overflow-wrap: anywhere; }
 .msg__err { margin: 2px 0 0; color: var(--bad); font-size: 12px; }
+
+/* ── Plein écran natif (public/plein.js) ───────────────────────────────────────────────────────────
+   Le jumeau est une image de 480 × 272 : agrandie, elle ne peut que grossir des blocs. Cette vue
+   redessine les mêmes chiffres en HTML + SVG, donc nets à la résolution de l'écran. */
+.vnfull {
+  position: fixed; inset: 0; z-index: 90; display: grid; gap: clamp(10px, 1.4vh, 22px);
+  grid-template-rows: auto auto 1fr auto;
+  padding: clamp(14px, 1.8vw, 34px); background: var(--bg);
+  font-family: var(--sans); color: var(--text);
+}
+.vnfull__head { display: flex; align-items: baseline; gap: 18px; }
+.vnfull__brand { display: flex; align-items: baseline; gap: 14px; }
+.vnfull__mark { font: 700 clamp(16px, 1.5vw, 26px)/1 var(--mono); letter-spacing: .18em; color: var(--text); }
+.vnfull__sub { font: 500 clamp(11px, .85vw, 15px)/1 var(--sans); color: var(--text3); }
+.vnfull__state { margin-left: auto; display: flex; align-items: baseline; gap: 16px; }
+.vnfull__live {
+  font: 700 clamp(10px, .8vw, 13px)/1 var(--mono); letter-spacing: .16em; color: var(--good);
+  border: 1px solid color-mix(in srgb, var(--good) 45%, transparent); border-radius: 999px; padding: 5px 10px;
+}
+.vnfull__live.is-stale { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+.vnfull__clock { font: 600 clamp(18px, 1.9vw, 32px)/1 var(--mono); font-variant-numeric: tabular-nums; }
+.vnfull__age { font: 500 clamp(11px, .85vw, 15px)/1 var(--sans); color: var(--text3); }
+.vnfull__close {
+  margin-left: 6px; background: var(--s2); color: var(--text2); border: 1px solid var(--border-strong);
+  border-radius: 10px; width: 40px; height: 40px; font-size: 22px; line-height: 1; cursor: pointer;
+}
+.vnfull__close:hover { color: var(--text); border-color: var(--text3); }
+
+.vnfull__kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: clamp(10px, 1.1vw, 20px); }
+.vnfull__kpi {
+  display: flex; flex-direction: column; gap: 6px; padding: clamp(12px, 1.2vw, 22px);
+  background: var(--s1); border: 1px solid var(--border); border-radius: 14px;
+}
+.vnfull__kpi.is-warn { border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+.vnfull__klabel { font: 600 10px/1 var(--mono); letter-spacing: .14em; color: var(--text3); }
+.vnfull__kval {
+  font: 700 clamp(30px, 4.4vw, 82px)/.95 var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -.02em;
+}
+.vnfull__kpi.is-warn .vnfull__kval { color: var(--warn); }
+.vnfull__ksub { font: 500 clamp(11px, .8vw, 14px)/1.2 var(--sans); color: var(--text3); }
+
+.vnfull__chart { display: flex; flex-direction: column; min-height: 0; background: var(--s1); border: 1px solid var(--border); border-radius: 14px; padding: clamp(12px, 1.2vw, 22px); }
+.vnfull__charthead { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+.vnfull__legend { font: 500 12px/1 var(--mono); color: var(--text3); font-variant-numeric: tabular-nums; }
+.vnfull__plot { flex: 1; min-height: 0; position: relative; }
+.vnfull__svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.vnfull__grid { stroke: var(--grid); stroke-width: 1; }
+.vnfull__axis { fill: var(--text3); font: 500 12px var(--mono); }
+.vnfull__area { fill: var(--viz-1); fill-opacity: .12; stroke: none; }
+.vnfull__line { fill: none; stroke: var(--viz-1); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.vnfull__dot { fill: var(--viz-1); }
+.vnfull__empty { color: var(--text3); font: 500 clamp(12px, .95vw, 16px)/1.5 var(--sans); margin: 0; }
+
+.vnfull__foot { display: grid; grid-template-columns: 1.6fr repeat(3, minmax(0, 1fr)); gap: clamp(10px, 1.1vw, 20px); }
+.vnfull__block {
+  display: flex; flex-direction: column; gap: 7px; padding: clamp(12px, 1.1vw, 20px);
+  background: var(--s1); border: 1px solid var(--border); border-radius: 14px; min-width: 0;
+}
+.vnfull__kv { font: 700 clamp(20px, 2.1vw, 38px)/1 var(--sans); font-variant-numeric: tabular-nums; }
+.vnfull__kv.is-warn { color: var(--warn); }
+.vnfull__balance { display: flex; align-items: center; gap: 14px; }
+.vnfull__pct { font: 700 clamp(20px, 2.1vw, 38px)/1 var(--sans); font-variant-numeric: tabular-nums; }
+.vnfull__bar { display: flex; flex: 1; height: clamp(10px, 1vw, 16px); border-radius: 999px; overflow: hidden; background: var(--s3); }
+.vnfull__seg { display: block; }
+.vnfull__seg.is-ok { background: var(--good); }
+.vnfull__seg.is-warn { background: var(--warn); }
+.vnfull__seg.is-bad { background: var(--bad); }
+.vnfull__seg.is-off { background: var(--text3); }
+html.vn-full-open, html.vn-full-open body { overflow: hidden; }
+
+/* Téléphone en portrait : deux colonnes suffisent, la courbe garde la moitié de la hauteur. */
+@media (max-width: 720px), (max-aspect-ratio: 1/1) {
+  .vnfull__kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .vnfull__foot { grid-template-columns: 1fr 1fr; }
+  .vnfull__sub { display: none; }
+}
+
+/* Plein écran natif — corrections après relecture (état vide, légende, micro-texte, hiérarchie) */
+.vnfull__plot { position: relative; }
+.vnfull__grid--v { opacity: .5; }
+.vnfull__empty {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; text-align: center; color: var(--text3); pointer-events: none;
+}
+.vnfull__empty strong { display: block; color: var(--text2); font: 600 clamp(13px, 1vw, 17px)/1.3 var(--sans); }
+.vnfull__empty span { display: block; font: 500 clamp(11px, .8vw, 14px)/1.4 var(--mono); }
+.vnfull__items { display: flex; flex-wrap: wrap; gap: 8px 18px; font: 500 clamp(11px, .78vw, 13px)/1 var(--mono); color: var(--text2); font-variant-numeric: tabular-nums; }
+.vnfull__item { display: inline-flex; align-items: center; gap: 7px; }
+.vnfull__sw { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.vnfull__sw.is-ok { background: var(--good); }
+.vnfull__sw.is-warn { background: var(--warn); }
+.vnfull__sw.is-bad { background: var(--bad); }
+.vnfull__sw.is-off { background: var(--text3); }
+.vnfull__delta { margin-left: 10px; font: 600 clamp(11px, .85vw, 15px)/1 var(--mono); color: var(--text3); font-variant-numeric: tabular-nums; }
+.vnfull__close { opacity: .5; transition: opacity .15s, border-color .15s; }
+.vnfull__close:hover, .vnfull__close:focus-visible { opacity: 1; }
+.vnfull__age { font-variant-numeric: tabular-nums; }
