@@ -63,7 +63,11 @@ void touchDefaultCal(int16_t & x0, int16_t & x1, int16_t & y0, int16_t & y1, boo
 static void readTouch(lv_indev_drv_t *, lv_indev_data_t * d) {
   if (s_pressed) {
     s_ts.rx = (int16_t)s_px; s_ts.ry = (int16_t)s_py;
-    hal::touchToScreen(s_px, s_py, s_ts.x, s_ts.y);
+    // Le pointeur du navigateur donne déjà les coordonnées exactes de la dalle : l'étalonnage tactile
+    // (Réglages → Tester le tactile) corrige un panneau physique, pas un pointeur. L'appliquer ici ferait
+    // qu'un étalonnage fait sur le jumeau — et gardé dans le navigateur — décale ensuite tous les touchers.
+    s_ts.x = (int16_t)(s_px < 0 ? 0 : s_px > 479 ? 479 : s_px);
+    s_ts.y = (int16_t)(s_py < 0 ? 0 : s_py > 271 ? 271 : s_py);
     s_ts.seq++;
   }
   s_ts.pressed = s_pressed;

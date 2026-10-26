@@ -197,6 +197,8 @@ function leaveFull() {
 }
 $('btnFull').addEventListener('click', () => (maxMode || document.fullscreenElement ? leaveFull() : enterFull()));
 bezel.querySelector('.bezel__close')?.addEventListener('click', leaveFull);
+// un toucher sur le noir autour de l'écran quitte (sur téléphone, pas de touche Échap)
+bezel.addEventListener('click', (e) => { if ((maxMode || document.fullscreenElement) && e.target === bezel) leaveFull(); });
 document.addEventListener('fullscreenchange', () => { fullLabel(); layoutMax(); resize(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && maxMode) setMax(false); });
 window.addEventListener('resize', () => { if (maxMode || document.fullscreenElement) { layoutMax(); resize(); } });
