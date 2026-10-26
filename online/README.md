@@ -21,7 +21,9 @@ Et parce qu'il ne s'éteint jamais, il fait aussi ce qu'une carte ne peut pas fa
                 ┌─────────────▼──────────────┐
                 │  serveur (Node, sans dép.) │  vn-core.wasm = src/core
                 │  apprend 24 h/24           │  data/vn_prof.bin · vn_hist.bin · vn_days.bin
-                └──┬───────────────┬─────────┘
+                │                            │  data/historique · prevision · banc · archive
+                └──┬───────────────┬─────┬───┘
+                   │               │     └──▶ ntfy : ruptures, flux, résumé du matin
    évènements      │               │  /sync/manifest + fichiers (CRC32)
    (rejeu exact)   │               │  ⇅ envoi de ce que la carte connaît mieux
         ┌──────────▼─────┐   ┌─────▼──────────┐
@@ -41,8 +43,10 @@ docker compose up -d                 # → http://<machine>:8790
 node server.mjs
 ```
 
-**Umbrel** : l'app *Portainer* (App Store) accepte ce `docker-compose.yml` tel quel (Stacks → Add stack →
-coller le fichier, chemin du volume en absolu, par exemple `/home/umbrel/velohnav/data:/data`).
+**Umbrel** : avec l'app *Portainer* (App Store) : Stacks → Add stack → **Repository**, adresse de ce dépôt,
+fichier `online/docker-compose.yml` (l'image se construit depuis le dépôt : le banc de nuit est compilé
+avec). Mettre le volume en chemin absolu, par exemple `/home/umbrel/velohnav/data:/data`. Ou, en SSH sur
+l'Umbrel : `git clone` du dépôt puis `cd online && docker compose up -d`.
 
 **Partir de ce que la carte sait déjà** (sinon le serveur apprend depuis zéro, et c'est la carte qui
 l'amorce à sa première synchro si « Partager l'apprentissage » est actif) :
