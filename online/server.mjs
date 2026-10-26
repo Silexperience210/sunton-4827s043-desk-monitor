@@ -10,6 +10,7 @@
 // Variables : voir online/lib/config.mjs et online/README.md. Aucune dépendance (Node ≥ 18).
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
+import { timingSafeEqual } from 'node:crypto';
 import { join, extname, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
@@ -225,7 +226,7 @@ const gzCache = new Map();
 function send(req, res, code, body, type, extra = {}) {
   const buf = Buffer.isBuffer(body) ? body : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
   const headers = { 'Content-Type': type || 'application/json; charset=utf-8', 'Cache-Control': 'no-store',
-    'Access-Control-Allow-Origin': '*', 'Access-Control-Expose-Headers': 'X-VN-CRC32, X-VN-Snapshot', ...extra };
+    'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', ...extra };
   const gz = buf.length > 1024 && /\bgzip\b/.test(req.headers['accept-encoding'] || '') && !/^application\/octet/.test(headers['Content-Type']);
   const out = gz ? gzipSync(buf) : buf;
   if (gz) headers['Content-Encoding'] = 'gzip';
@@ -235,10 +236,33 @@ function send(req, res, code, body, type, extra = {}) {
 }
 const sendJson = (req, res, obj, code = 200) => send(req, res, code, JSON.stringify(obj));
 
-function authorized(req, url) {
+// Comparaison en temps constant : une comparaison par === laisse fuir la longueur du préfixe correct.
+function sameSecret(a, b) {
+  const A = Buffer.from(String(a || '')), B = Buffer.from(String(b || ''));
+  if (A.length !== B.length) return false;
+  return timingSafeEqual(A, B);
+}
+
+// Le jeton ne circule QUE dans un en-tête : accepté en ?token=, il fuit dans les journaux du proxy,
+// l'historique du navigateur et les en-têtes Referer.
+function authorized(req) {
   if (!CONFIG.token) return true;
   const h = req.headers.authorization || '';
-  return h === `Bearer ${CONFIG.token}` || req.headers['x-vn-token'] === CONFIG.token || url.searchParams.get('token') === CONFIG.token;
+  const bearer = h.startsWith('Bearer ') ? h.slice(7) : '';
+  if (bearer && sameSecret(bearer, CONFIG.token)) return true;
+  const alt = req.headers['x-vn-token'];
+  return !!(alt && sameSecret(alt, CONFIG.token));
+}
+
+// Politique d'accès : la page et les lectures sont publiques ; tout ce qui écrit, et tout ce qui
+// expose des réglages ou des cartes du réseau local, exige le jeton.
+function protectedRoute(p, method) {
+  if (p.startsWith('/sync/')) return true;              // écrit l'état appris
+  if (p.startsWith('/api/notify')) return true;         // réglages de notification (ntfy)
+  if (p === '/api/bench/run') return true;              // lance un binaire
+  if (p === '/api/devices') return true;                // écrans du réseau local
+  if (method !== 'GET' && method !== 'HEAD') return true;  // toute écriture
+  return false;
 }
 
 function serveStatic(req, res, path) {
@@ -301,7 +325,9 @@ const server = createServer(async (req, res) => {
     if (p === '/api/ring') return sendJson(req, res, engine.ring());
 
     // ── À partir d'ici : jeton si VN_TOKEN est défini ──
-    if ((p.startsWith('/api/') || p.startsWith('/sync/')) && !authorized(req, url)) return sendJson(req, res, { error: 'jeton requis' }, 401);
+    if ((p.startsWith('/api/') || p.startsWith('/sync/')) && protectedRoute(p, req.method) && !authorized(req)) {
+      return sendJson(req, res, { error: 'jeton requis' }, 401);
+    }
 
     if (p === '/api/devices') return sendJson(req, res, Object.values(hub.devices).sort((a, b) => b.last - a.last));
     if (p === '/api/archive') return sendJson(req, res, store.archives());

@@ -18,7 +18,7 @@ const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* stockage indisponible : sans conséquence */ } },
 };
-let token = store.get('vn.token') || new URLSearchParams(location.search).get('token') || '';
+let token = store.get('vn.token') || '';
 const authHeaders = () => (token ? { Authorization: `Bearer ${token}` } : {});
 const api = async (path, opts = {}) => {
   const r = await fetch(path, { ...opts, headers: { ...authHeaders(), ...(opts.headers || {}) } });
