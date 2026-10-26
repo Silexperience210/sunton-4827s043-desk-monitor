@@ -129,9 +129,14 @@ Bouton « Je m'en occupe » dans la notification ntfy et sur les Sunton ; « Ham
   (tunnel, téléphone en veille, batterie) : chaque validation est écrite en flash d'abord, envoyée ensuite, et
   l'écran dit combien attendent l'envoi. Réglage Wi-Fi du Sunton : le point d'accès du téléphone.
 - **Terminal : Sunton dédié dans le camion, téléphone en secours** (même API, même registre).
+- **Capacité : 10 à 25 vélos selon le camion utilisé.** La capacité n'est donc pas une constante : au départ de
+  la tournée, le régulateur choisit sur son Sunton le camion du jour (liste des camions et de leur capacité tenue
+  sur le serveur) et **déclare le chargement de départ** (vélos déjà à bord). Le serveur planifie avec ces deux
+  valeurs déclarées, et le chargement à bord se tient à jour à chaque arrêt validé (prise +n, dépose −n) ;
+  l'écran l'affiche (« à bord : 14 / 25 ») et refuse une validation qui le rendrait négatif ou supérieur à la
+  capacité, avec un message plutôt qu'une correction silencieuse.
 
 ## Encore à trancher
 
-1. Capacité de chaque camion (vélos).
-2. JCDecaux enregistre-t-il déjà les interventions dans un outil interne, et peut-on y accéder ? (à demander en
+1. JCDecaux enregistre-t-il déjà les interventions dans un outil interne, et peut-on y accéder ? (à demander en
    interne ; si oui, cette source remplace la ressaisie, le Sunton régulateur ne sert plus qu'à la tournée).
