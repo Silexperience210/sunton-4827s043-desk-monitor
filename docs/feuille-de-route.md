@@ -63,8 +63,8 @@ pour les vélos en trajet). Mieux vaut abandonner une fonction que la faire ment
 - **Matériel du camion** (à vérifier sur place) : Sunton + alimentation USB 12 V ; connexion par le partage du
   téléphone ou un petit routeur 4G ; lisibilité au soleil ; la version **résistive** (`-r`) se manie avec des gants,
   la capacitive non.
-- **Si JCDecaux enregistre déjà les interventions** dans un outil interne et qu'on peut le lire, c'est la
-  meilleure source déclarée : on la branche au lieu de faire ressaisir.
+- **L'outil interne de JCDecaux** (fermé, libération des vélos seulement) ne remplace pas la déclaration : voir
+  les décisions plus bas.
 
 ### 2. Tournées de régulation
 
@@ -151,8 +151,24 @@ Bouton « Je m'en occupe » dans la notification ntfy et sur les Sunton ; « Ham
   « à l'atelier » (**déclaré** : entrés − sortis) et le reste (en trajet ou inconnu, **estimé** comme aujourd'hui),
   et les vélos neufs mis en service sont comptés (**déclaré**) au lieu d'apparaître comme un parc qui grossit.
 
+- **L'outil interne de JCDecaux ne peut pas servir de source.** Il est fermé, et les régulateurs ne s'en servent
+  que pour **libérer** les vélos (les décrocher des bornes) : pas de déposes, pas d'atelier, pas de compte par arrêt,
+  et aucun accès pour le lire. Le **Sunton régulateur reste donc la source déclarée** de toutes les interventions.
+  Conséquences :
+  - **le moins de double saisie possible** : à chaque arrêt, le Sunton propose les nombres prévus par la tournée,
+    le régulateur confirme d'un toucher ou corrige avec − / + ; la libération dans l'outil JCDecaux reste
+    nécessaire pour décrocher les vélos, notre déclaration ne la remplace pas ;
+  - **le recoupement marche dans les deux sens** : une libération fait baisser les vélos de la station dans le flux,
+    une dépose les fait monter ;
+  - **les retraits observés se séparent enfin honnêtement** : une baisse observée dans une station qui correspond à
+    une prise déclarée (même station, quelques minutes) est comptée comme régulation (**déclaré**), le reste comme
+    retraits des clients (**mesuré**, toujours un minimum). Aujourd'hui, une prise du camion compte comme
+    retrait de client ;
+  - **les vélos absents des stations se décomposent** : dans le camion (**déclaré**, le chargement à bord), à
+    l'atelier (**déclaré**), le reste en trajet ou inconnu (**estimé**).
+  - Si JCDecaux fournit un jour un export ou une API de ses libérations, on le branche comme **seconde** source
+    déclarée, pour recouper — pas pour remplacer la déclaration complète.
+
 ## Encore à trancher
 
-1. JCDecaux enregistre-t-il déjà les interventions dans un outil interne, et peut-on y accéder ? (à demander en
-   interne ; si oui, cette source remplace la ressaisie, le Sunton régulateur ne sert plus qu'à la tournée).
-2. Adresse de l'atelier (un seul ou plusieurs ?), pour le placer sur la tournée.
+1. Adresse de l'atelier (un seul ou plusieurs ?), pour le placer sur la tournée.
