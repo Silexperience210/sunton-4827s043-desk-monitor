@@ -27,6 +27,7 @@ const fmtHM = (t) => new Intl.DateTimeFormat('fr-FR', { timeZone: 'Europe/Luxemb
 // station vide « réglerait » tout sur le papier : le premier client le prend.
 const HKM = [15, 30, 60, 120, 240];
 const ERR_BANC = [0.41, 0.70, 1.10, 1.61, 2.19];        // MAE du banc simulé (docs/mesures-prevision.md)
+const fr2 = (v) => Number(v).toFixed(2).replace('.', ',');
 export function errorProfile(report) {
   const tot = report?.total?.model, per = report?.total?.per;
   // mesurée dès 500 prévisions à +1 h ; un horizon encore peu mesuré (< 200) garde la valeur du banc, et le dit
@@ -51,7 +52,7 @@ export function errorProfile(report) {
     ? `erreur mesurée (${tot[2].n} prévisions à +1 h${fromBanc.length ? ` ; ${fromBanc.join(', ')} : banc simulé, pas encore assez mesuré` : ''})`
     : 'erreur du banc simulé (pas encore assez de mesures réelles)';
   const caution = beats === false
-    ? `Attention : sur les mesures réelles, la prévision ne fait pas mieux que « rien ne bouge » à +1 h (MAE ${tot[2].mae} contre ${per[2].mae}) — les risques annoncés sont à prendre avec prudence.`
+    ? `Attention : sur les mesures réelles, la prévision ne fait pas mieux que « rien ne bouge » à +1 h (erreur moyenne ${fr2(tot[2].mae)} vélo contre ${fr2(per[2].mae)}) — les risques annoncés sont à prendre avec prudence.`
     : '';
   return { err: out, measured, source, beats, caution };
 }

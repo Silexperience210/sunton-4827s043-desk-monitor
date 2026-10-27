@@ -208,3 +208,21 @@ html.vn-max, html.vn-max body { overflow: hidden; }
 .msg__top .when { color: var(--text3); font: 11px var(--mono); }
 .msg__body { margin: 4px 0 0; color: var(--text2); white-space: pre-line; font-size: 12px; overflow-wrap: anywhere; }
 .msg__err { margin: 2px 0 0; color: var(--bad); font-size: 12px; }
+
+/* ── Régulation ── */
+.tours { display: flex; flex-direction: column; gap: 10px; }
+.tour { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; background: var(--bg); }
+.tour__top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.tour__top b { font-weight: 600; flex: 1; min-width: 0; }
+.tour__load { font: 600 13px var(--mono); color: var(--accent); }
+.tour__meta { color: var(--text3); font-size: 12px; }
+.tour ol { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text2); }
+.tour ol b { color: var(--text); font-weight: 600; }
+.rows { display: flex; flex-direction: column; gap: 6px; }
+.rows .r { display: grid; grid-template-columns: minmax(0, 1fr) 84px 36px; gap: 6px; }
+.rows .r.p { grid-template-columns: minmax(0, 1fr) 36px; }
+.rows input { background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 10px; font: 13px var(--sans); min-width: 0; width: 100%; }
+.rows button { border: 1px solid var(--border-strong); background: var(--s2); color: var(--text2); border-radius: 8px; cursor: pointer; font: 600 15px var(--sans); }
+.v-ok { color: var(--good); }
+.v-ecart { color: var(--warn); }
+.v-dim { color: var(--text3); }

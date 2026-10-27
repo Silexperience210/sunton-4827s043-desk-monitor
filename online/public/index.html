@@ -97,12 +97,13 @@
   </aside>
 </main>
 
-<section class="board" id="board" aria-label="Historique, prévisions et notifications">
+<section class="board" id="board" aria-label="Historique, prévisions, notifications et régulation">
   <div class="board__bar">
     <div class="tabs" role="tablist" aria-label="Tableau de bord">
       <button type="button" role="tab" data-tab="hist" aria-controls="tab-hist" aria-selected="true">Historique</button>
       <button type="button" role="tab" data-tab="prev" aria-controls="tab-prev" aria-selected="false">Prévisions</button>
       <button type="button" role="tab" data-tab="notif" aria-controls="tab-notif" aria-selected="false">Notifications</button>
+      <button type="button" role="tab" data-tab="reg" aria-controls="tab-reg" aria-selected="false">Régulation</button>
     </div>
   </div>
 
@@ -233,6 +234,60 @@
         </div>
       </div>
     </div>
+  </div>
+  <div class="tabpanel" id="tab-reg" role="tabpanel" hidden>
+    <div class="filters">
+      <div class="seg" id="regRange" role="group" aria-label="Période">
+        <button type="button" data-r="1">Aujourd'hui</button>
+        <button type="button" data-r="7">7 jours</button>
+        <button type="button" data-r="28">4 semaines</button>
+        <button type="button" data-r="90">3 mois</button>
+      </div>
+      <a class="btn btn--ghost" href="regulateur.html" target="_blank" rel="noopener">Page du régulateur (téléphone)</a>
+    </div>
+    <p class="txt txt--dim">Seul ce que le régulateur valide (sur le Sunton du camion ou le téléphone) compte comme intervention ; rien n'est déduit des mouvements du flux public. Chaque arrêt déclaré est recoupé avec le flux 10 min plus tard : déclaré et observé restent côte à côte, rien n'est corrigé en silence. Le plan proposé est une estimation, avec la marge d'erreur mesurée des prévisions.</p>
+    <div class="kpis" id="regKpis"></div>
+    <div class="grid2">
+      <div class="card vcard">
+        <div class="card__head"><span class="eyebrow">TOURNÉES EN COURS</span><span class="badge" id="regOpenN">0</span></div>
+        <div id="regOpen" class="tours"></div>
+      </div>
+      <figure class="card vcard">
+        <figcaption class="vcard__title">Arrêts déclarés par jour, selon le recoupement avec le flux</figcaption>
+        <div class="vbox" id="regDays"></div>
+      </figure>
+    </div>
+    <div class="card vcard">
+      <div class="card__head"><span class="eyebrow">DÉCLARATIONS</span><span class="vcard__note" id="regEvMeta"></span></div>
+      <div class="vscroll" id="regEvents"></div>
+    </div>
+    <details class="card vdetails" id="regDelaysBox">
+      <summary>Délai de traitement des stations vides (déclaré + mesuré)</summary>
+      <p class="txt txt--dim">Temps entre le début d'une rupture « vide » (historique au pas de 5 min, mesuré) et la dépose déclarée dans cette station. Seules les déposes faites dans une station encore vide comptent.</p>
+      <div class="vscroll" id="regDelays"></div>
+    </details>
+    <form class="card" id="regForm" autocomplete="off">
+      <div class="card__head"><span class="eyebrow">RÉGLAGES DE LA RÉGULATION</span></div>
+      <div class="grid2">
+        <div class="side-col">
+          <div class="field"><span>Camions (nom et capacité en vélos)</span><div class="rows" id="regTrucks"></div>
+            <button class="btn btn--ghost" type="button" id="regAddTruck">Ajouter un camion</button></div>
+          <div class="field"><span>Régulateurs</span><div class="rows" id="regPeople"></div>
+            <button class="btn btn--ghost" type="button" id="regAddPerson">Ajouter un régulateur</button></div>
+        </div>
+        <div class="side-col">
+          <label class="field"><span>Atelier : nom</span><input name="atName" placeholder="Atelier Bertrange"></label>
+          <label class="field"><span>Atelier : adresse (pour mémoire, jamais géocodée)</span><input name="atAddress" placeholder="rue des Romains, Bertrange"></label>
+          <label class="field"><span>Atelier : point exact — coller des coordonnées ou un lien OpenStreetMap / Google Maps</span><input name="atPoint" placeholder="49.6106, 6.0507"></label>
+          <p class="txt txt--dim" id="regAtSay"></p>
+          <label class="field"><span>Vélos neufs ou réparés prêts à l'atelier (déclaré)</span><input name="atStock" type="number" min="0" max="200" step="1"></label>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn btn--primary" type="submit">Enregistrer</button>
+      </div>
+      <p class="txt txt--dim" id="regSay" role="status"></p>
+    </form>
   </div>
 </section>
 
