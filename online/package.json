@@ -9,6 +9,6 @@
   "scripts": {
     "start": "node server.mjs",
     "build:engine": "bash engine/build.sh",
-    "test": "node test/replication.test.mjs && node test/sync.e2e.mjs"
+    "test": "node test/replication.test.mjs && node test/sync.e2e.mjs && node test/regulation.test.mjs && node test/reg.e2e.mjs"
   }
 }

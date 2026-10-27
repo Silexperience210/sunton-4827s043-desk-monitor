@@ -8,12 +8,14 @@
 #include "../core/weather.h"
 #include "../core/wifiscan.h"
 #include "../core/sync.h"
+#include "../core/regul.h"
 #include "../platform/platform.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>
 
 using vn::g_model;
 using vn::g_set;
@@ -241,6 +243,15 @@ static void saveHistory() {
 static char s_devId[24] = "";
 static vn::SyncStatus s_sync = {};
 
+// Adresse MAC de la station Wi-Fi (efuse) : lisible avant même le démarrage du Wi-Fi
+static void devIdInit() {
+  if (s_devId[0]) return;
+  uint8_t mac[6] = {0};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  snprintf(s_devId, sizeof(s_devId), "sunton-%02x%02x%02x", mac[3], mac[4], mac[5]);
+}
+const char * deviceId() { return s_devId; }
+
 static void syncPublish() {
   portENTER_CRITICAL(&s_mux);
   memcpy(&s_status.sync, &s_sync, sizeof(s_sync));
@@ -316,11 +327,6 @@ static int syncPost(void * ctx, const char * url, const uint8_t * buf, size_t le
 // Une synchro complète ; renvoie le nombre de fichiers adoptés (‑1 = serveur injoignable ou absent)
 static int doSync() {
   if (!vn::g_sync.url[0]) return -1;
-  if (!s_devId[0]) {
-    uint8_t mac[6];
-    WiFi.macAddress(mac);
-    snprintf(s_devId, sizeof(s_devId), "sunton-%02x%02x%02x", mac[3], mac[4], mac[5]);
-  }
   s_sync.state = vn::SS_RUNNING;
   syncPublish();
   vn::SyncIo io = {};
@@ -332,6 +338,84 @@ static int doSync() {
   syncPublish();
   plat::logf("[sync] termin\xC3\xA9" "e en %u ms : %s", (unsigned)(millis() - t0), s_sync.text);
   return r;
+}
+
+// ── Rôle « régulateur » (core/regul.h) : la file des gestes, puis la tournée ─
+// Requêtes JSON courtes (≤ 1 Ko envoyé, quelques Ko reçus) ; la réponse est lue dans le tampon PSRAM des flux
+// (même tâche : jamais en même temps qu'un relevé). Un échec laisse la file intacte, en flash.
+static volatile bool s_regReq = false;
+void requestReg() { s_regReq = true; }
+
+static int regHttp(const char * url, const char * body, size_t n, char * buf, size_t cap, size_t & len) {
+  len = 0;
+  WiFiClient plain;
+  WiFiClientSecure tls;
+  tls.setInsecure();
+  tls.setHandshakeTimeout(15);
+  const bool https = !strncmp(url, "https://", 8);
+  HTTPClient http;
+  http.useHTTP10(true);
+  http.setReuse(false);
+  http.setConnectTimeout(8000);
+  http.setTimeout(15000);
+  http.setUserAgent("VelohNavOps/" VN_VERSION " (ESP32-S3)");
+  if (!(https ? http.begin(tls, url) : http.begin(plain, url))) return vn::ING_E_BEGIN;
+  syncHeaders(http, nullptr);
+  http.addHeader("Accept", "application/json");
+  int code;
+  if (body) {
+    http.addHeader("Content-Type", "application/json");
+    code = http.POST((uint8_t *)body, n);
+  } else code = http.GET();
+  if (code <= 0) { http.end(); return code; }
+  // Corps lu aussi pour un refus (400, 409) : il porte la raison donnée par le serveur
+  int total = http.getSize();
+  WiFiClient * st = http.getStreamPtr();
+  uint32_t last = millis();
+  while (st && len < cap) {
+    size_t av = st->available();
+    if (av) {
+      size_t want = av < cap - len ? av : cap - len;
+      len += st->readBytes(buf + len, want);
+      last = millis();
+      if (total > 0 && len >= (size_t)total) break;
+    } else {
+      if (!st->connected()) break;
+      if (millis() - last > 10000) break;
+      delay(4);
+    }
+  }
+  http.end();
+  if (code == HTTP_CODE_OK && total > 0 && len < (size_t)total) return vn::ING_E_TRUNC;
+  return code;
+}
+static int regGet(void *, const char * url, char * buf, size_t cap, size_t & len) { return regHttp(url, nullptr, 0, buf, cap, len); }
+static int regPost(void *, const char * url, const char * body, size_t n, char * resp, size_t cap, size_t & rlen) {
+  return regHttp(url, body, n, resp, cap, rlen);
+}
+
+static void doReg() {
+  static int16_t lastCode = 0;
+  static uint8_t lastRej = 0;
+  vn::RegIo io = { nullptr, regGet, regPost };
+  uint32_t t0 = millis();
+  int r = vn::regPoll(io, vn::g_sync.url, vn::g_reg, plat::now(), s_buf, BUF_CAP);
+  int16_t code;
+  uint8_t nq, nRej;
+  char err[120];
+  {
+    plat::LockGuard g;
+    code = vn::g_reg.lastCode;
+    nq = vn::g_reg.nq;
+    nRej = vn::g_reg.nRej;
+    snprintf(err, sizeof(err), "%s", vn::g_reg.lastErr);
+  }
+  // Une ligne quand quelque chose change (envoi, refus, panne, retour), pas toutes les 30 s
+  if (r > 0 || code != lastCode || nRej != lastRej)
+    plat::logf("[regul] %s en %u ms : %d geste(s) envoy\xC3\xA9(s), %u en file%s%s", r >= 0 ? "\xC3\xA9" "change ok" : "\xC3\xA9" "chec",
+               (unsigned)(millis() - t0), r > 0 ? r : 0, (unsigned)nq, err[0] ? " \xE2\x80\x94 " : "", err);
+  lastCode = code;
+  lastRej = nRej;
 }
 
 // ── Recherche des réseaux ────────────────────────────────────────────
@@ -454,7 +538,7 @@ static void task(void *) {
   }
 
   bool loaded = false, wasUp = false, timeLogged = false, s_bootSyncDone = false;
-  uint32_t lastFetch = 0, lastSave = millis(), wifiSince = millis(), lastWait = 0, discSeen = 0, discLogAt = 0;
+  uint32_t lastFetch = 0, lastSave = millis(), wifiSince = millis(), lastWait = 0, discSeen = 0, discLogAt = 0, lastReg = 0;
   uint8_t lastBl = 255;
   for (;;) {
     if (s_connectReq) {
@@ -584,6 +668,17 @@ static void task(void *) {
         plat::restart();
       }
     }
+    // Rôle régulateur : la file d'abord (un arrêt déclaré part avant le relevé suivant), puis la tournée
+    if (up && timeOk && loaded && vn::g_regCfg.role == vn::ROLE_REGUL && vn::g_sync.url[0]) {
+      uint8_t nq;
+      { plat::LockGuard g; nq = vn::g_reg.nq; }
+      uint32_t every = nq ? 10000 : 30000;
+      if (s_regReq || !lastReg || millis() - lastReg >= every) {
+        s_regReq = false;
+        lastReg = millis();
+        doReg();
+      }
+    }
     if (up && timeOk && loaded) {
       bool due = s_refreshReq || !lastFetch || millis() - lastFetch >= (uint32_t)g_set.refreshSec * 1000;
       if (due) {
@@ -607,6 +702,7 @@ static void task(void *) {
 }
 
 void begin() {
+  devIdInit();
   memset(&s_status, 0, sizeof(s_status));
   s_status.stage = "D\xC3\xA9marrage\xE2\x80\xA6";
   s_buf = (char *)heap_caps_malloc(BUF_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);

@@ -10,6 +10,8 @@
 #include "../src/core/service.h"
 #include "../src/core/dump.h"
 #include "../src/core/sync.h"
+#include "../src/core/regul.h"
+#include <ArduinoJson.h>
 #include "../src/platform/platform.h"
 #include "../src/hal/touch_api.h"
 #include <stdio.h>
@@ -3056,6 +3058,237 @@ static void testSync() {
   syncCfgDefaults(g_sync);
 }
 
+// ── Rôle régulateur (core/regul) : réponse du serveur, gestes, file hors connexion, échange ─
+// Réponse réelle de GET /reg/tour (online/server.mjs), raccourcie : 2 arrêts dont l'atelier, 2 déclarations
+static const char * REG_TOUR_JSON = R"J({"device":"sunton-test","trucks":[{"id":"kangoo","name":"Kangoo","capacity":10},{"id":"master","name":"Master","capacity":25}],
+"regulators":[{"id":"paul","name":"Paul"},{"id":"lea","name":"Léa"}],"atelier":{"name":"Atelier Bertrange","address":"rue des Romains, Bertrange","lat":49.6106,"lon":6.0507},
+"atelierStock":{"ok":0,"at":0},"openTours":[{"id":"TOUR","truckName":"Master","regulatorName":"Léa","device":"sunton-test","startedAt":1793059233}],"now":1793059234,
+"tour":{"id":"TOUR","device":"sunton-test","truck":"master","truckName":"Master","capacity":25,"regulator":"lea","regulatorName":"Léa","load0":{"ok":12,"hs":0},"startedAt":1793059233,"endedAt":0},
+"load":{"ok":LOADOK,"hs":2},"plan":{"tour":"TOUR","stops":[
+{"seq":1,"kind":"station","sid":"40","name":"Glacis Kapell","drop":{"ok":3,"hs":0},"take":{"ok":0,"hs":1},"etaMin":5,"arriveAt":1793059506,"benefitMin":125,"why":"vide maintenant (mesuré) · 1 vélo(s) hors service ramassé(s) au passage (mesuré : 1 HS)","now":{"bikes":0,"docks":12,"dis":1,"cap":12},"loadAfter":{"ok":7,"hs":3}},
+{"seq":2,"kind":"atelier","name":"Atelier Bertrange","drop":{"ok":0,"hs":3},"take":{"ok":4,"hs":0},"etaMin":21,"benefitMin":0,"why":"décharger 3 HS · 4 neufs repris (stock déclaré)","now":null,"loadAfter":{"ok":11,"hs":0}}],
+"benefitMin":125,"durationMin":38},"method":"Plan proposé : minutes de rupture évitées ESTIMÉES par la prévision de la carte (2 h après chaque arrivée).",
+"events":[{"id":"ev-2","kind":"station","sid":47,"name":"Leopold Goebel","at":1793059234,"took":{"ok":0,"hs":2},"dropped":{"ok":2,"hs":0},"impossible":null,"check":{"verdict":"ecart","declared":{"ok":2,"hs":-2},"observed":{"ok":1,"hs":-2}}},
+{"id":"ev-1","kind":"station","sid":"14","name":"Kolleisch","at":1793058000,"took":{"ok":0,"hs":0},"dropped":{"ok":0,"hs":0},"impossible":"Impossible de se garer","check":{"verdict":"hors-flux"}}]})J";
+
+static std::string regTourJson(const char * tourId, int loadOk) {
+  std::string j = REG_TOUR_JSON;
+  for (size_t at; (at = j.find("TOUR")) != std::string::npos;) j.replace(at, 4, tourId);
+  j.replace(j.find("LOADOK"), 6, std::to_string(loadOk));
+  return j;
+}
+
+struct FakeReg {
+  int postCode = 200;                // code renvoyé aux POST
+  std::string postResp = "{\"ok\":true}";
+  int failAfter = -1;                // ≥ 0 : le POST numéro n (et suivants) échoue (réseau coupé)
+  int getCode = 200;
+  std::string getResp;
+  std::vector<std::string> paths, bodies, gets;
+};
+static int fakeRegGet(void * ctx, const char * url, char * buf, size_t cap, size_t & len) {
+  FakeReg & f = *(FakeReg *)ctx;
+  f.gets.push_back(url);
+  len = 0;
+  if (f.getCode != 200) return f.getCode;
+  len = std::min(cap, f.getResp.size());
+  memcpy(buf, f.getResp.data(), len);
+  return 200;
+}
+static int fakeRegPost(void * ctx, const char * url, const char * body, size_t n, char * resp, size_t cap, size_t & rlen) {
+  FakeReg & f = *(FakeReg *)ctx;
+  if (f.failAfter >= 0 && (int)f.paths.size() >= f.failAfter) { rlen = 0; return -1; }
+  f.paths.push_back(url);
+  f.bodies.push_back(std::string(body, n));
+  rlen = std::min(cap, f.postResp.size());
+  memcpy(resp, f.postResp.data(), rlen);
+  return f.postCode;
+}
+
+static void testRegul() {
+  sim::g_fsDir = "/tmp/vn_test_regul";
+  for (const char * f : { REG_CFG_PATH, REG_QUEUE_PATH, REG_SNAP_PATH }) plat::fsRemove(f);
+  const int64_t now = 1793059300;
+  char why[200];
+
+  // Réglage
+  regCfgDefaults(g_regCfg);
+  CHECK(g_regCfg.role == ROLE_POSTE, "rôle par défaut : poste de supervision");
+  g_regCfg.role = ROLE_REGUL;
+  CHECK(regCfgSave(), "réglage enregistré");
+  regCfgDefaults(g_regCfg);
+  CHECK(regCfgLoad() && g_regCfg.role == ROLE_REGUL, "rôle relu : régulateur");
+
+  // Réponse du serveur
+  static RegSnap sn;
+  std::string j = regTourJson("t-1", 10);
+  CHECK(regParseTour(j.c_str(), j.size(), sn), "réponse /reg/tour lue");
+  CHECK(sn.nTrucks == 2 && sn.trucks[1].cap == 25 && !strcmp(sn.regs[1].name, "Léa") && sn.atelierSet && sn.atelierStock == -1,
+        "listes : %d camions, %d régulateurs, atelier %s, stock %d (non déclaré)", sn.nTrucks, sn.nRegs, sn.atelierName, sn.atelierStock);
+  CHECK(sn.hasTour && !strcmp(sn.tourId, "t-1") && sn.cap == 25 && sn.load.ok == 10 && sn.load.hs == 2, "tournée : %s, à bord %d + %d HS", sn.tourId, sn.load.ok, sn.load.hs);
+  CHECK(sn.hasPlan && sn.nStops == 2 && sn.stops[0].kind == RK_STATION && !strcmp(sn.stops[0].sid, "40") && sn.stops[0].drop.ok == 3
+        && sn.stops[0].take.hs == 1 && sn.stops[0].hasNow && sn.stops[0].nowDis == 1, "arrêt 1 : %s, déposer %d, HS %d", sn.stops[0].name, sn.stops[0].drop.ok, sn.stops[0].take.hs);
+  CHECK(sn.stops[1].kind == RK_ATELIER && !sn.stops[1].hasNow && sn.stops[1].drop.hs == 3 && sn.stops[1].take.ok == 4, "arrêt 2 : atelier");
+  CHECK(strstr(sn.method, "ESTIMÉES") != nullptr, "le plan dit qu'il est estimé");
+  CHECK(sn.nEvents == 2 && !strcmp(sn.events[0].sid, "47") && sn.events[0].verdict == RV_ECART && sn.events[0].declOk == 2 && sn.events[0].obsOk == 1,
+        "déclaration : numéro de station en nombre accepté, écart déclaré %d / observé %d", sn.events[0].declOk, sn.events[0].obsOk);
+  CHECK(sn.events[1].verdict == RV_HORSFLUX && !strcmp(sn.events[1].impossible, "Impossible de se garer"), "arrêt impossible relu avec sa raison");
+  char t[160];
+  regActText(sn.stops[1], t, sizeof(t));
+  CHECK(!strcmp(t, "décharger 3 HS · reprendre 4 neufs"), "texte de l'arrêt atelier : %s", t);
+  regDeclText(RK_STATION, RegCount{ 0, 2 }, RegCount{ 3, 0 }, t, sizeof(t));
+  CHECK(!strcmp(t, "déposé 3, pris 2 HS"), "texte déclaré : %s", t);
+  regVerdictText(sn.events[0], t, sizeof(t));
+  CHECK(!strcmp(t, "écart : déclaré +2, observé +1"), "verdict : %s", t);
+  CHECK(!regParseTour("{\"error\":\"jeton requis\"}", 24, sn) && !regParseTour("<html>", 6, sn), "réponse d'erreur ou illisible refusée");
+
+  // Début de tournée (hors connexion) : contrôlé comme sur le serveur, puis rangé dans la file
+  regInit(g_reg);
+  CHECK(!regStart(g_reg, 0, 0, RegCount{ 0, 0 }, now, "sunton-test", why, sizeof(why)) && strstr(why, "pas encore re"), "sans listes du serveur : refusé (%s)", why);
+  j = regTourJson("t-ancien", 0);
+  regParseTour(j.c_str(), j.size(), g_reg.snap);
+  g_reg.snap.hasTour = false; g_reg.snap.hasPlan = false; g_reg.snap.nStops = 0;   // aucune tournée en cours
+  CHECK(!regStart(g_reg, 0, 0, RegCount{ 11, 0 }, now, "sunton-test", why, sizeof(why)) && strstr(why, "capacit"), "au-delà de la capacité : %s", why);
+  CHECK(!regStart(g_reg, 1, 1, RegCount{ 8, 0 }, 0, "sunton-test", why, sizeof(why)) && strstr(why, "Heure inconnue"), "heure inconnue : refusé");
+  CHECK(regStart(g_reg, 1, 1, RegCount{ 8, 0 }, now, "sunton-test", why, sizeof(why)), "tournée commencée hors connexion");
+  RegTourView v;
+  regTourNow(g_reg, v);
+  CHECK(v.has && v.local && v.cap == 25 && !strcmp(v.truckName, "Master") && !strcmp(v.regName, "Léa") && regLoadNow(g_reg).ok == 8,
+        "vue locale : %s, %s, à bord %d", v.truckName, v.regName, regLoadNow(g_reg).ok);
+  CHECK(!strcmp(g_regCfg.lastTruck, "master") && !strcmp(g_regCfg.lastReg, "lea"), "camion et régulateur gardés pour le prochain départ");
+  CHECK(!regStart(g_reg, 1, 1, RegCount{ 0, 0 }, now, "sunton-test", why, sizeof(why)) && strstr(why, "d\xC3\xA9j\xC3\xA0"), "deux tournées à la fois : refusé");
+  const std::string tourId = v.id;
+
+  // Déclarations
+  RegDecl d;
+  memset(&d, 0, sizeof(d));
+  d.kind = RK_STATION; snprintf(d.sid, sizeof(d.sid), "40"); snprintf(d.name, sizeof(d.name), "Glacis Kapell"); d.plSeq = 1;
+  d.dropped = RegCount{ 9, 0 };
+  CHECK(!regDeclare(g_reg, d, now + 60, "sunton-test", why, sizeof(why)) && strstr(why, "que 8"), "déposer plus que le chargement : %s", why);
+  d.dropped = RegCount{ 0, 1 };
+  CHECK(!regDeclare(g_reg, d, now + 60, "sunton-test", why, sizeof(why)) && strstr(why, "hors service en station"), "HS déposé en station : refusé");
+  d.dropped = RegCount{ 0, 0 };
+  CHECK(!regDeclare(g_reg, d, now + 60, "sunton-test", why, sizeof(why)) && strstr(why, "Rien de d"), "rien déclaré : refusé");
+  d.dropped = RegCount{ 3, 0 }; d.took = RegCount{ 0, 1 }; d.plDrop = RegCount{ 3, 0 }; d.plTake = RegCount{ 0, 1 };
+  CHECK(regDeclare(g_reg, d, now + 60, "sunton-test", why, sizeof(why)), "dépose déclarée");
+  RegCount l = regLoadNow(g_reg);
+  CHECK(l.ok == 5 && l.hs == 1, "à bord après l'arrêt : %d + %d HS", l.ok, l.hs);
+  RegDecl a;
+  memset(&a, 0, sizeof(a));
+  a.kind = RK_ATELIER; a.plSeq = -1; a.took = RegCount{ 0, 1 };
+  CHECK(!regDeclare(g_reg, a, now + 120, "sunton-test", why, sizeof(why)) && strstr(why, "atelier"), "HS repris à l'atelier : refusé");
+  a.took = RegCount{ 20, 0 };
+  CHECK(!regDeclare(g_reg, a, now + 120, "sunton-test", why, sizeof(why)) && strstr(why, "ne prend que 25"), "atelier au-delà de la capacité : %s", why);
+  a.took = RegCount{ 4, 0 }; a.dropped = RegCount{ 0, 1 };
+  CHECK(regDeclare(g_reg, a, now + 120, "sunton-test", why, sizeof(why)), "atelier déclaré");
+  RegDecl im = d;
+  snprintf(im.sid, sizeof(im.sid), "12"); snprintf(im.name, sizeof(im.name), "Hamilius");
+  im.impossible = "Impossible de se garer";
+  CHECK(regDeclare(g_reg, im, now + 180, "sunton-test", why, sizeof(why)), "arrêt impossible déclaré");
+  l = regLoadNow(g_reg);
+  CHECK(l.ok == 9 && l.hs == 0 && regPendingEvents(g_reg) == 3 && g_reg.nq == 4, "à bord %d + %d HS, %d déclarations en attente", l.ok, l.hs, regPendingEvents(g_reg));
+  CHECK(strcmp(g_reg.q[1].id, g_reg.q[2].id) != 0 && strlen(g_reg.q[1].id) >= 6 && strlen(g_reg.q[1].id) <= 64, "identifiants uniques : %s", g_reg.q[1].id);
+  // JSON envoyé
+  char body[1024];
+  size_t bn = regItemJson(g_reg.q[1], body, sizeof(body));
+  JsonDocument doc;
+  CHECK(bn && !deserializeJson(doc, body, bn) && doc["kind"] == "station" && doc["sid"] == "40" && doc["dropped"]["ok"] == 3
+        && doc["took"]["hs"] == 1 && doc["planned"]["drop"]["ok"] == 3 && doc["tour"] == tourId.c_str() && doc["impossible"].isNull(),
+        "corps de la déclaration : %s", body);
+  bn = regItemJson(g_reg.q[0], body, sizeof(body));
+  CHECK(bn && !deserializeJson(doc, body, bn) && doc["truck"] == "master" && doc["regulator"] == "lea" && doc["load"]["ok"] == 8, "corps du début : %s", body);
+  bn = regItemJson(g_reg.q[3], body, sizeof(body));
+  CHECK(bn && !deserializeJson(doc, body, bn) && doc["impossible"] == "Impossible de se garer" && doc["dropped"]["ok"] == 0, "corps de l'arrêt impossible");
+
+  // File en flash : un redémarrage ne perd rien
+  uint32_t ctr = g_reg.counter;
+  static RegState saved;
+  saved = g_reg;
+  regInit(g_reg);
+  CHECK(regQueueLoad(g_reg) && g_reg.nq == 4 && g_reg.counter == ctr && !strcmp(g_reg.q[1].id, saved.q[1].id), "file relue après redémarrage : %d gestes", g_reg.nq);
+  g_reg.snap = saved.snap;
+
+  // Réseau coupé : rien n'est perdu
+  FakeReg f;
+  RegIo io = { &f, fakeRegGet, fakeRegPost };
+  static char buf[32 * 1024];
+  f.failAfter = 0;
+  int r = regPoll(io, "http://srv:8790", g_reg, now + 200, buf, sizeof(buf));
+  char line[200];
+  regStatusLine(g_reg, true, now + 200, line, sizeof(line));
+  CHECK(r == -1 && g_reg.nq == 4 && strstr(g_reg.lastErr, "injoignable") && strstr(line, "4 gestes en attente"), "réseau coupé : file gardée (%s)", line);
+  // Jeton refusé : la file reste
+  f.failAfter = -1; f.postCode = 401; f.postResp = "{\"error\":\"jeton requis\"}";
+  r = regPoll(io, "http://srv:8790", g_reg, now + 210, buf, sizeof(buf));
+  CHECK(r == -1 && g_reg.nq == 4 && strstr(g_reg.lastErr, "jeton"), "jeton refusé : file gardée (%s)", g_reg.lastErr);
+  // Le début et la première déclaration passent, puis le réseau tombe : la vue compte les deux, file : 2
+  f.paths.clear(); f.bodies.clear();
+  f.postCode = 200; f.postResp = "{\"ok\":true}"; f.failAfter = 2;
+  r = regPoll(io, "http://srv:8790", g_reg, now + 220, buf, sizeof(buf));
+  regTourNow(g_reg, v);
+  l = regLoadNow(g_reg);
+  CHECK(r == -1 && g_reg.nq == 2 && g_reg.nSent == 2 && v.has && l.ok == 9 && f.paths[0] == "http://srv:8790/reg/tour/start" && f.paths[1] == "http://srv:8790/reg/event",
+        "envoi partiel : 2 acceptés, 2 en file, la vue reste juste (à bord %d)", l.ok);
+  // La suite : le serveur refuse l'atelier (stock) ; l'arrêt impossible passe ; l'état relu remplace les gestes acceptés
+  f.failAfter = -1; f.paths.clear();
+  f.postCode = 409; f.postResp = "{\"ok\":false,\"error\":\"chargement supérieur à la capacité (26 / 25)\"}";
+  f.getResp = regTourJson(tourId.c_str(), 5);
+  // première requête refusée (409), la seconde acceptée : on change la réponse après le premier envoi
+  struct Two { static int post(void * ctx, const char * url, const char * b, size_t n, char * resp, size_t cap, size_t & rl) {
+    FakeReg & ff = *(FakeReg *)ctx;
+    int c = fakeRegPost(ctx, url, b, n, resp, cap, rl);
+    ff.postCode = 200; ff.postResp = "{\"ok\":true}";
+    return c;
+  } };
+  io.post = Two::post;
+  r = regPoll(io, "http://srv:8790", g_reg, now + 300, buf, sizeof(buf));
+  io.post = fakeRegPost;
+  CHECK(r == 2 && g_reg.nq == 0 && g_reg.nSent == 0 && g_reg.nRej == 1 && strstr(g_reg.rej[0].why, "capacit") && !strcmp(g_reg.rej[0].what, "Atelier Bertrange"),
+        "refus du serveur gardé avec sa raison : %s — %s", g_reg.rej[0].what, g_reg.rej[0].why);
+  CHECK(g_reg.snap.hasTour && !strcmp(g_reg.snap.tourId, tourId.c_str()) && regLoadNow(g_reg).ok == 5 && !g_reg.snapFromFlash && g_reg.lastOk == now + 300,
+        "état relu du serveur : à bord %d (calculé par le serveur)", regLoadNow(g_reg).ok);
+  CHECK(!f.gets.empty() && f.gets.back() == "http://srv:8790/reg/tour", "relecture : %s", f.gets.empty() ? "" : f.gets.back().c_str());
+  regStatusLine(g_reg, true, now + 310, line, sizeof(line));
+  CHECK(strstr(line, "En ligne") != nullptr, "ligne d'état : %s", line);
+  // Arrêts du plan : un arrêt déclaré mais pas encore relu disparaît de la liste
+  int idx[REG_MAX_STOPS];
+  int n = regStopsNow(g_reg, idx, REG_MAX_STOPS);
+  CHECK(n == 2 && idx[0] == 0, "plan : %d arrêts à faire", n);
+  d.dropped = RegCount{ 3, 0 }; d.took = RegCount{ 0, 1 };
+  CHECK(regDeclare(g_reg, d, now + 320, "sunton-test", why, sizeof(why)), "arrêt 1 fait");
+  n = regStopsNow(g_reg, idx, REG_MAX_STOPS);
+  CHECK(n == 1 && g_reg.snap.stops[idx[0]].kind == RK_ATELIER, "l'arrêt fait disparaît du plan affiché avant même l'envoi");
+  // État gardé en flash : relu au démarrage, marqué comme ancien
+  regInit(g_reg);
+  CHECK(regSnapLoad(g_reg) && g_reg.snapFromFlash && g_reg.snap.hasTour && g_reg.snapAt == now + 300, "état relu de la flash au démarrage");
+  regStatusLine(g_reg, true, now + 400, line, sizeof(line));
+  CHECK(strstr(line, "gard") != nullptr, "ligne d'état hors connexion au démarrage : %s", line);
+  regQueueLoad(g_reg);
+  CHECK(g_reg.nq == 1 && regStopsNow(g_reg, idx, REG_MAX_STOPS) == 1, "après redémarrage : la déclaration en file cache toujours l'arrêt fait");
+  // Fin de tournée : la vue n'a plus de tournée tant que le serveur ne l'a pas confirmée
+  CHECK(regEnd(g_reg, RegCount{ 2, 1 }, now + 500, why, sizeof(why)), "fin de tournée rangée dans la file");
+  regTourNow(g_reg, v);
+  CHECK(!v.has && regStopsNow(g_reg, idx, REG_MAX_STOPS) == 0, "fin en attente : plus de tournée à l'écran");
+  bn = regItemJson(g_reg.q[g_reg.nq - 1], body, sizeof(body));
+  CHECK(bn && !deserializeJson(doc, body, bn) && doc["tour"] == tourId.c_str() && doc["load"]["hs"] == 1, "corps de la fin : %s", body);
+
+  // Début refusé par le serveur : les déclarations de cette tournée sont dites non enregistrées, une seule fois
+  regInit(g_reg);
+  regParseTour(j.c_str(), j.size(), g_reg.snap);
+  g_reg.snap.hasTour = false; g_reg.snap.nStops = 0;
+  regStart(g_reg, 0, 0, RegCount{ 2, 0 }, now, "sunton-test", why, sizeof(why));
+  d.dropped = RegCount{ 1, 0 }; d.took = RegCount{ 0, 0 };
+  regDeclare(g_reg, d, now + 60, "sunton-test", why, sizeof(why));
+  regDeclare(g_reg, d, now + 70, "sunton-test", why, sizeof(why));
+  f = FakeReg(); io.ctx = &f;
+  f.postCode = 400; f.postResp = "{\"ok\":false,\"error\":\"camion inconnu : le choisir dans la liste des camions\"}";
+  f.getResp = regTourJson("autre", 0);
+  r = regPoll(io, "http://srv:8790", g_reg, now + 100, buf, sizeof(buf));
+  CHECK(r == 1 && g_reg.nq == 0 && g_reg.nRej == 1 && strstr(g_reg.rej[0].why, "camion inconnu") && strstr(g_reg.rej[0].why, "2 déclarations non enregistrées") && f.paths.size() == 1,
+        "début refusé : %s", g_reg.rej[0].why);
+  regCfgDefaults(g_regCfg);
+}
+
 int main(int argc, char ** argv) {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   testNames();
@@ -3092,6 +3325,7 @@ int main(int argc, char ** argv) {
   testClosedNotLearned();
   testDaysBadTimes();
   testSync();
+  testRegul();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;
 }

@@ -66,10 +66,17 @@ SYNC_OBJ := $(patsubst ../%.cpp,$(BUILD)/app/%.o,$(filter ../%,$(SYNC_CXX))) \
 sync_sim: $(SYNC_OBJ)
 	$(CXX) -o $@ $^ -lm
 
+# Sunton du camion simulé, rôle régulateur (online/test/reg.e2e.mjs) : même cœur, transport curl
+REG_CXX := $(wildcard ../src/core/*.cpp) platform_sim.cpp reg_sim.cpp
+REG_OBJ := $(patsubst ../%.cpp,$(BUILD)/app/%.o,$(filter ../%,$(REG_CXX))) \
+           $(patsubst %.cpp,$(BUILD)/sim/%.o,$(filter-out ../%,$(REG_CXX)))
+reg_sim: $(REG_OBJ)
+	$(CXX) -o $@ $^ -lm
+
 # dépendances d'en-têtes (-MMD) : un .h modifié recompile ce qui l'inclut
--include $(APP_OBJ:.o=.d) $(TEST_OBJ:.o=.d) $(BENCH_OBJ:.o=.d) $(DUMP_OBJ:.o=.d) $(SYNC_OBJ:.o=.d)
+-include $(APP_OBJ:.o=.d) $(TEST_OBJ:.o=.d) $(BENCH_OBJ:.o=.d) $(DUMP_OBJ:.o=.d) $(SYNC_OBJ:.o=.d) $(REG_OBJ:.o=.d)
 
 clean:
-	rm -rf $(BUILD) sim test_core bench_prevision dump_sim sync_sim
+	rm -rf $(BUILD) sim test_core bench_prevision dump_sim sync_sim reg_sim
 
 .PHONY: clean

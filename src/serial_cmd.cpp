@@ -11,6 +11,7 @@
 #include "core/dump.h"
 #include "core/model.h"
 #include "core/sync.h"
+#include "core/regul.h"
 #include "net/net.h"
 #include "platform/platform.h"
 
@@ -94,6 +95,38 @@ static void syncCommand(const char * a) {
   } else reply("VNSYNC INCONNU (aide)\n");
 }
 
+// ── Rôle (core/regul.h) : « role » le dit, « role regulateur » / « role poste » le change (redémarrage),
+// « reg » dit l'état de la tournée et de la file.
+static void roleCommand(const char * a) {
+  char b[240];
+  while (*a == ' ') a++;
+  if (!*a) {
+    snprintf(b, sizeof(b), "VNREG ROLE %s\n", vn::g_regCfg.role == vn::ROLE_REGUL ? "regulateur" : "poste");
+    reply(b);
+    return;
+  }
+  uint8_t r = !strcmp(a, "regulateur") ? vn::ROLE_REGUL : !strcmp(a, "poste") ? vn::ROLE_POSTE : 255;
+  if (r == 255) { reply("VNREG REFUS role regulateur | role poste\n"); return; }
+  vn::g_regCfg.role = r;
+  bool ok = vn::regCfgSave();
+  snprintf(b, sizeof(b), "VNREG OK role=%s (%s) : redemarrage\n", a, ok ? "enregistre" : "ECHEC d'ecriture");
+  reply(b);
+  if (ok) { delay(200); plat::restart(); }
+}
+
+static void regState() {
+  char b[320], line[200];
+  plat::LockGuard g;
+  vn::RegTourView v;
+  vn::regTourNow(vn::g_reg, v);
+  vn::RegCount l = vn::regLoadNow(vn::g_reg);
+  vn::regStatusLine(vn::g_reg, vn::g_sync.url[0] != 0, plat::now(), line, sizeof(line));
+  snprintf(b, sizeof(b), "VNREG ETAT role=%s appareil=%s tournee=%s a_bord=%d+%dHS file=%u refus=%u | %s\n",
+           vn::g_regCfg.role == vn::ROLE_REGUL ? "regulateur" : "poste", net::deviceId(), v.has ? v.id : "-", l.ok, l.hs,
+           (unsigned)vn::g_reg.nq, (unsigned)vn::g_reg.nRej, line);
+  reply(b);
+}
+
 static void run(const char * c) {
   char b[96];
   if (!strcmp(c, "dump")) {
@@ -110,9 +143,14 @@ static void run(const char * c) {
     reply(b);
   } else if (!strncmp(c, "sync", 4) && (c[4] == 0 || c[4] == ' ')) {
     syncCommand(c[4] ? c + 5 : "");
+  } else if (!strncmp(c, "role", 4) && (c[4] == 0 || c[4] == ' ')) {
+    roleCommand(c[4] ? c + 5 : "");
+  } else if (!strcmp(c, "reg")) {
+    regState();
   } else if (!strcmp(c, "aide") || !strcmp(c, "help")) {
     reply("VNDUMP AIDE commandes : dump (donnees apprises, lecture seule) | stop | ping | aide\n");
     reply("VNSYNC AIDE sync (maintenant) | sync etat | sync url <adresse> | sync jeton <jeton> | sync boot 0/1 | sync envoi 0/1\n");
+    reply("VNREG AIDE role | role regulateur | role poste | reg (tournee et file)\n");
   } else {
     reply("VNDUMP INCONNU commande inconnue (aide)\n");
   }

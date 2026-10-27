@@ -496,6 +496,7 @@ const server = createServer(async (req, res) => {
         engine.clock(nowS(), mono());
         const st = b.sid ? engine.stations().find((x) => x.sid === String(b.sid)) : null;
         const state = st ? { bikes: st.bikes, docks: st.docks, dis: st.bikesDis, status: st.status, at: nowS() } : null;
+        if (st && (!b.name || String(b.name) === String(b.sid))) b.name = st.name;      // nom manquant : celui du flux
         try {
           const r = regulation.declare(b, dev, state);
           if (!r.duplicate) {

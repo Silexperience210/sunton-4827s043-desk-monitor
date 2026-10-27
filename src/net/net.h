@@ -35,5 +35,10 @@ void   connect(const char * ssid, const char * pass);
 // Synchronisation avec le serveur en ligne (g_sync.url) : la tâche réseau sauvegarde l'état, compare,
 // adopte ce qui est meilleur et, si un fichier a été adopté, redémarre pour le relire.
 void   requestSync();
+// Identifiant sous lequel le serveur voit cette carte (« sunton-a1b2c3 », d'après l'adresse MAC)
+const char * deviceId();
+// Rôle « régulateur » (core/regul.h) : échange immédiat avec le serveur — un geste vient d'être rangé dans la
+// file, ou l'écran veut le plan à jour. Sinon la tâche réseau échange toutes les 30 s (10 s si la file attend).
+void   requestReg();
 
 } // namespace net

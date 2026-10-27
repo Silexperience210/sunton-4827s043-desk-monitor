@@ -6,6 +6,7 @@
 #include "../platform/platform.h"
 #include "../config.h"
 #include "../core/ops.h"
+#include "../core/regul.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -18,6 +19,7 @@ namespace ui {
 void listSetSort(int mode);
 void mapScreenFocus(int st);
 
+// Premier onglet : le tableau de bord du parc, ou la tournée du camion (rôle régulateur, choisi au démarrage)
 static const ScreenDef * DEFS[TAB_COUNT] = { &SCR_DASH, &SCR_MAP, &SCR_LIST, &SCR_ALERTS, &SCR_SERVICE, &SCR_SETTINGS };
 
 static lv_obj_t * s_content, * s_screens[TAB_COUNT];
@@ -566,7 +568,8 @@ static void tick(lv_timer_t *) {
     } else pressSince = 0;
   }
   updateHeader();
-  if (s_built[TAB_DASH]) dashFreshTick();
+  if (s_built[TAB_DASH] && DEFS[TAB_DASH] == &SCR_DASH) dashFreshTick();
+  if (s_built[TAB_DASH] && DEFS[TAB_DASH] == &SCR_TOUR) tourTick();
   // Nouvelles ruptures → toast (regroupées)
   if (g_model.nEv) {
     if (g_set.alertToasts && !s_splash && g_model.ev[0].st >= 0 && g_model.ev[0].st < g_model.n) {
@@ -597,6 +600,7 @@ int debugTab() { return s_tab; }
 
 void init(lv_disp_t * disp) {
   themeInit(disp);
+  DEFS[TAB_DASH] = vn::g_regCfg.role == vn::ROLE_REGUL ? &SCR_TOUR : &SCR_DASH;
   lv_obj_t * scr = lv_disp_get_scr_act(disp);
   lv_obj_clear_flag(lv_layer_top(), LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_clear_flag(lv_layer_sys(), LV_OBJ_FLAG_SCROLLABLE);

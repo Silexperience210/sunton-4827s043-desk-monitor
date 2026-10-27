@@ -104,6 +104,9 @@ Status status() {
 }
 void requestRefresh() { s_refreshReq = true; }
 void requestSync() { s_syncReq = true; }
+// Le jumeau reste un poste de supervision : le rôle « régulateur » vit sur le Sunton du camion (et le téléphone)
+void requestReg() {}
+const char * deviceId() { return "jumeau-en-ligne"; }
 void requestScan() { s_scanReq = true; s_scanAt = eng::g_ms; }
 static const vn::WifiRaw RAW[1] = { { "VelohNav Ops en ligne", -48, 1, true } };
 bool scanDone(int & count) {

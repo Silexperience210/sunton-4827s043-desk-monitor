@@ -92,11 +92,12 @@ jobs:
           ./sim ../docs/donnees /tmp/boot_wifi_ko boot-wifi-ko
           ./sim ../docs/donnees /tmp/hors_ligne hors-ligne
       # Scénarios annoncés par les rapports (code ≠ 0 au premier écart), et un nom inconnu doit échouer
-      - name: Scénarios ops et service
+      - name: Scénarios ops, service et régulateur
         run: |
           cd sim
           ./sim ../docs/donnees /tmp/ops ops
           ./sim ../docs/donnees /tmp/service service
+          ./sim ../docs/donnees /tmp/regulateur regulateur
           if ./sim ../docs/donnees /tmp/inconnu nimporte-quoi; then echo "un scénario inconnu passe" && exit 1; fi
       - name: Vidage série simulé, banc réel, sauvegarde LittleFS
         run: |
@@ -128,6 +129,11 @@ jobs:
         run: |
           make -C sim -j4 sync_sim
           node online/test/sync.e2e.mjs
+      - name: Régulation (registre, plan, recoupement) et Sunton du camion simulé ⇄ serveur
+        run: |
+          node online/test/regulation.test.mjs
+          make -C sim -j4 reg_sim
+          node online/test/reg.e2e.mjs
       - name: Historique long, erreur des prévisions, notifications, banc de nuit
         run: |
           make -C sim -j4 bench_prevision

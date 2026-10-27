@@ -11,6 +11,7 @@
 #include "../src/core/model.h"
 #include "../src/core/settings.h"
 #include "../src/core/sync.h"
+#include "../src/core/regul.h"
 #include "../src/core/gbfs.h"
 #include "../src/core/weather.h"
 #include "../src/platform/platform.h"
@@ -20,6 +21,7 @@
 #include <string.h>
 #include <math.h>
 #include <vector>
+#include <functional>
 #include <sys/stat.h>
 #include <pthread.h>
 #include "../src/net/net.h"
@@ -1181,6 +1183,238 @@ static int prioScenario() {
   return fails ? 3 : 0;
 }
 
+// ── Scénario « régulateur » : le Sunton du camion (core/regul.h, écran Tournée) ─────
+// État du serveur tel que GET /reg/tour le renvoie (forme réelle, stations du flux docs/donnees) ; les gestes
+// passent par les vrais contrôles et la vraie file. Captures de chaque écran et audit tactile de chacun.
+static const char * REG_SIM_JSON = R"J({"device":"sunton-sim01","trucks":[{"id":"kangoo","name":"Kangoo","capacity":10},{"id":"master","name":"Master","capacity":25}],
+"regulators":[{"id":"paul","name":"Paul"},{"id":"lea","name":"Léa"},{"id":"sam","name":"Sam"}],"atelier":{"name":"Atelier Bertrange","address":"rue des Romains, Bertrange","lat":49.6106,"lon":6.0507},
+"atelierStock":{"ok":6,"at":1793080000},"openTours":[OPEN],"now":T0,
+TOUR,"load":{"ok":9,"hs":2},"plan":{"tour":"TID","stops":[
+{"seq":1,"kind":"station","sid":"40","name":"Glacis Kapell","drop":{"ok":3,"hs":0},"take":{"ok":0,"hs":1},"etaMin":6,"arriveAt":T6,"benefitMin":125,"why":"vide maintenant (mesuré) · 1 vélo(s) hors service ramassé(s) au passage (mesuré : 1 HS)","now":{"bikes":0,"docks":12,"dis":1,"cap":12},"loadAfter":{"ok":6,"hs":3}},
+{"seq":2,"kind":"station","sid":"12","name":"Hamilius","drop":{"ok":3,"hs":0},"take":{"ok":0,"hs":0},"etaMin":13,"arriveAt":T13,"benefitMin":110,"why":"risque de vide dès 10:31 (estimé, marge d'erreur comprise)","now":{"bikes":2,"docks":12,"dis":0,"cap":14},"loadAfter":{"ok":3,"hs":3}},
+{"seq":3,"kind":"station","sid":"37","name":"Gaulois","drop":{"ok":0,"hs":0},"take":{"ok":6,"hs":4},"etaMin":21,"arriveAt":T21,"benefitMin":64,"why":"risque de station pleine dès 10:53 (estimé, marge d'erreur comprise) · 4 vélo(s) hors service ramassé(s) au passage (mesuré : 4 HS)","now":{"bikes":12,"docks":1,"dis":4,"cap":17},"loadAfter":{"ok":9,"hs":7}},
+{"seq":4,"kind":"atelier","name":"Atelier Bertrange","drop":{"ok":0,"hs":7},"take":{"ok":4,"hs":0},"etaMin":38,"arriveAt":T38,"benefitMin":0,"why":"7 vélo(s) hors service déchargés · 4 neufs repris (stock déclaré : 6)","now":null,"loadAfter":{"ok":13,"hs":0}},
+{"seq":5,"kind":"station","sid":"16","name":"Amelie","drop":{"ok":4,"hs":0},"take":{"ok":0,"hs":0},"etaMin":52,"arriveAt":T52,"benefitMin":48,"why":"risque de vide dès 11:20 (estimé, marge d'erreur comprise)","now":{"bikes":3,"docks":16,"dis":1,"cap":19},"loadAfter":{"ok":9,"hs":0}}],
+"benefitMin":347,"durationMin":58},
+"method":"Plan proposé : minutes de rupture évitées ESTIMÉES par la prévision de la carte (2 h après chaque arrivée), avec une marge égale à l'erreur mesurée (2310 prévisions à +1 h ; +4 h : banc simulé, pas encore assez mesuré) ; durées estimées (vitesse supposée 18 km/h).",
+"events":[{"id":"ev-3","kind":"station","sid":"47","name":"Leopold Goebel","at":TM12,"took":{"ok":0,"hs":0},"dropped":{"ok":4,"hs":0},"impossible":null,"check":null},
+{"id":"ev-2","kind":"station","sid":"41","name":"Place Laurent","at":TM31,"took":{"ok":0,"hs":2},"dropped":{"ok":5,"hs":0},"impossible":null,"check":{"verdict":"concordant","declared":{"ok":5,"hs":-2},"observed":{"ok":5,"hs":-2}}},
+{"id":"ev-1","kind":"station","sid":"44","name":"Areler Strooss","at":TM47,"took":{"ok":6,"hs":0},"dropped":{"ok":0,"hs":0},"impossible":null,"check":{"verdict":"ecart","declared":{"ok":-6,"hs":0},"observed":{"ok":-4,"hs":0}}},
+{"id":"ev-0","kind":"station","sid":"14","name":"Knuedler","at":TM58,"took":{"ok":0,"hs":0},"dropped":{"ok":0,"hs":0},"impossible":"Impossible de se garer","check":{"verdict":"hors-flux"}}]})J";
+
+static std::string regSimJson(int64_t t0, const char * tourId, bool withTour, bool otherOpen) {
+  std::string j = REG_SIM_JSON;
+  auto rep = [&](const char * k, const std::string & v) { for (size_t at; (at = j.find(k)) != std::string::npos;) j.replace(at, strlen(k), v); };
+  char tour[400];
+  snprintf(tour, sizeof(tour), "\"tour\":{\"id\":\"%s\",\"device\":\"sunton-sim01\",\"truckName\":\"Master\",\"capacity\":25,\"regulatorName\":\"L\xC3\xA9" "a\",\"startedAt\":%lld}",
+           tourId, (long long)(t0 - 3700));
+  rep("TOUR", withTour ? tour : "\"tour\":null");
+  rep("OPEN", otherOpen ? "{\"id\":\"t-tel-paul\",\"truckName\":\"Kangoo\",\"regulatorName\":\"Paul\",\"device\":\"tel-x3k9q2\",\"startedAt\":1793088000}" : "");
+  rep("TID", tourId);
+  // horodatages : d'abord les plus longs (« TM12 » avant « T1… »)
+  rep("TM12", std::to_string(t0 - 12 * 60)); rep("TM31", std::to_string(t0 - 31 * 60)); rep("TM47", std::to_string(t0 - 47 * 60)); rep("TM58", std::to_string(t0 - 58 * 60));
+  rep("T13", std::to_string(t0 + 13 * 60)); rep("T21", std::to_string(t0 + 21 * 60)); rep("T38", std::to_string(t0 + 38 * 60)); rep("T52", std::to_string(t0 + 52 * 60));
+  rep("T6", std::to_string(t0 + 6 * 60)); rep("T0", std::to_string(t0));
+  return j;
+}
+static lv_obj_t * findLabel(lv_obj_t * o, const char * txt) { return findClickableWithText(o, txt); }
+
+static int regulScenario(const std::string & in) {
+  s_namedShots = true;
+  auto info = readFile(in + "/station_information.json");
+  auto status = readFile(in + "/station_status.json");
+  auto types = readFile(in + "/vehicle_types.json");
+  auto wx = readFile(in + "/weather.json");
+  static StatusRec recs[VN_MAX_ST];
+  static InfoRec irecs[VN_MAX_ST];
+  ElecTypes et;
+  gbfsParseTypes(types.data(), types.size(), et);
+  int64_t lastUpd = 0;
+  int ns = gbfsParseStatus(status.data(), status.size(), recs, VN_MAX_ST, et, &lastUpd);
+  int ni = gbfsParseInfo(info.data(), info.size(), irecs, VN_MAX_ST);
+  const int64_t T0 = luxT(2026, 10, 27, 10, 0);
+  sim::g_epoch0 = T0;
+  settingsDefaults(g_set); syncCfgDefaults(g_sync);
+  strcpy(g_set.ssid, "Partage-Lea");
+  snprintf(g_sync.url, sizeof(g_sync.url), "http://umbrel.local:8790");
+  regCfgDefaults(g_regCfg);
+  g_regCfg.role = ROLE_REGUL;
+  regInit(g_reg);
+  if (!g_model.init()) return 1;
+  g_model.applyInfo(irecs, ni, T0 - 60);
+  g_model.applyStatus(recs, ns, T0 - 30);
+  g_model.lastUpdate = T0 - 30; g_model.feedUpdated = T0 - 50;
+  wxParse(wx.data(), wx.size(), g_model.wx);
+  g_model.wx.fetchedAt = T0 - 300;
+  g_model.recompute(T0);
+  g_model.nEv = 0;
+  lv_init();
+  static lv_disp_draw_buf_t db;
+  lv_disp_draw_buf_init(&db, s_buf, nullptr, 480 * 272);
+  static lv_disp_drv_t dd;
+  lv_disp_drv_init(&dd);
+  dd.hor_res = 480; dd.ver_res = 272; dd.flush_cb = flush; dd.draw_buf = &db;
+  lv_disp_t * disp = lv_disp_drv_register(&dd);
+  static lv_indev_drv_t id;
+  lv_indev_drv_init(&id);
+  id.type = LV_INDEV_TYPE_POINTER; id.read_cb = readTouch;
+  lv_indev_drv_register(&id);
+  ui::init(disp);
+  run(900);
+  int fails = 0;
+  auto expect = [&](bool c, const char * what) { if (!c) { fails++; printf("  \xC3\x89" "CHEC %s\n", what); } else printf("  ok   %s\n", what); };
+  std::string repPath = s_out + "/audit_regulateur.txt";
+  FILE * rep = fopen(repPath.c_str(), "w");
+  if (!rep) return 1;
+
+  // 1. Pas encore joint : rien à commencer, et c'est dit
+  run(400);
+  shot("60_tournee_connexion");
+  {
+    lv_obj_t * sb = findLabel(lv_scr_act(), "Commencer une tourn\xC3\xA9" "e");
+    bool hidden = !sb;
+    for (lv_obj_t * o = sb; o; o = lv_obj_get_parent(o)) if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) hidden = true;
+    expect(ui::debugTab() == ui::TAB_DASH && hidden, "r\xC3\xB4le r\xC3\xA9gulateur : onglet Tourn\xC3\xA9" "e, rien \xC3\xA0 commencer sans le serveur");
+  }
+  // 2. Listes reçues, aucune tournée ; une tournée du téléphone est ouverte ailleurs
+  std::string j = regSimJson(T0, "-", false, true);
+  expect(regParseTour(j.c_str(), j.size(), g_reg.snap), "\xC3\xA9tat du serveur lu (sans tourn\xC3\xA9" "e)");
+  g_reg.snapAt = g_reg.lastOk = T0; g_reg.lastCode = 200; g_reg.version++;
+  run(500);
+  shot("61_tournee_aucune");
+  audit("aucune", rep);
+  // 3. Début de tournée : régulateur, camion, chargement
+  lv_obj_t * b = findLabel(lv_scr_act(), "Commencer une tourn\xC3\xA9" "e");
+  expect(b != nullptr, "bouton \xC2\xAB Commencer une tourn\xC3\xA9" "e \xC2\xBB");
+  if (b) { lv_event_send(b, LV_EVENT_CLICKED, nullptr); run(500); }
+  lv_obj_t * pl = findLabel(lv_layer_top(), "L\xC3\xA9" "a"), * pt = findLabel(lv_layer_top(), "Master \xC2\xB7 25 v\xC3\xA9los");
+  if (pl) lv_event_send(pl, LV_EVENT_CLICKED, nullptr);
+  if (pt) lv_event_send(pt, LV_EVENT_CLICKED, nullptr);
+  run(200);
+  shot("62_tournee_depart");
+  audit("depart", rep);
+  lv_obj_t * go = findLabel(lv_layer_top(), "Commencer");
+  if (go) { lv_event_send(go, LV_EVENT_CLICKED, nullptr); run(400); }
+  expect(g_reg.nq == 1 && g_reg.q[0].op == RO_START && !strcmp(g_reg.q[0].truck, "master") && !strcmp(g_reg.q[0].reg, "lea"), "d\xC3\xA9" "but rang\xC3\xA9 dans la file (Master, L\xC3\xA9" "a)");
+  const std::string tid = g_reg.nq ? g_reg.q[0].id : "t-x";
+  shot("63_tournee_commencee_hors_ligne");
+  if (ui::debugToast()) lv_obj_add_flag(ui::debugToast(), LV_OBJ_FLAG_HIDDEN);
+  // 4. Le serveur a confirmé : prochain arrêt
+  g_reg.nq = 0;
+  j = regSimJson(T0, tid.c_str(), true, false);
+  regParseTour(j.c_str(), j.size(), g_reg.snap);
+  g_reg.snapAt = g_reg.lastOk = T0; g_reg.version++;
+  run(500);
+  shot("64_tournee_prochain_arret");
+  audit("tournee", rep);
+  // 5. Fait : ce qui a vraiment été fait (proposé : déposer 3, ramasser 1 HS) — le régulateur n'a déposé que 2
+  b = findLabel(lv_scr_act(), "Fait");
+  if (b) { lv_event_send(b, LV_EVENT_CLICKED, nullptr); run(500); }
+  shot("65_tournee_valider");
+  audit("valider", rep);
+  // premier [−] de la feuille : déposés 3 → 2
+  {
+    std::vector<lv_obj_t *> btns;
+    std::function<void(lv_obj_t *)> walk = [&](lv_obj_t * o) {
+      if (lv_obj_has_flag(o, LV_OBJ_FLAG_CLICKABLE) && lv_obj_get_child_cnt(o) == 1 && lv_obj_check_type(lv_obj_get_child(o, 0), &lv_img_class)
+          && lv_obj_get_width(o) == 36) btns.push_back(o);
+      for (uint32_t i = 0; i < lv_obj_get_child_cnt(o); i++) walk(lv_obj_get_child(o, i));
+    };
+    walk(lv_layer_top());
+    expect(btns.size() == 6, "trois compteurs [\xE2\x88\x92] [+]");
+    if (btns.size() == 6) { lv_event_send(btns[0], LV_EVENT_CLICKED, nullptr); run(100); }
+  }
+  shot("66_tournee_valider_corrige");
+  b = findLabel(lv_layer_top(), "Valider");
+  if (b) { lv_event_send(b, LV_EVENT_CLICKED, nullptr); run(500); }
+  expect(g_reg.nq == 1 && g_reg.q[0].dropped.ok == 2 && g_reg.q[0].took.hs == 1 && g_reg.q[0].plDrop.ok == 3 && !strcmp(g_reg.q[0].sid, "40"),
+         "d\xC3\xA9" "clar\xC3\xA9 : 2 d\xC3\xA9pos\xC3\xA9s, 1 HS (le plan proposait 3, gard\xC3\xA9 \xC3\xA0 c\xC3\xB4t\xC3\xA9)");
+  g_reg.lastErr[0] = 0;
+  if (ui::debugToast()) lv_obj_add_flag(ui::debugToast(), LV_OBJ_FLAG_HIDDEN);
+  run(300);
+  shot("67_tournee_apres_declaration");
+  RegCount l = regLoadNow(g_reg);
+  expect(l.ok == 7 && l.hs == 3, "\xC3\xA0 bord apr\xC3\xA8s : 7 + 3 HS (vue locale, avant l'envoi)");
+  // 6. Impossible
+  b = findLabel(lv_scr_act(), "Impossible");
+  if (b) { lv_event_send(b, LV_EVENT_CLICKED, nullptr); run(500); }
+  shot("68_tournee_impossible");
+  audit("impossible", rep);
+  ui::sheetClose(); run(300);
+  // 7. Autre arrêt : atelier, ou station par son numéro
+  b = findLabel(lv_scr_act(), "Autre arr\xC3\xAAt");
+  if (b) { lv_event_send(b, LV_EVENT_CLICKED, nullptr); run(500); }
+  shot("69_tournee_autre_arret");
+  audit("autre", rep);
+  {
+    // touche « 4 » du pavé
+    std::function<lv_obj_t *(lv_obj_t *)> kp = [&](lv_obj_t * o) -> lv_obj_t * {
+      if (lv_obj_check_type(o, &lv_btnmatrix_class)) return o;
+      for (uint32_t i = 0; i < lv_obj_get_child_cnt(o); i++) { lv_obj_t * f = kp(lv_obj_get_child(o, i)); if (f) return f; }
+      return nullptr;
+    };
+    lv_obj_t * m = kp(lv_layer_top());
+    expect(m != nullptr, "pav\xC3\xA9 num\xC3\xA9rique");
+    if (m) {
+      lv_area_t a; lv_obj_get_coords(m, &a);
+      int w = lv_area_get_width(&a), h = lv_area_get_height(&a);
+      tap(a.x1 + w / 6, a.y1 + h * 3 / 8); run(200);            // 2e ligne, 1re colonne : « 4 »
+    }
+  }
+  shot("70_tournee_autre_arret_numero");
+  ui::sheetClose(); run(300);
+  // 8. Plan et déclarations (avec la déclaration en attente d'envoi)
+  b = findLabel(lv_scr_act(), "Plan");
+  if (b) { lv_event_send(b, LV_EVENT_CLICKED, nullptr); run(500); }
+  shot("71_tournee_plan");
+  audit("plan", rep);
+  {
+    lv_obj_t * body = nullptr;
+    std::function<void(lv_obj_t *)> f = [&](lv_obj_t * o) { if (!body && lv_obj_has_flag(o, LV_OBJ_FLAG_SCROLLABLE) && lv_obj_get_height(o) > 150) body = o;
+      for (uint32_t i = 0; i < lv_obj_get_child_cnt(o); i++) f(lv_obj_get_child(o, i)); };
+    f(lv_layer_top());
+    if (body) { lv_obj_scroll_to_y(body, 190, LV_ANIM_OFF); run(200); shot("72_tournee_plan_declarations"); lv_obj_scroll_to_y(body, 420, LV_ANIM_OFF); run(200); shot("73_tournee_plan_methode"); }
+  }
+  // 9. Fin de tournée
+  b = findLabel(lv_layer_top(), "Terminer la tourn\xC3\xA9" "e\xE2\x80\xA6");
+  if (b) { lv_event_send(b, LV_EVENT_CLICKED, nullptr); run(500); }
+  shot("74_tournee_fin");
+  audit("fin", rep);
+  ui::sheetClose(); run(300);
+  // 10. Hors ligne + refus du serveur : dit en bas de l'écran
+  g_reg.lastOk = T0 - 600; g_reg.lastTry = T0 + 60; g_reg.lastCode = -1;
+  snprintf(g_reg.lastErr, sizeof(g_reg.lastErr), "serveur injoignable (code -1)");
+  g_reg.version++;
+  run(400);
+  shot("75_tournee_hors_ligne");
+  g_reg.nq = 0;
+  g_reg.nRej = 1;
+  g_reg.rej[0].at = T0 + 60;
+  snprintf(g_reg.rej[0].what, sizeof(g_reg.rej[0].what), "Glacis Kapell");
+  snprintf(g_reg.rej[0].why, sizeof(g_reg.rej[0].why), "chargement n\xC3\xA9gatif apr\xC3\xA8s cet arr\xC3\xAAt (-1 + 3 HS) : v\xC3\xA9rifier les nombres d\xC3\xA9" "clar\xC3\xA9s");
+  g_reg.lastOk = T0 + 60; g_reg.lastErr[0] = 0;
+  g_reg.version++;
+  run(400);
+  shot("76_tournee_refus");
+  // 11. Réglages : le rôle
+  tap(30, tabY(ui::TAB_SETTINGS)); run(600);
+  {
+    lv_obj_t * sec = findLabel(lv_scr_act(), "R\xC3\xA9gulateur");
+    if (sec) { lv_obj_scroll_to_view_recursive(sec, LV_ANIM_OFF); run(200); }
+    // la section entière à l'écran : on descend jusqu'à la ligne « Appareil »
+    lv_obj_t * sc = lv_obj_get_parent(lv_obj_get_parent(lv_obj_get_parent(sec)));
+    for (int k = 0; sc && k < 6 && !lv_obj_has_flag(sc, LV_OBJ_FLAG_SCROLLABLE); k++) sc = lv_obj_get_parent(sc);
+    if (sc) { lv_obj_scroll_by(sc, 0, -60, LV_ANIM_OFF); run(200); }
+  }
+  shot("77_reglages_role");
+  audit("reglages", rep);
+  fprintf(rep, "\nBilan : %d OK, %d KO, %d petites cibles\n", s_auditOk, s_auditFail, s_auditSmall);
+  fclose(rep);
+  printf("Audit tactile (r\xC3\xA9gulateur) : %d OK, %d KO, %d petites cibles \xE2\x86\x92 %s\n", s_auditOk, s_auditFail, s_auditSmall, repPath.c_str());
+  printf("Sc\xC3\xA9nario r\xC3\xA9gulateur : %d \xC3\xA9" "chec(s)\n", fails);
+  return (fails || s_auditFail) ? 2 : 0;
+}
+
 static int realMain(int argc, char ** argv) {
   if (argc < 3) { fprintf(stderr, "usage : sim <json_dir> <out_dir>\n"); return 1; }
   std::string in = argv[1];
@@ -1195,8 +1429,9 @@ static int realMain(int argc, char ** argv) {
     if (strcmp(argv[3], "hors-ligne") == 0) return horsLigneScenario(in);
     if (strcmp(argv[3], "boot") == 0 || strcmp(argv[3], "boot-wifi-ko") == 0) return bootScenario(in, argv[3]);
     if (strcmp(argv[3], "priorites") == 0) return prioScenario();
+    if (strcmp(argv[3], "regulateur") == 0) return regulScenario(in);
     // un nom mal tapé ne doit pas « passer » en jouant le démarrage (code 0) : la CI le verrait vert
-    fprintf(stderr, "sc\xC3\xA9nario inconnu : %s (ops, service, hors-ligne, totaux, boot, boot-wifi-ko, priorites)\n", argv[3]);
+    fprintf(stderr, "sc\xC3\xA9nario inconnu : %s (ops, service, hors-ligne, totaux, boot, boot-wifi-ko, priorites, regulateur)\n", argv[3]);
     return 64;
   }
 

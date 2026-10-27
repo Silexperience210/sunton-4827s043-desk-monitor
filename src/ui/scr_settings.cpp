@@ -6,6 +6,7 @@
 #include "../config.h"
 #include "../core/ops.h"
 #include "../core/sync.h"
+#include "../core/regul.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -17,7 +18,7 @@ namespace ui {
 static lv_obj_t * s_wifiSub, * s_srcSub, * s_srcBadge, * s_refSub, * s_learnSub, * s_learnBar, * s_confSub;
 static lv_obj_t * s_memSub, * s_fsSub, * s_upSub, * s_resetBtn, * s_touchSub;
 static lv_obj_t * s_freshSub, * s_ingSub;
-static lv_obj_t * s_syncUrlSub, * s_syncSub;
+static lv_obj_t * s_syncUrlSub, * s_syncSub, * s_devSub;
 static uint32_t s_resetArmed = 0;
 
 static lv_obj_t * section(lv_obj_t * parent, const char * title) {
@@ -152,6 +153,14 @@ static void refresh() {
     lv_label_set_text(s_syncSub, line);
     lv_obj_set_style_text_color(s_syncSub, C(ns.sync.state == vn::SS_FAIL ? HX_WARN : HX_TEXT2), 0);
   }
+  {
+    char line[200], d[240];
+    if (vn::g_regCfg.role == vn::ROLE_REGUL) {
+      vn::regStatusLine(vn::g_reg, vn::g_sync.url[0] != 0, t, line, sizeof(line));
+      snprintf(d, sizeof(d), "%s \xC2\xB7 %s", net::deviceId()[0] ? net::deviceId() : "\xE2\x80\x94", line);
+    } else snprintf(d, sizeof(d), "%s \xC2\xB7 nom sous lequel le serveur voit ce Sunton", net::deviceId()[0] ? net::deviceId() : "\xE2\x80\x94");
+    lv_label_set_text(s_devSub, d);
+  }
 
   plat::SysInfo si;
   plat::sysInfo(si);
@@ -244,6 +253,29 @@ static void build(lv_obj_t * root) {
     vn::g_sync.push = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
     vn::syncCfgSave();
   }, nullptr);
+
+  // Rôle (core/regul.h) : poste de supervision, ou Sunton du camion (écran « Tournée »)
+  lv_obj_t * s7 = section(sc, "R\xC3\x94LE DE CE SUNTON");
+  r = srow(s7, &ic_truck_16, "R\xC3\xB4le", "Poste : supervision du parc \xC2\xB7 R\xC3\xA9gulateur : tourn\xC3\xA9" "e du camion en premier onglet (red\xC3\xA9marre)",
+           nullptr, 190);
+  static const char * ROLES[2] = { "Poste", "R\xC3\xA9gulateur" };
+  seg = segmented(r, ROLES, 2, vn::g_regCfg.role == vn::ROLE_REGUL ? 1 : 0, [](int i) {
+    uint8_t role = i == 1 ? vn::ROLE_REGUL : vn::ROLE_POSTE;
+    if (role == vn::g_regCfg.role) return;
+    vn::g_regCfg.role = role;
+    if (!vn::regCfgSave()) { toast("R\xC3\xB4le non enregistr\xC3\xA9", "\xC3\x89" "criture en flash impossible", T_BAD, &ic_alert_16); return; }
+    toast("Changement de r\xC3\xB4le", role == vn::ROLE_REGUL ? "Le Sunton red\xC3\xA9marre en r\xC3\xA9gulateur (onglet Tourn\xC3\xA9" "e)"
+                                                              : "Le Sunton red\xC3\xA9marre en poste de supervision", T_ACCENT, &ic_truck_16);
+    lv_timer_t * tm = lv_timer_create([](lv_timer_t *) {
+      vn::Model::Blob blob;                                   // comme « Redémarrer » : état sauvegardé d'abord
+      if (g_model.serialize(blob)) vn::Model::writeSaved(blob);
+      plat::restart();
+    }, 1500, nullptr);
+    lv_timer_set_repeat_count(tm, 1);
+  }, 30);
+  lv_obj_set_width(seg, 170);
+  segSet(seg, vn::g_regCfg.role == vn::ROLE_REGUL ? 1 : 0, false);
+  srow(s7, &ic_key_16, "Appareil", "", &s_devSub, 300);
 
   // Seuils
   lv_obj_t * s2 = section(sc, "SEUILS D'ALERTE");
