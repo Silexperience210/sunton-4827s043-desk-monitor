@@ -27,7 +27,8 @@ tout le reste est réorienté exploitation.
 | **Stations** | Les 143 stations, triables par priorité, nom, remplissage ou échéance de rupture · vélos / bornes, barre de composition, prévision à +1 h |
 | **Alertes** | Plan de régulation (vélos à livrer / à retirer), transferts suggérés, filtres Ruptures / Prévisions / Maintenance · badge rouge sur le rail = stations vides ou pleines · notification à chaque nouvelle rupture |
 | **Service** | La vue du directeur de service : disponibilité du jour et sur 30 jours (« 97,3 % · 54 671 h sur 56 211 h », parts vide / pleine / hors service nommées — une station vide n'est pas hors service), ruptures et saturations par jour sur 30 jours, comparaison à la semaine précédente et au même jour de la semaine dernière · **problèmes récurrents** (« Vide 8 h–9 h · 10 j ouvrables sur 10 · série 12 j », règle affichée, fériés rangés avec le week-end) · 5 pires et 5 meilleures stations · état de la carte (fraîcheur des flux, Wi-Fi, mémoire, apprentissage). Définitions et mesures : [`docs/vue-service.md`](docs/vue-service.md) |
-| **Réglages** | Wi-Fi (recherche + clavier), fréquence de rafraîchissement, seuils d'alerte, luminosité et atténuation nocturne, état de l'apprentissage, test et étalonnage du tactile, mémoire / stockage / redémarrage |
+| **Réglages** | Wi-Fi (recherche + clavier), fréquence de rafraîchissement, seuils d'alerte, luminosité et atténuation nocturne, état de l'apprentissage, test et étalonnage du tactile, synchro en ligne, **rôle** (poste ou régulateur), mémoire / stockage / redémarrage |
+| **Tournée** *(rôle régulateur, à la place de Réseau)* | Le Sunton du camion : prochain arrêt proposé par le serveur (**estimé**, avec sa marge d'erreur mesurée), validation de ce qui a **vraiment** été fait (déposés, pris, hors service ramassés, atelier) ou de l'arrêt impossible, arrêt hors plan par numéro de station, chargement à bord par catégorie, file hors connexion en flash, recoupement de chaque arrêt avec le flux. Voir [`docs/regulation.md`](docs/regulation.md) |
 
 Un tap sur une station (carte, liste, alerte) ouvre sa **fiche** : statut, vélos / élec / bornes / HS,
 courbe 24 h réelle + profil habituel + prévision 2 h, prévisions +15 min / +30 min / +1 h / +2 h,
@@ -55,11 +56,14 @@ compilé en WebAssembly) sur une machine allumée en permanence — Umbrel, Rasp
   +15 min… +4 h est noté, puis comparé au relevé (contre la persistance et le profil seul, règle du banc) ;
   et **chaque nuit, le banc natif rejoue l'archive** et publie son rapport ;
 - **notifications sur le téléphone** (ntfy) : station vide ou pleine qui dure, flux muet ou figé, Sunton
-  resynchronisé, et un **résumé chaque matin** (la veille, l'erreur de la prévision, l'état du moment).
+  resynchronisé, et un **résumé chaque matin** (la veille, l'erreur de la prévision, l'état du moment) ;
+- **régulation** : registre des interventions **déclarées** par les régulateurs (Sunton du camion, téléphone en
+  secours), recoupées avec le flux sans jamais être corrigées en silence ; plan des tournées pour 1 ou 2 camions
+  (capacité du camion du jour, atelier de Bertrange), présenté comme une estimation — [`docs/regulation.md`](docs/regulation.md).
 
 ![Jumeau de l'écran](docs/en-ligne.png)
 
-**La suite** (interventions déclarées par les régulateurs, tournées, rapport mensuel, mises à jour sans câble…) et
+**La suite** (rapport mensuel, mises à jour sans câble, rejouer une journée…) et
 la règle qui la gouverne — rien d'approximatif présenté comme un fait : [`docs/feuille-de-route.md`](docs/feuille-de-route.md).
 
 ## Ce qui est repris de VelohNav
@@ -576,7 +580,7 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision dump_sim
-./test_core ../docs/donnees     # 1 119 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 1 173 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2, v3 → v4),
                                  # écart habituel (dispersion apprise, affichée pour information, textes de l'écart),
@@ -586,7 +590,8 @@ make sim test_core bench_prevision dump_sim
                                  # vue Service (résumés par jour, disponibilité, détecteur de récurrent sur un monde
                                  # à vérité connue, /vn_days.bin : migration et fichiers abîmés),
                                  # vidage série « dump » (CRC32, base64, émetteur, lecteur de commandes),
-                                 # synchro en ligne (adresse, décision, contrôles, fichiers corrompus, envois)
+                                 # synchro en ligne (adresse, décision, contrôles, fichiers corrompus, envois),
+                                 # rôle régulateur (réponse du serveur, contrôles, file hors connexion, refus, échange)
 ./sim ../docs/donnees /tmp/captures   # scénario tactile, captures, audit des zones tactiles, étalonnage
 ./sim ../docs/donnees /tmp/boot boot              # premier démarrage : sans heure, sans Wi-Fi, sans données
 ./sim ../docs/donnees /tmp/boot2 boot-wifi-ko     # réseau enregistré mais injoignable
@@ -595,6 +600,8 @@ make sim test_core bench_prevision dump_sim
                                  # ces écrans sont archivés dans docs/captures/ (24_…43_)
 ./sim ../docs/donnees /tmp/svc service            # vue Service : 4 semaines d'un monde à vérité connue sur les vraies
                                  # stations ; imprime vrais trouvés / faux positifs ; captures 48_…58_
+./sim ../docs/donnees /tmp/reg regulateur         # écran Tournée (rôle régulateur) : gestes réels, captures, audit tactile
+                                 # (captures dans docs/captures/regulateur/)
 ./bench_prevision                # banc de la prévision : 143 stations et une météo simulées sur 168 jours,
                                  # MAE à +15…+120 min, alertes par jour de pluie / sec, maturation du profil
                                  # (méthode et chiffres : docs/mesures-prevision.md)
@@ -602,7 +609,9 @@ python3 ../tools/bench_grille.py --config "N12=profil_n=12" --config "N24=" --re
 ../.venv/bin/python ../tools/test_carte_dump.py   # liaison « dump » simulée sur un pseudo-terminal (38 vérifications)
 python3 ../tools/test_bench_reel.py              # banc --reel sur 9 semaines d'une « carte simulée » (28 vérifications, ~1 min)
 make sync_sim && node ../online/test/sync.e2e.mjs # synchro du firmware contre le vrai serveur en ligne (10 vérifications)
-make bench_prevision && node ../online/test/features.test.mjs   # historique long, note des prévisions, notifications, banc de nuit (82 vérifications)
+make bench_prevision && node ../online/test/features.test.mjs   # historique long, note des prévisions, notifications, banc de nuit (84 vérifications)
+node ../online/test/regulation.test.mjs          # registre des interventions, recoupement, plan des tournées, HTTP (67 vérifications)
+make reg_sim && node ../online/test/reg.e2e.mjs   # le Sunton du camion (même code, curl) contre le vrai serveur (26 vérifications)
 ```
 
 ### Données réelles de la carte : vidage série et banc `--reel`
@@ -702,8 +711,10 @@ src/
   boot.cpp                 écran de démarrage, cause du dernier redémarrage, mode sans échec
   config.h                 URLs, périodes, tailles d'historique
   core/                    modèle : GBFS, météo, historique, profils, prévisions, alertes, transferts,
-                           synchro avec le serveur en ligne (sync.cpp)
-  ui/                      coquille (en-tête, rail, sheet, toasts), écrans, fiche station, Wi-Fi
+                           synchro avec le serveur en ligne (sync.cpp), rôle régulateur (regul.cpp : file
+                           hors connexion, contrôles, échange avec /reg)
+  ui/                      coquille (en-tête, rail, sheet, toasts), écrans, fiche station, Wi-Fi,
+                           écran Tournée du Sunton du camion (scr_tour.cpp)
   ui/widgets/              graphique sur mesure (aire en fondu, pointillés), carte du réseau
   ui/fonts, ui/icons       polices et icônes générées (tools/gen_fonts.sh, tools/gen_icons.mjs)
   hal/                     dalle RGB (esp_lcd), GT911, XPT2046, étalonnage tactile, brochage

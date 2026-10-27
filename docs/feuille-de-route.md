@@ -38,6 +38,22 @@ pour les vélos en trajet). Mieux vaut abandonner une fonction que la faire ment
 | **Sunton « régulateur »** (dans le camion) | affiche la tournée et l'état des prochains arrêts ; **fait valider chaque arrêt** (vélos réellement pris ou déposés) ; garde les validations hors connexion et les envoie dès que le réseau revient | pas de calcul de tournée, pas de GPS (l'arrêt est confirmé par le régulateur) |
 | **Téléphone** | notifications ntfy ; page de secours pour valider un arrêt si le Sunton manque | |
 
+## Où on en est (27/10/2026)
+
+| chantier | état |
+|---|---|
+| 1. Interventions déclarées | **livré dans le code** : registre et recoupement sur le serveur, rôle « régulateur » du firmware (écran Tournée, file hors connexion en flash), page de secours sur le téléphone, onglet Régulation. À éprouver sur le terrain. Mode d'emploi : [`regulation.md`](regulation.md) |
+| 2. Tournées de régulation | **livré dans le code** : plan pour 1 ou 2 camions (capacité du camion du jour, chargement déclaré, atelier), recalculé toutes les 30 s à partir du déclaré, présenté comme une estimation avec sa marge d'erreur mesurée. Reste : la vérification « pas pire que les transferts au plus proche » sur l'archive réelle, puis la mesure avant / après sur le vrai parc |
+| 0, 3 – 8 | à faire, dans l'ordre |
+
+Restes connus des chantiers 1 et 2, dits plutôt que cachés :
+
+- **un jeton par appareil** : aujourd'hui un seul jeton serveur (`VN_TOKEN`), chaque appareil s'annonce par son
+  identifiant (`X-VN-Device`) ; la feuille de route prévoyait un jeton par appareil ;
+- indicateurs à ajouter : vélos déplacés **par régulateur**, ruptures du jour **sans** intervention ;
+- la séparation des retraits observés (régulation déclarée / clients) dans l'historique ;
+- le point exact de l'atelier, rue des Romains, reste à saisir (onglet Régulation → Réglages).
+
 ## Les chantiers
 
 ### 0. Prérequis : recette sur le terrain, puis 2 à 4 semaines de vraies données
@@ -175,5 +191,5 @@ Bouton « Je m'en occupe » dans la notification ntfy et sur les Sunton ; « Ham
 
 ## Encore à trancher
 
-1. Numéro (ou point sur la carte) de l'atelier, rue des Romains : se saisit une fois dans les réglages du serveur ;
-   ne bloque pas le chantier 1.
+1. Point exact de l'atelier, rue des Romains : se colle une fois dans l'onglet Régulation → Réglages (coordonnées
+   ou lien OpenStreetMap / Google Maps). Tant qu'il manque, le plan ne propose pas d'arrêt à l'atelier.
