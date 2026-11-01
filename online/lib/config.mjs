@@ -13,9 +13,11 @@ export const CONFIG = {
   port: int('VN_PORT', 8790),
   host: env('VN_HOST', '0.0.0.0'),
   dataDir: resolve(env('VN_DATA', './data')),
-  // Jeton facultatif : protège /sync et /api/twin (données publiques dérivées, mais un serveur
-  // exposé sur Internet n'a pas à servir ses profils à n'importe qui). Vide = ouvert (réseau local).
+  // Jeton des routes protégées (écritures, réglages, écrans, synchro des cartes : lib/acces.mjs).
+  // Vide : les écritures sont fermées, sauf en local (127.0.0.1) ou avec VN_OPEN=1.
   token: env('VN_TOKEN', ''),
+  // Sans jeton, ouvrir quand même les écritures au réseau (réseau local de confiance seulement)
+  open: env('VN_OPEN', '') === '1',
   name: env('VN_NAME', 'VelohNav Ops en ligne'),
 
   // src/config.h

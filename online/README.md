@@ -60,7 +60,8 @@ node online/server.mjs --import /tmp/vidage                  # puis lancer le se
 |---|---|---|
 | `VN_PORT` / `VN_HOST` | `8790` / `0.0.0.0` | écoute |
 | `VN_DATA` | `./data` (`/data` en Docker) | état appris, registre des écrans, archive |
-| `VN_TOKEN` | — | jeton exigé par `/sync` et `/api` (Bearer). À définir dès que le port sort du réseau local |
+| `VN_TOKEN` | — | jeton des routes protégées (écritures, réglages, écrans, synchro des cartes), en `Authorization: Bearer` ou `X-VN-Token`, jamais dans l'URL. Vide : écritures fermées (403), sauf en local ou avec `VN_OPEN=1` |
+| `VN_OPEN` | — | `1` : sans jeton, écritures ouvertes au réseau local (de confiance seulement). Une page d'un autre site reste refusée (CSRF) |
 | `VN_REFRESH_S` | `60` | période de `station_status` (30 s au moins), comme Réglages → Rafraîchissement |
 | `VN_SAVE_S` | `600` | sauvegarde sur disque (la carte : 30 min) ; aussi à l'arrêt (`docker stop`, Ctrl-C) |
 | `VN_ARCHIVE_HOURS` | `6,18` | instantanés pour le banc (heure de Luxembourg) ; vide = aucun |
@@ -97,16 +98,17 @@ l'Umbrel, pas d'un hébergeur « serverless » comme Vercel (pas de processus pe
 ouvrir la page depuis le téléphone hors de chez soi, **Cloudflare Tunnel** la publie en https sans ouvrir
 de port sur la box :
 
-1. **Définir `VN_TOKEN`** dans `docker-compose.yml` (un long mot de passe) : la page le demandera une fois,
-   les Sunton aussi (`sync jeton …`). Indispensable dès que la page sort du réseau local.
-2. Essai sans compte : `docker compose --profile essai up -d`, puis
-   `docker compose logs tunnel-essai | grep trycloudflare` → une adresse `https://….trycloudflare.com`
-   (au hasard, change à chaque redémarrage).
+1. **Définir `VN_TOKEN`** (un long mot de passe) dans un fichier `.env` à côté du compose : la page le
+   demandera une fois, les Sunton aussi (`sync jeton …`). Les tunnels sont dans `docker-compose.tunnel.yml`,
+   qui refuse de démarrer sans lui.
+2. Essai sans compte : `docker compose -f docker-compose.yml -f docker-compose.tunnel.yml --profile essai up -d`,
+   puis `docker compose -f docker-compose.yml -f docker-compose.tunnel.yml logs tunnel-essai | grep trycloudflare`
+   → une adresse `https://….trycloudflare.com` (au hasard, change à chaque redémarrage).
 3. Adresse fixe : compte Cloudflare gratuit et un domaine géré par Cloudflare ; Zero Trust → Networks →
    Tunnels → *Create a tunnel* (cloudflared) → copier le jeton ; *Public hostname* → service
-   `http://velohnav-ops:8790`. Puis `TUNNEL_TOKEN=… docker compose --profile tunnel up -d` (ou le jeton dans
-   un fichier `.env` à côté du compose). Mettre cette adresse dans `VN_PUBLIC_URL` pour que les
-   notifications l'ouvrent.
+   `http://velohnav-ops:8790`. Puis `TUNNEL_TOKEN=… docker compose -f docker-compose.yml -f docker-compose.tunnel.yml
+   --profile tunnel up -d` (ou les jetons dans le fichier `.env`). Mettre cette adresse dans `VN_PUBLIC_URL`
+   pour que les notifications l'ouvrent.
 
 ## Historique long (onglet Historique)
 
@@ -166,8 +168,9 @@ objet JSON (Home Assistant, n8n…).
 ## Brancher un Sunton (firmware 1.3.0)
 
 Réglages → **Synchro en ligne** → Serveur : saisir `http://<machine>:8790` (ou, en série,
-`sync url http://<machine>:8790`, puis `sync jeton …` si `VN_TOKEN` est défini). Au démarrage, avant de
-relire son historique, la carte :
+`sync url http://<machine>:8790`, puis `sync jeton …` si `VN_TOKEN` est défini). Sans `VN_TOKEN`, la carte
+reprend l'état du serveur mais ne peut pas lui envoyer le sien (écritures fermées) : définir le jeton, ou
+`VN_OPEN=1` sur un réseau local de confiance. Au démarrage, avant de relire son historique, la carte :
 
 1. lit `GET /sync/manifest` (relevés appris, date de l'historique, jours résumés, taille et CRC32 de chaque fichier) ;
 2. décide **fichier par fichier** :

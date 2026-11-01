@@ -10,7 +10,6 @@
 // Variables : voir online/lib/config.mjs et online/README.md. Aucune dépendance (Node ≥ 18).
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { timingSafeEqual } from 'node:crypto';
 import { join, extname, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
@@ -24,6 +23,7 @@ import { History, importArchive, snapshotDirs, dayOf } from './lib/history.mjs';
 import { ForecastLog } from './lib/forecast.mjs';
 import { Notifier } from './lib/notify.mjs';
 import { NightBench } from './lib/bench.mjs';
+import { checkAccess } from './lib/acces.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, 'public');
@@ -236,35 +236,6 @@ function send(req, res, code, body, type, extra = {}) {
 }
 const sendJson = (req, res, obj, code = 200) => send(req, res, code, JSON.stringify(obj));
 
-// Comparaison en temps constant : une comparaison par === laisse fuir la longueur du préfixe correct.
-function sameSecret(a, b) {
-  const A = Buffer.from(String(a || '')), B = Buffer.from(String(b || ''));
-  if (A.length !== B.length) return false;
-  return timingSafeEqual(A, B);
-}
-
-// Le jeton ne circule QUE dans un en-tête : accepté en ?token=, il fuit dans les journaux du proxy,
-// l'historique du navigateur et les en-têtes Referer.
-function authorized(req) {
-  if (!CONFIG.token) return true;
-  const h = req.headers.authorization || '';
-  const bearer = h.startsWith('Bearer ') ? h.slice(7) : '';
-  if (bearer && sameSecret(bearer, CONFIG.token)) return true;
-  const alt = req.headers['x-vn-token'];
-  return !!(alt && sameSecret(alt, CONFIG.token));
-}
-
-// Politique d'accès : la page et les lectures sont publiques ; tout ce qui écrit, et tout ce qui
-// expose des réglages ou des cartes du réseau local, exige le jeton.
-function protectedRoute(p, method) {
-  if (p.startsWith('/sync/')) return true;              // écrit l'état appris
-  if (p.startsWith('/api/notify')) return true;         // réglages de notification (ntfy)
-  if (p === '/api/bench/run') return true;              // lance un binaire
-  if (p === '/api/devices') return true;                // écrans du réseau local
-  if (method !== 'GET' && method !== 'HEAD') return true;  // toute écriture
-  return false;
-}
-
 function serveStatic(req, res, path) {
   const rel = path === '/' ? 'index.html' : path.replace(/^\/+/, '');
   if (rel.includes('..')) return send(req, res, 400, 'chemin refusé', 'text/plain');
@@ -327,10 +298,9 @@ const server = createServer(async (req, res) => {
     if (p === '/api/summary') { engine.clock(nowS(), mono()); return sendJson(req, res, { ...engine.summary(), server: serverInfo() }); }
     if (p === '/api/ring') return sendJson(req, res, engine.ring());
 
-    // ── À partir d'ici : jeton si VN_TOKEN est défini ──
-    if ((p.startsWith('/api/') || p.startsWith('/sync/')) && protectedRoute(p, req.method) && !authorized(req)) {
-      return sendJson(req, res, { error: 'jeton requis' }, 401);
-    }
+    // ── À partir d'ici : routes protégées (lib/acces.mjs) — jeton, ou écritures fermées sans jeton, CSRF, types de corps ──
+    const denied = checkAccess(req, p, CONFIG);
+    if (denied) return sendJson(req, res, { error: denied.error }, denied.code);
 
     if (p === '/api/devices') return sendJson(req, res, Object.values(hub.devices).sort((a, b) => b.last - a.last));
     if (p === '/api/archive') return sendJson(req, res, store.archives());
@@ -467,8 +437,8 @@ server.requestTimeout = 60000;
 server.headersTimeout = 30000;
 
 server.listen(CONFIG.port, CONFIG.host, () => {
-  log(`VelohNav Ops en ligne ${engine.version()} · http://${CONFIG.host}:${CONFIG.port} · données ${CONFIG.dataDir}` +
-      `${CONFIG.token ? ' · jeton requis pour /sync et /api' : ''}`);
+  log(`VelohNav Ops en ligne ${engine.version()} · http://${CONFIG.host}:${CONFIG.port} · données ${CONFIG.dataDir} · ` +
+      (CONFIG.token ? 'jeton requis pour les routes protégées' : CONFIG.open ? 'VN_OPEN=1 : écritures ouvertes sans jeton' : 'sans VN_TOKEN : écritures fermées (sauf en local)'));
   collector.start();
   // premier démarrage avec une archive d'instantanés mais sans historique long : l'archive le remplit
   if (!history.files().length && store.archives().length) {
