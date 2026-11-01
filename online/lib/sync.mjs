@@ -22,6 +22,58 @@ export function daysHeader(b) {
     savedAt: Number(v.getBigInt64(32, true)) };
 }
 
+// ── Plausibilité d'un fichier envoyé par une carte ──
+// L'adoption retient le profil qui a le plus de relevés : un compteur forgé (« 4 000 000 000 relevés »,
+// charge à zéro) serait adopté, propagé à toutes les cartes, et bloquerait ensuite tout envoi légitime.
+// Ce que src/core/model.cpp (Model::applyStatus) garantit pour un profil réellement appris : chaque tranche
+// de 5 min apprise ajoute 1 à learnSamples ET à cellN[cellule] (plafonné à 255), et 1 au n (plafonné) de chaque
+// station relevée dans cette cellule. D'où : learnSamples ≤ tranches écoulées entre learnSince et savedAt,
+// Σ cellN = learnSamples (tant qu'aucune cellule n'est saturée), n ≤ cellN, et des cellules apprises
+// renseignées pour presque toutes les stations (98 % sur les 13 profils de production du 26/10 au 01/11/2026).
+// Ces règles lisent la disposition des versions 1 à 4 de /vn_prof.bin (Model::profFileOk) : une autre
+// version est refusée tant que ce contrôle ne la connaît pas.
+const PROF_MAGIC = 0x31504E56, DAYQ = 672;
+export const LEARN_EPOCH = Date.UTC(2026, 9, 1) / 1000;    // VelohNav Ops 1.0.0 date du 13/10/2026 : aucune carte n'apprenait avant
+const iso = (t) => new Date(t * 1000).toISOString().slice(0, 16).replace('T', ' ');
+export function profImplausible(b, now) {
+  const h = profHeader(b);
+  if (!h || h.magic !== PROF_MAGIC) return 'en-tête illisible';
+  if (h.ver < 1 || h.ver > 4) return `version ${h.ver} inconnue du contrôle de plausibilité`;
+  const cell = h.ver >= 3 ? 4 : 3, nMask = h.ver >= 3 ? 0x1f : 0xff;       // ProfCell : n sur 5 bits depuis la v3
+  const cellsAt = 40 + h.nSt * 8, cellNAt = cellsAt + h.nSt * DAYQ * cell;
+  if (b.length < cellNAt + DAYQ) return 'fichier trop court';
+  if (h.savedAt > now + 600) return `enregistré dans le futur (${iso(h.savedAt)} UTC)`;
+  if (!h.learnSamples) return null;
+  if (h.learnSince < LEARN_EPOCH || h.learnSince > h.savedAt) return `début d'apprentissage impossible (${iso(h.learnSince)} UTC)`;
+  // une tranche au plus par 5 min, plus 1 h de recul d'horloge toléré (resynchronisation NTP)
+  const slots = Math.floor((h.savedAt - h.learnSince) / 300) + 2 + 12;
+  if (h.learnSamples > slots) return `${h.learnSamples} relevés pour ${slots} tranches de 5 min écoulées depuis ${iso(h.learnSince)} UTC`;
+  let sum = 0, saturated = false, pairs = 0, learned = 0, over = 0;
+  for (let q = 0; q < DAYQ; q++) {
+    const c = b[cellNAt + q];
+    sum += c;
+    if (c === 255) saturated = true;
+    if (!c) continue;
+    for (let j = 0; j < h.nSt; j++) {
+      const n = b[cellsAt + (j * DAYQ + q) * cell + 2] & nMask;
+      pairs++;
+      if (n) learned++;
+      if (n > c) over++;
+    }
+  }
+  if (saturated ? sum > h.learnSamples : sum !== h.learnSamples) return `compteur (${h.learnSamples}) incohérent avec les cellules du profil (${sum})`;
+  if (over) return `${over} cellule(s) de station apprise(s) plus souvent que le parc`;
+  if (pairs && learned < pairs / 2) return `profil vide : ${(100 * learned / pairs).toFixed(0)} % des cellules apprises renseignées`;
+  return null;
+}
+// Résumés par jour : la carte reprend ceux du serveur s'ils sont « plus récents » — une date future gagnerait toujours
+export function daysImplausible(b, now) {
+  const h = daysHeader(b);
+  if (!h) return 'en-tête illisible';
+  if (h.savedAt > now + 600) return `enregistré dans le futur (${iso(h.savedAt)} UTC)`;
+  return null;
+}
+
 export class SyncHub {
   constructor({ engine, store, events, cfg, log, beforeSnapshot }) {
     this.e = engine;

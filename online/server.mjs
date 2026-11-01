@@ -18,7 +18,7 @@ import { CONFIG } from './lib/config.mjs';
 import { loadEngine } from './public/vn-engine.js';
 import { Collector, EventLog } from './lib/collector.mjs';
 import { Store, STATE_FILES, CARD_FILES, luxParts } from './lib/store.mjs';
-import { SyncHub, profHeader, daysHeader } from './lib/sync.mjs';
+import { SyncHub, profHeader, daysHeader, profImplausible, daysImplausible } from './lib/sync.mjs';
 import { History, importArchive, snapshotDirs, dayOf } from './lib/history.mjs';
 import { ForecastLog } from './lib/forecast.mjs';
 import { Notifier } from './lib/notify.mjs';
@@ -177,9 +177,11 @@ setInterval(() => {
 setTimeout(() => { try { forecasts.scorePending(); history.compressDone(); forecasts.compressDone(); } catch (err) { log(`[prévision] ${err.message}`); } }, 5000).unref();
 
 // ── Fichiers envoyés par une carte ───────────────────────────────────
-// Contrôlés par le chemin de la carte (Model::load dans un moteur à part), puis adoptés seulement s'ils
-// valent mieux que ceux du serveur : profils plus appris, ou plus de jours résumés. L'adoption recharge
-// l'état du serveur (Model::load, comme un redémarrage) et demande aux jumeaux de le reprendre.
+// Contrôlés par le chemin de la carte (Model::load dans un moteur à part) et par leur plausibilité
+// (lib/sync.mjs : un compteur forgé bloquerait toutes les cartes), puis adoptés seulement s'ils valent
+// mieux que ceux du serveur : profils plus appris, ou plus de jours résumés. L'adoption garde le fichier
+// remplacé (<nom>.avant-adoption), recharge l'état du serveur (Model::load, comme un redémarrage) et
+// demande aux jumeaux de le reprendre.
 async function adoptUpload(name, body, crcHdr) {
   const crc = engine.crc32(body);
   if (crcHdr && parseInt(String(crcHdr), 16) >>> 0 !== crc) return { adopted: false, error: true, why: 'CRC32 faux' };
@@ -189,6 +191,8 @@ async function adoptUpload(name, body, crcHdr) {
   scratch.init();
   scratch.putFile('/' + name, body);
   if (!(scratch.load(false) & 1)) return { adopted: false, error: true, why: 'fichier illisible par Model::load' };
+  const implausible = name === 'vn_prof.bin' ? profImplausible(body, nowS()) : daysImplausible(body, nowS());
+  if (implausible) return { adopted: false, error: true, why: `fichier invraisemblable : ${implausible}` };
   engine.clock(nowS(), mono());
   const cur = engine.summary();
   if (name === 'vn_prof.bin') {
@@ -199,6 +203,8 @@ async function adoptUpload(name, body, crcHdr) {
     if (!(h.nDays > cur.daysKept)) return { adopted: false, why: `serveur aussi complet (${cur.daysKept} jours contre ${h.nDays})` };
   }
   if (!engine.save()) return { adopted: false, error: true, why: 'état du serveur vide' };
+  const before = engine.getFile('/' + name);
+  if (before) store.write(`${name}.avant-adoption`, before);
   engine.putFile('/' + name, body);
   engine.load(true);
   flushEngineLog();
@@ -399,7 +405,8 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req, 4 << 20);
       const r = await adoptUpload(up[2], body, req.headers['x-vn-crc32']);
       const d = hub.seen(req, { lastUpload: nowS(), uploaded: `${up[2]} : ${r.adopted ? 'adopté' : 'gardé celui du serveur'}` });
-      log(`[sync] ${d.id} envoie ${up[2]} (${(body.length / 1024).toFixed(0)} Ko) : ${r.adopted ? 'ADOPTÉ' : 'refusé'} — ${r.why}`);
+      const fwd = req.headers['x-forwarded-for'] ? ` (X-Forwarded-For ${String(req.headers['x-forwarded-for']).slice(0, 80)})` : '';
+      log(`[sync] ${d.id} envoie ${up[2]} (${(body.length / 1024).toFixed(0)} Ko) depuis ${req.socket.remoteAddress}${fwd} : ${r.adopted ? 'ADOPTÉ' : 'refusé'} — ${r.why}`);
       return sendJson(req, res, r, r.error ? 400 : 200);
     }
     const mf = p.match(/^\/sync\/([a-z0-9]+)\/(vn_prof\.bin|vn_hist\.bin|vn_days\.bin|report)$/);

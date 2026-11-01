@@ -3,8 +3,10 @@
 // local), aucune requête ne sort de la machine.
 import { spawn } from 'node:child_process';
 import { request, createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadEngine, FEED } from '../public/vn-engine.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const SERVER = join(HERE, '..', 'server.mjs');
@@ -81,4 +83,38 @@ export async function fakeService(reply = () => ({ status: 200, body: '{}' })) {
   });
   await new Promise((r) => s.listen(0, '127.0.0.1', r));
   return { got, port: s.address().port, url: `http://127.0.0.1:${s.address().port}`, close: () => new Promise((r) => s.close(r)) };
+}
+
+// ── État appris d'une carte simulée : le parc réel de docs/donnees, une marche aléatoire au pas de 5 min ─
+// de `from` à `to` (epoch), sauvegardé par le moteur : { 'vn_prof.bin', 'vn_hist.bin', 'vn_days.bin', 'vn_live.bin', summary }
+const D = join(HERE, '..', '..', 'docs', 'donnees');
+export const CORE = readFileSync(join(HERE, '..', 'public', 'vn-core.wasm'));
+export async function simulateCard({ from, to, seed = 7, stepS = 300 }) {
+  const info = readFileSync(join(D, 'station_information.json'), 'utf8');
+  const types = readFileSync(join(D, 'vehicle_types.json'), 'utf8');
+  const st0 = JSON.parse(readFileSync(join(D, 'station_status.json'), 'utf8'));
+  let s = seed;
+  const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+  const e = await loadEngine(CORE, { onLog: () => {} });
+  e.clock(from, 1000); e.init(); e.settings({ refreshSec: 60 });
+  e.ingest(FEED.TYPES, true, 200, types, 100, 0);
+  e.ingest(FEED.INFO, true, 200, info, 100, 0);
+  let ms = 1000;
+  for (let t = from; t <= to; t += stepS) {
+    for (const x of st0.data.stations) {
+      const cap = x.num_vehicles_available + x.num_docks_available;
+      const b = Math.max(0, Math.min(cap, x.num_vehicles_available + Math.round((rnd() - 0.5) * 2)));
+      x.num_vehicles_available = b; x.num_docks_available = cap - b;
+      if (x.vehicle_types_available) x.vehicle_types_available = [{ vehicle_type_id: 'electrical', count: b }];
+    }
+    st0.last_updated = new Date(t * 1000).toISOString();
+    ms += stepS * 1000;
+    e.clock(t, ms);
+    e.ingest(FEED.STATUS, true, 200, JSON.stringify(st0), 100, 100);
+  }
+  e.clock(to, ms);
+  e.save();
+  const out = { engine: e, summary: e.summary() };
+  for (const f of ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin', 'vn_live.bin']) out[f] = Buffer.from(e.getFile('/' + f));
+  return out;
 }
