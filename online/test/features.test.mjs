@@ -8,9 +8,12 @@
 //  3. la note du jour : erreur de la persistance recalculée à la main, à l'identique ;
 //  4. notifications (horloge et transport simulés) : rupture qui dure, regroupement, rétablie, plafond
 //     horaire, heures calmes, flux muet, Sunton, résumé du matin ;
-//  5. banc de nuit (si sim/bench_prevision est compilé) : archive simulée importée, banc lancé, rapport lu.
+//  5. banc de nuit : archive simulée importée, banc lancé, rapport lu ;
+//  6. le vrai serveur : import automatique, API, jeton, notification de test, banc à la demande.
+// Exige sim/bench_prevision (et sim/sync_sim, comme toute la suite) : sans eux, le test échoue au lieu de
+// sauter les étapes 5 et 6 en se déclarant réussi.
 // node online/test/features.test.mjs
-import { readFileSync, mkdtempSync, existsSync, readdirSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +27,9 @@ import { Notifier } from '../lib/notify.mjs';
 import { NightBench, parseBenchReport } from '../lib/bench.mjs';
 import { luxParts } from '../lib/store.mjs';
 import { packRecords, unpackRecords, aggregate } from '../public/vn-series.js';
+import { exigerBinaires, BINAIRES } from './binaires.mjs';
+
+exigerBinaires(['bench_prevision', 'sync_sim']);
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..', '..');
@@ -251,9 +257,8 @@ const n2 = new Notifier({ dataDir: NDIR, fetchImpl: fakeFetch, now: () => now })
 ok(n2.enabled && n2.recent.length === 8 && !n2.digestDue(), 'réglages et journal relus au redémarrage');
 
 console.log('5. banc de nuit sur une archive simulée');
-const BIN = join(ROOT, 'sim', 'bench_prevision');
-if (!existsSync(BIN)) console.log('   (sim/bench_prevision absent : make -C sim bench_prevision — étape sautée)');
-else {
+const BIN = BINAIRES.bench_prevision;
+{
   const W = join(tmp, 'monde');
   execFileSync(BIN, ['--jours', '4', '--court', '--exporter', W], { cwd: join(ROOT, 'sim'), stdio: 'ignore' });
   const dirs = snapshotDirs(join(W, 'archive'));

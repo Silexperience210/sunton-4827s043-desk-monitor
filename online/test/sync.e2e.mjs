@@ -10,20 +10,21 @@
 // Prérequis : cd sim && make sync_sim.   Lancer : node online/test/sync.e2e.mjs
 import { createServer } from 'node:http';
 import { spawn, execFileSync } from 'node:child_process';
-import { readFileSync, mkdtempSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEngine, FEED } from '../public/vn-engine.js';
+import { exigerBinaires, BINAIRES } from './binaires.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..', '..');
 const D = join(ROOT, 'docs', 'donnees');
-const SIM = join(ROOT, 'sim', 'sync_sim');
+const SIM = BINAIRES.sync_sim;
 let fails = 0, checks = 0;
 const ok = (c, msg) => { checks++; console.log(`  ${c ? 'ok   ' : 'ÉCHEC'} ${msg}`); if (!c) fails++; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-if (!existsSync(SIM)) { console.log('sim/sync_sim absent : cd sim && make sync_sim'); process.exit(2); }
+exigerBinaires(['sync_sim']);
 
 // ── Faux GBFS + météo ──
 const info = readFileSync(join(D, 'station_information.json'), 'utf8');
@@ -132,5 +133,9 @@ ok(c.RESULT === '-1' && /401/.test(c.TEXT) && c.LOADED === '0', 'refusé (401), 
 
 console.log(`\n${checks} vérifications, ${fails} échec(s)`);
 if (fails) console.log(srvLog.split('\n').slice(-30).join('\n'));
+// arrêt du serveur (il sauvegarde en partant), puis ses fichiers : aucun vn-e2e-* ne reste dans le dossier temporaire
+const exited = new Promise((r) => srv.on('exit', r));
 cleanup();
+await exited;
+rmSync(data, { recursive: true, force: true });
 process.exit(fails ? 1 : 0);
