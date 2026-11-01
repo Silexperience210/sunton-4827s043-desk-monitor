@@ -68,6 +68,8 @@ export class History {
     this._filesAt = now;
     return this._files;
   }
+  // Un jour = son .jsonl.gz, son .jsonl, ou les deux : coupure pendant la compression, ou tranche écrite après
+  // la compression du jour (redémarrage de nuit). Les deux sont alors lus ensemble (_read) : aucun ne masque l'autre.
   _listFiles() {
     let names = [];
     try { names = readdirSync(this.dir); } catch { return []; }
@@ -75,17 +77,28 @@ export class History {
     for (const n of names) {
       const m = n.match(DAY_RE);
       if (!m) continue;
-      const cur = by.get(m[1]);
-      // si les deux existent (coupure pendant la compression), le clair fait foi
-      if (!cur || !m[2]) by.set(m[1], { day: m[1], gz: !!m[2], path: join(this.dir, n), bytes: statSync(join(this.dir, n)).size });
+      const f = by.get(m[1]) || { day: m[1], gzPath: null, plainPath: null, bytes: 0 };
+      const p = join(this.dir, n);
+      if (m[2]) f.gzPath = p; else f.plainPath = p;
+      f.bytes += statSync(p).size;
+      by.set(m[1], f);
     }
+    for (const f of by.values()) { f.gz = !f.plainPath; f.path = f.plainPath || f.gzPath; }
     return [...by.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
   }
-  _read(f) {
+  _readFile(path, gz) {
     try {
-      const b = readFileSync(f.path);
-      return parseDay(f.gz ? gunzipSync(b) : b);
-    } catch (err) { this.log(`[historique] ${f.path} illisible : ${err.message}`); return []; }
+      const b = readFileSync(path);
+      return parseDay(gz ? gunzipSync(b) : b);
+    } catch (err) { this.log(`[historique] ${path} illisible : ${err.message}`); return []; }
+  }
+  _read(f) {
+    if (!f.gzPath || !f.plainPath) return this._readFile(f.path, f.gz);
+    // les deux : réunion par tranche, le clair (écrit en dernier) l'emporte
+    const byT = new Map();
+    for (const r of this._readFile(f.gzPath, true)) byT.set(r.t, r);
+    for (const r of this._readFile(f.plainPath, false)) byT.set(r.t, r);
+    return [...byT.values()].sort((a, b) => a.t - b.t);
   }
   readDay(day) {
     const f = this.files().find((x) => x.day === day);
@@ -113,11 +126,15 @@ export class History {
     const st = engine.stations().map((s) => [s.sid, s.name, s.cap, s.lat, s.lon]);
     return st;
   }
-  // Ajoute des tranches (triées, toutes postérieures à lastT) au fichier de leur jour
+  // Ajoute des tranches (triées, toutes postérieures à lastT) au fichier de leur jour. Un jour déjà compressé
+  // (redémarrage de nuit, premier relevé tardif) n'est pas rouvert en clair : ses tranches entrent dans son .gz.
   append(recs) {
+    const late = [];
     for (const r of recs) {
       if (r.t <= this.lastT) continue;
       const day = dayOf(r.t);
+      const plain = join(this.dir, `${day}.jsonl`);
+      if (!existsSync(plain) && existsSync(`${plain}.gz`)) { late.push(r); this.lastT = r.t; continue; }
       if (day !== this.curDay) {
         this.curDay = day;
         const p = join(this.dir, `${day}.jsonl`);
@@ -134,6 +151,7 @@ export class History {
       this._files = null;
       this.lastT = r.t;
     }
+    if (late.length) this.merge(late);
   }
   // Relève dans l'anneau du moteur les tranches finies pas encore écrites (appelé après chaque cycle,
   // et au démarrage : l'anneau relu de /vn_hist.bin comble ce qui manque depuis la dernière écriture)
@@ -155,15 +173,17 @@ export class History {
     this.append(got);
     return got.length;
   }
-  // Les jours finis passent en .jsonl.gz (≈ 6 fois moins de place)
+  // Les jours finis passent en .jsonl.gz (≈ 6 fois moins de place). Si le .gz existe déjà, il reçoit la réunion
+  // des deux fichiers : un clair plus court ne le remplace jamais.
   compressDone(today = dayOf(Math.floor(Date.now() / 1000))) {
     for (const f of this.files()) {
-      if (f.gz || f.day >= today) continue;
+      if (!f.plainPath || f.day >= today) continue;
       try {
-        const raw = readFileSync(f.path);
-        atomicWrite(f.path + '.gz', gzipSync(raw, { level: 9 }));
-        rmSync(f.path);
+        const data = f.gzPath ? Buffer.from(serialize(this._read(f))) : readFileSync(f.plainPath);
+        atomicWrite(join(this.dir, `${f.day}.jsonl.gz`), gzipSync(data, { level: 9 }));
+        rmSync(f.plainPath);
         this._files = null;
+        this.cache.delete(f.day);
       } catch (err) { this.log(`[historique] compression de ${f.day} impossible : ${err.message}`); }
     }
   }
