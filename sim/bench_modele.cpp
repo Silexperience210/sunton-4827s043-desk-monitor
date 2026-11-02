@@ -286,6 +286,12 @@ struct Row {
   bool hasH[NH]; float Ph[NH]; float cf[NH];
   float l15, l30;                // relevés 15 et 30 min plus tôt (anneau), NaN si absents
   float P5[13];                  // profil à t + 5k min (k = 0…12), NaN si inconnu (exploration)
+  // candidat « pool médian » : le profil relu avec la médiane des autres jours de même type (au lieu de leur
+  // moyenne pondérée par n), mêmes cellules au même instant ; NaN si inconnu
+  float P0m, Phm[NH];
+  // candidat « profil de quartier » : mouvement prévu moyen (part de la capacité utile) des 6 stations les plus
+  // proches notées au même instant, × capacité utile de la station (neighbourPass, après le rejeu)
+  float nb[NH];
 };
 struct Run {
   std::vector<Row> rows;
@@ -319,6 +325,75 @@ static void infoOf(const std::vector<StInfo> & L, std::vector<InfoRec> & ir) {
     r.lat = L[i].lat; r.lon = L[i].lon; r.cap = (uint16_t)L[i].cap;
   }
 }
+
+// ── Profil relu par le banc (candidat « pool médian ») ──
+// Copie de cellValue / smoothAt / profileLocal / profDM de src/core/model.cpp (statiques là-bas), avec un
+// seul changement possible : med = true remplace la moyenne pondérée du pool par la médiane des cellules des
+// autres jours de même type. Avec med = false, la copie doit redonner le profil du cœur au bit près
+// (contrôle publié dans la section 0).
+static const int BQ = 96;                           // = DAYQ
+static const float B_FULL_N = 6.f;                  // = PROF_FULL_N
+static bool bCell(const ProfCell * p, int dow, int q, bool med, float & v, float & nEff) {
+  const ProfCell & own = p[dow * BQ + q];
+  if (own.n >= B_FULL_N) { v = own.a / 256.f; nEff = own.n; return true; }
+  bool weekend = (dow == 0 || dow == 6);
+  float sum = 0, pn = 0, vals[7]; int nv = 0;
+  for (int d = 0; d < 7; d++) {
+    if (d == dow || ((d == 0 || d == 6) != weekend)) continue;
+    const ProfCell & c = p[d * BQ + q];
+    if (!c.n) continue;
+    sum += (c.a / 256.f) * c.n;
+    pn += c.n;
+    vals[nv++] = c.a / 256.f;
+  }
+  if (!own.n && pn <= 0) return false;
+  if (pn <= 0) { v = own.a / 256.f; nEff = own.n; return true; }
+  float pool = sum / pn;
+  if (med) {
+    for (int i = 1; i < nv; i++) for (int j = i; j > 0 && vals[j - 1] > vals[j]; j--) std::swap(vals[j - 1], vals[j]);
+    pool = nv % 2 ? vals[nv / 2] : 0.5f * (vals[nv / 2 - 1] + vals[nv / 2]);
+  }
+  float w = own.n / B_FULL_N;
+  v = w * (own.a / 256.f) + (1 - w) * pool;
+  nEff = own.n + 0.5f * (pn > 12 ? 12 : pn);
+  return true;
+}
+static bool bSmooth(const ProfCell * p, int dow, int q, bool med, float & v, float & nEff) {
+  float sv = 0, sw = 0, sn = 1e9f;
+  static const float W[3] = { 0.25f, 0.5f, 0.25f };
+  for (int o = -1; o <= 1; o++) {
+    int qq = q + o, d = dow;
+    if (qq < 0) { qq += BQ; d = (d + 6) % 7; }
+    if (qq >= BQ) { qq -= BQ; d = (d + 1) % 7; }
+    float cv, cn;
+    if (!bCell(p, d, qq, med, cv, cn)) continue;
+    sv += W[o + 1] * cv; sw += W[o + 1];
+    if (cn < sn) sn = cn;
+  }
+  if (sw < 0.5f) return false;
+  v = sv / sw;
+  nEff = sn;
+  return true;
+}
+static bool bProfileAt(const Model & m, int s, int64_t t, bool med, float & avg) {
+  if (s < 0 || s >= m.n) return false;
+  struct tm lt;
+  plat::localTime(t, &lt);
+  int dow = lt.tm_wday, mod = lt.tm_hour * 60 + lt.tm_min;
+  if (g_pred.holidaySunday && isPublicHoliday(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday)) dow = 0;
+  const ProfCell * p = m.prof + (size_t)s * 7 * BQ;
+  int q = mod / 15;
+  float f = (mod % 15) / 15.f, v0, n0, v1, n1;
+  bool a = bSmooth(p, dow, q, med, v0, n0);
+  int q1 = q + 1, d1 = dow;
+  if (q1 >= BQ) { q1 = 0; d1 = (dow + 1) % 7; }
+  bool b = bSmooth(p, d1, q1, med, v1, n1);
+  if (a && b) { avg = v0 + (v1 - v0) * f; return true; }
+  if (a) { avg = v0; return true; }
+  if (b) { avg = v1; return true; }
+  return false;
+}
+static long g_bProfN = 0, g_bProfBad = 0;           // contrôle de la copie (med = false) contre Model::profileAt
 
 // Brouillage déterministe d'un relevé futur (contrôle de non-fuite) : n'importe quelle valeur plausible
 static int scrambleB(int cap, int64_t t, int col) {
@@ -443,12 +518,66 @@ static void replay(const Hist & H, const std::map<int64_t, ProdTick> & ticks, co
       };
       r.l15 = lag(3); r.l30 = lag(6);
       for (int q = 0; q <= 12; q++) { float pk, nk; r.P5[q] = m.profileAt(i, t + (int64_t)q * 300, pk, nk) ? pk : NAN; }
+      {
+        float v;
+        r.P0m = bProfileAt(m, i, t, true, v) ? v : NAN;
+        for (int h = 0; h < NH; h++) r.Phm[h] = bProfileAt(m, i, t + (int64_t)HK[h] * 300, true, v) ? v : NAN;
+        for (int h = -1; h < NH; h++) {                // la copie sans médiane = le cœur, au bit près
+          const int64_t th = t + (h < 0 ? 0 : (int64_t)HK[h] * 300);
+          float pc, nc, pb;
+          const bool hc = m.profileAt(i, th, pc, nc), hb = bProfileAt(m, i, th, false, pb);
+          g_bProfN++; g_bProfBad += hc != hb || (hc && memcmp(&pc, &pb, sizeof(float)));
+        }
+      }
       R.rows.push_back(r);
     }
   }
   Model::Blob b;
   if (m.serialize(b)) { R.profBytes = b.profLen; plat::psFree(b.prof); plat::psFree(b.hist); plat::psFree(b.days); }
   g_pred = PredictOpts();
+}
+
+// Voisins : les KNB stations les plus proches de chacune (coordonnées de la PREMIÈRE liste qui la décrit : une
+// station n'est notée qu'après y être apparue, la liste d'après n'est donc jamais lue)
+static const int KNB = 6;
+static std::vector<std::vector<int>> neighbours(const Hist & H) {
+  const int ns = (int)g_sid.size();
+  std::vector<float> lat(ns, NAN), lon(ns, NAN);
+  for (auto & L : H.lists) for (auto & x : L) { const int g = gIndex(x.sid); if (g < ns && !std::isfinite(lat[g])) { lat[g] = x.lat; lon[g] = x.lon; } }
+  std::vector<std::vector<int>> nb(ns);
+  for (int g = 0; g < ns; g++) {
+    if (!std::isfinite(lat[g])) continue;
+    std::vector<std::pair<float, int>> d;
+    for (int k = 0; k < ns; k++) if (k != g && std::isfinite(lat[k])) d.push_back({ haversineM(lat[g], lon[g], lat[k], lon[k]), k });
+    std::sort(d.begin(), d.end());
+    for (int k = 0; k < KNB && k < (int)d.size(); k++) nb[g].push_back(d[k].second);
+  }
+  return nb;
+}
+// Rangées d'un même quart d'heure seulement : aucune donnée postérieure à l'instant de la prévision
+static void neighbourPass(Run & R, const std::vector<std::vector<int>> & nbr) {
+  for (size_t r0 = 0; r0 < R.rows.size();) {
+    size_t r1 = r0;
+    while (r1 < R.rows.size() && R.rows[r1].slot == R.rows[r0].slot) r1++;
+    std::map<int, size_t> at;
+    for (size_t i = r0; i < r1; i++) at[R.rows[i].g] = i;
+    for (size_t i = r0; i < r1; i++) {
+      Row & r = R.rows[i];
+      for (int h = 0; h < NH; h++) {
+        float s = 0; int c = 0;
+        if (r.g < (int)nbr.size())
+          for (int j : nbr[r.g]) {
+            auto it = at.find(j);
+            if (it == at.end()) continue;
+            const Row & q = R.rows[it->second];
+            if (!(q.has0 && q.hasH[h])) continue;
+            s += (q.Ph[h] - q.P0) / std::max(1, q.capE); c++;
+          }
+        r.nb[h] = c ? s / c * r.capE : 0.f;
+      }
+    }
+    r0 = r1;
+  }
 }
 
 // ── Vérité (historique de production, comme la notation du serveur) ──
@@ -492,6 +621,9 @@ struct Variant {
   std::function<int(const Row &, int)> sub;         // sous-classe d'une rangée à l'horizon h
   bool trend = false;                               // grille à 3 dimensions : d sur x[2]
   float halfLife = 7.f, minLots = FC_MIN_LOTS, pen = FC_PEN, lam = 1000.f;
+  // > 0 (grille seulement) : chaque sous-classe choisit son couple sur ses erreurs + κ prévisions fictives
+  // de la classe de jour entière (erreur moyenne de la classe × κ) ; le seuil de lots est celui de la classe
+  float kappa = 0;
   std::function<float(const Row &, int)> fixed;
 };
 static const int GA = FC_NA, GB = FC_NB, GD = 16;  // d = (id − 5) / 10 : −0,5 … 1,0
@@ -515,11 +647,16 @@ static void runVariant(const Variant & V, const Run & R, VarOut & O) {
   std::vector<Lot> pend;
   const float decay = powf(0.5f, 1.f / (V.halfLife * 64.f));
   auto groupOf = [&](const Row & r, int h) { return (V.dayClass ? r.cls : 0) * V.nsub + (V.sub ? V.sub(r, h) : 0); };
+  const bool shrink = V.kind == 0 && V.kappa > 0;
+  // classe de jour entière (rétrécissement) : erreurs, prévisions et lots cumulés sur ses sous-classes
+  std::vector<std::vector<std::vector<float>>> errC(NH, std::vector<std::vector<float>>(NCL, std::vector<float>(shrink ? NGc : 0, 0)));
+  std::vector<std::vector<float>> wC(NH, std::vector<float>(NCL, 0)), lotsC(NH, std::vector<float>(NCL, 0));
   auto select = [&](int h, int g) {
     coef[h][g] = { 0, 0, 0 };
-    if (!(lots[h][g] >= V.minLots) || !(w[h][g] > 0)) return;
+    const int c = g / V.nsub;
+    if (shrink ? !(lotsC[h][c] >= V.minLots) || !(wC[h][c] > 0) : !(lots[h][g] >= V.minLots) || !(w[h][g] > 0)) return;
     if (V.kind == 0) {
-      const float inv = 1.f / w[h][g];
+      const float inv = shrink ? 1.f / (w[h][g] + V.kappa) : 1.f / w[h][g], kc = shrink ? V.kappa / wC[h][c] : 0.f;
       float best = 0; int bj = -1;
       for (int ia = 0; ia < GA; ia++)
         for (int ib = 0; ib < GB; ib++)
@@ -527,7 +664,8 @@ static void runVariant(const Variant & V, const Run & R, VarOut & O) {
             const int id = V.trend ? GD_ORDER[od] : 0;
             const int j = (ia * GB + ib) * ND + id;
             const float d = V.trend ? (id - 5) / 10.f : 0.f;
-            const float v = err[h][g][j] * inv + V.pen * (ia / 10.f + ib / 20.f + fabsf(d));
+            const float e = shrink ? err[h][g][j] + kc * errC[h][c][j] : err[h][g][j];
+            const float v = e * inv + V.pen * (ia / 10.f + ib / 20.f + fabsf(d));
             if (bj < 0 || v < best) { best = v; bj = j; }
           }
       const int id = bj % ND, ib = (bj / ND) % GB, ia = bj / ND / GB;
@@ -584,12 +722,22 @@ static void runVariant(const Variant & V, const Run & R, VarOut & O) {
           }
           cnt[g]++;
         }
+        std::vector<char> touched(NCL, 0);
         for (int g = 0; g < G; g++) {
           if (!cnt[g]) continue;
           if (V.kind == 0) for (int j = 0; j < NGc; j++) err[h][g][j] += (float)lotErr[g][j];
           w[h][g] += (float)cnt[g]; lots[h][g] += 1;
-          select(h, g);
+          if (shrink) {
+            const int c = g / V.nsub;
+            for (int j = 0; j < NGc; j++) errC[h][c][j] += (float)lotErr[g][j];
+            wC[h][c] += (float)cnt[g];
+            touched[c] = 1;
+          } else select(h, g);
         }
+        // rétrécissement : le lot compte une fois pour la classe ; la classe ayant bougé, chacune de ses
+        // sous-classes rechoisit son couple
+        for (int c = 0; c < NCL && shrink; c++)
+          if (touched[c]) { lotsC[h][c] += 1; for (int g = c * V.nsub; g < (c + 1) * V.nsub; g++) select(h, g); }
       }
     }
     // 2. quart d'heure noté : prévoir avec les coefficients du moment, puis oublier (classe du lot) et émettre
@@ -614,13 +762,15 @@ static void runVariant(const Variant & V, const Run & R, VarOut & O) {
         for (int q = 0; q < NCL && q < FC_NC; q++) for (int h = 0; h < NH; h++) { cc[q * NH + h] = coef[h][q * V.nsub][0]; cc[FC_NC * NH + q * NH + h] = coef[h][q * V.nsub][1]; }
         O.coef[T] = cc;
         const int cl = V.dayClass ? R.rows[r0].cls : 0;
-        for (int h = 0; h < NH; h++)
+        for (int h = 0; h < NH; h++) {
           for (int g = cl * V.nsub; g < (cl + 1) * V.nsub; g++) {
             for (auto & e : err[h][g]) e *= decay;
             w[h][g] *= decay; lots[h][g] *= decay;
             for (auto & x : Gm[h][g]) x *= decay;
             for (auto & x : rv[h][g]) x *= decay;
           }
+          if (shrink) { for (auto & e : errC[h][cl]) e *= decay; wC[h][cl] *= decay; lotsC[h][cl] *= decay; }
+        }
         pend.push_back({ T, r0, r1, cl });
         while (pend.size() > (size_t)FC_PEND) pend.erase(pend.begin());
       }
@@ -811,6 +961,7 @@ int main(int argc, char ** argv) {
     testIdx = dayIndex((int64_t)mktime(&lt));
   }
   Truth T; T.build(H);
+  const std::vector<std::vector<int>> nbr = neighbours(H);
 
   // ── Rejeux du cœur ──
   //   R  : modèle neuf (réglages livrés) — et, au passage, profils comparés à chaque archive de production
@@ -825,6 +976,8 @@ int main(int argc, char ** argv) {
       if (!ac[k].done && arch[k].savedAt - arch[k].savedAt % 300 == slotT) compareArchive(m, arch[k], ac[k]);
     if (slotT == prodEnd) { wxUseEnd = m.wxUse; wxAlphaEnd = m.wxAlpha; }
   });
+  neighbourPass(R, nbr);
+  const long bProfN = g_bProfN, bProfBad = g_bProfBad;
   { Levers l; l.rule = FC_RULE_V1; replay(H, ticks, l, Perturb(), R1); }
   { Levers l; l.dayClass = false; replay(H, ticks, l, Perturb(), RG); }
   { Levers l; l.eta = FC_RULE_V2; replay(H, ticks, l, Perturb(), RE); }
@@ -867,6 +1020,23 @@ int main(int argc, char ** argv) {
   { Variant v = base(); v.name = "sensibilité : seuil 16 quarts d'heure"; v.minLots = 16; V.push_back(v); }
   { Variant v = base(); v.name = "sensibilité : seuil 32 quarts d'heure"; v.minLots = 32; V.push_back(v); }
   { Variant v = base(); v.name = "sensibilité : seuil 128 quarts d'heure"; v.minLots = 128; V.push_back(v); }
+  // Pistes du brief B (docs/mesures-modele.md) : réfutées ou non retenues, gardées au banc avec leurs chiffres
+  const int NSG = (int)g_sid.size();
+  for (float k : { 50.f, 200.f, 800.f }) {
+    Variant v = base(); char b[64]; snprintf(b, sizeof(b), "par station, rétréci κ = %.0f", k); v.name = b;
+    v.nsub = NSG; v.sub = [](const Row & r, int) { return r.g; }; v.kappa = k;
+    if (k == 200.f) v.note = "un couple par station, classe de jour et horizon, choisi sur les erreurs de la station + κ prévisions fictives de la classe ; κ = 50, 200, 800";
+    V.push_back(v);
+  }
+  { Variant v = base(); v.name = "profil de quartier"; v.trend = true;
+    v.note = "grille (a, b, d), d·mouvement prévu moyen des 6 stations les plus proches (part de capacité × capacité de la station)";
+    v.feat = [&](const Row & r, int h) { Feat f{}; f.x[0] = dP(r, h); f.x[1] = dA(r, h); f.x[2] = r.nb[h]; return f; }; V.push_back(v); }
+  { Variant v = base(); v.name = "pool médian (profil robuste)";
+    v.note = "le profil relu avec la médiane des autres jours de même type au lieu de leur moyenne pondérée (identique tant que le pool a ≤ 2 jours)";
+    v.feat = [&](const Row & r, int h) { Feat f{}; f.x[0] = r.Phm[h] - r.P0m; f.x[1] = r.P0m - (float)std::min(r.cur, 254); return f; }; V.push_back(v); }
+  { Variant v = base(); v.name = "oubli court : demi-vie 1 j"; V.push_back(v); V.back().halfLife = 1.f; }
+  { Variant v = base(); v.name = "oubli court : demi-vie 0,25 j (seuil 16)"; v.halfLife = 0.25f; v.minLots = 16;
+    v.note = "adaptation à la journée en cours : ≈ 4 h de mémoire"; V.push_back(v); }
   std::vector<VarOut> VO(V.size());
   for (size_t v = 0; v < V.size(); v++) runVariant(V[v], R, VO[v]);
 
@@ -970,6 +1140,7 @@ int main(int argc, char ** argv) {
   for (int h = 0; h < NH; h++) fprintf(out, " %s %s %%", HL[h], fr(100.0 * v1Same[h] / std::max(1L, both), 1).c_str());
   fprintf(out, "\n- réplique de banc ≠ cœur : %ld prévisions sur %ld ; couples appliqués différents : %ld quarts d'heure sur %zu\n", repBad, repN, coefBad, R.coef.size());
   fprintf(out, "- échéances vide / pleine du modèle neuf identiques à celles de la règle 1.3.0 rejouée : %ld sur %ld\n", etaSameV1, etaN);
+  fprintf(out, "- profil relu par le banc (copie de profileLocal, candidat « pool médian » sans médiane) différent du cœur : %ld lectures sur %ld\n", bProfBad, bProfN);
   fprintf(out, "- `/vn_prof.bin` en fin de rejeu (%d stations) : %zu octets (v5) ; la même chose en v4 : %zu octets ; règle 1.3.0 rejouée : %zu octets\n\n",
           (int)g_sid.size(), R.profBytes, R.profBytes - sizeof(FcLearn), R1.profBytes);
   fprintf(out, "Profils du rejeu contre les profils archivés par la production (cellule = moyenne ×256, n, dispersion, compte de dispersion ; 672 par station) :\n\n");
@@ -1210,6 +1381,7 @@ int main(int argc, char ** argv) {
         }
         Run R2, RG2;
         replay(H2, t2, Levers(), pt, R2);
+        neighbourPass(R2, nbr);
         { Levers l; l.dayClass = false; replay(H2, t2, l, pt, RG2); }
         std::vector<VarOut> VO2(V.size());
         for (size_t v = 0; v < V.size(); v++) runVariant(V[v], R2, VO2[v]);
