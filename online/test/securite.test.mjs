@@ -7,12 +7,15 @@
 //      siens ; un profil légitime plus appris est adopté, l'ancien gardé à côté, l'adresse de l'envoi journalisée.
 //  M6. SSRF par /api/notify/test : le corps de la réponse n'est jamais renvoyé ; bouclage, lien local et adresses
 //      non routables refusés (adresse littérale, nom résolu, redirection) ; faux services sur 127.0.0.1 seulement.
+//  m9. registre des écrans : 50 écrans au plus (le plus ancien laisse sa place), champs tronqués, devices.json
+//      réécrit au plus toutes les 5 s (et à l'arrêt) au lieu d'à chaque requête.
 // node online/test/securite.test.mjs
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import fs, { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync, readFileSync, existsSync, statSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { req, startServer, simulateCard, fakeService } from './aides.mjs';
-import { profHeader, daysHeader } from '../lib/sync.mjs';
+import { profHeader, daysHeader, SyncHub } from '../lib/sync.mjs';
 
 let fails = 0, checks = 0;
 // VN_TEST_DETAIL=1 : chaque vérification réussie est aussi affichée (preuves du rapport de correctifs)
@@ -184,6 +187,45 @@ try {
     ok(hop.got.length === 0 && t3.json?.why === 'HTTP 302', `redirection non suivie (${JSON.stringify(t3.json)}, ${hop.got.length} requête(s) au service visé)`);
     await r3.close();
   } finally { await inner.close(); await hop.close(); }
+
+  console.log('m9. registre des écrans : 50 au plus, champs tronqués, écritures espacées');
+  {
+    const s6 = await start('m9', {});
+    const long = 'x'.repeat(6000);
+    for (let k = 0; k < 300; k += 50) {
+      await Promise.all(Array.from({ length: 50 }, (_, j) => req(s6.port, { path: `/sync/zz/report?took=${long}&result=${long}`, headers: { 'x-vn-device': `ecran-${k + j}` } })));
+    }
+    const list = (await req(s6.port, { path: '/api/devices' })).json || [];
+    ok(list.length <= 50, `300 écrans annoncés : ${list.length} gardés (50 au plus)`);
+    ok(list.some((d) => d.id === 'ecran-299'), 'le plus récent est gardé');
+    const longest = Math.max(0, ...list.map((d) => Math.max(String(d.took || '').length, String(d.result || '').length)));
+    ok(longest <= 200, `took et result tronqués : ${longest} caractères au plus (6000 envoyés, 200 au plus attendus)`);
+    await s6.stop();
+    const f = join(tmp, 'm9', 'devices.json');
+    const saved = existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : {};
+    ok(Object.keys(saved).length >= 1 && Object.keys(saved).length <= 50 && statSync(f).size < 64 << 10,
+      `devices.json écrit à l'arrêt : ${Object.keys(saved).length} écrans, ${(statSync(f).size / 1024).toFixed(0)} Ko`);
+  }
+  {
+    // rafale de 1000 requêtes : devices.json n'est pas réécrit à chacune (espion sur renameSync, comme M4)
+    const D = join(tmp, 'm9-unite');
+    mkdirSync(D, { recursive: true });
+    const hub = new SyncHub({ engine: null, store: { path: (n) => join(D, n) }, events: { seq: 0 }, cfg: {}, log: () => {} });
+    const orig = fs.renameSync;
+    let writes = 0;
+    fs.renameSync = function (a, b) { if (String(b).endsWith('devices.json')) writes++; return orig.apply(this, [a, b]); };
+    syncBuiltinESMExports();
+    try {
+      for (let k = 0; k < 1000; k++) hub.seen({ headers: { 'x-vn-device': `e${k % 70}` }, socket: { remoteAddress: '127.0.0.1' } }, { lastReport: k });
+    } finally { fs.renameSync = orig; syncBuiltinESMExports(); }
+    ok(writes <= 1, `1000 requêtes d'affilée : devices.json réécrit ${writes} fois (au plus 1 attendu)`);
+    if (typeof hub.flushDevices === 'function') hub.flushDevices();
+    const saved = existsSync(join(D, 'devices.json')) ? JSON.parse(readFileSync(join(D, 'devices.json'), 'utf8')) : {};
+    // gardés : les 50 vus en dernier (k = 950…999), même dans la même seconde
+    const want = Array.from({ length: 50 }, (_, j) => `e${(950 + j) % 70}`);
+    ok(Object.keys(saved).length === 50 && want.every((id) => id in saved) && saved.e19?.lastReport === 999,
+      `écriture différée faite (flushDevices) : ${Object.keys(saved).length} écrans, les 50 vus en dernier (${want.filter((id) => !(id in saved)).length} manquant(s))`);
+  }
 } finally {
   for (const s of servers) await s.stop();
 }

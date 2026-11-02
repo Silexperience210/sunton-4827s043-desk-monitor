@@ -470,6 +470,7 @@ function shutdown(sig) {
   log(`${sig} : sauvegarde avant arrêt`);
   collector.stop();
   try { saveNow('arrêt'); } catch (err) { log(`[fs] échec à l'arrêt : ${err.message}`); }
+  hub.flushDevices();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();
 }

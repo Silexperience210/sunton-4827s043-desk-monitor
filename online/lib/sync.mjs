@@ -7,6 +7,10 @@ import { readFileSync, existsSync } from 'node:fs';
 import { atomicWrite } from './store.mjs';
 
 const hex8 = (n) => (n >>> 0).toString(16).toUpperCase().padStart(8, '0');
+// Registre des écrans : borné (une rafale de X-VN-Device inventés le faisait grossir sans fin, 1,45 Mo pour
+// 3000 valeurs, réécrit à chaque requête). Le plus ancien laisse sa place ; un écran réel revient à sa synchro.
+export const MAX_DEVICES = 50;
+const FIELD_MAX = 200, DEVICES_SAVE_MS = 5000;
 
 // En-têtes des fichiers de la carte (src/core/model.cpp FileHdr, src/core/days.h DaysFileHdr)
 export function profHeader(b) {
@@ -84,7 +88,16 @@ export class SyncHub {
     this.beforeSnapshot = beforeSnapshot || (() => {});
     this.snaps = [];                     // les trois derniers instantanés
     this.devicesPath = store.path('devices.json');
-    this.devices = existsSync(this.devicesPath) ? JSON.parse(readFileSync(this.devicesPath, 'utf8')) : {};
+    let devices = {};
+    try { if (existsSync(this.devicesPath)) devices = JSON.parse(readFileSync(this.devicesPath, 'utf8')); } catch (err) { this.log(`[sync] registre illisible : ${err.message}`); }
+    // un registre d'avant la borne est ramené aux 50 plus récents ; touch : ordre des passages (en mémoire), le
+    // plus ancien laisse sa place (last, à la seconde, départage mal une rafale)
+    const list = Object.values(devices).filter((d) => d && d.id).sort((a, b) => (b.last || 0) - (a.last || 0)).slice(0, MAX_DEVICES);
+    this.devices = Object.fromEntries(list.map((d) => [d.id, d]));
+    this.touch = new Map(list.map((d, i) => [d.id, list.length - i]));
+    this.tick = list.length;
+    this.devTimer = null;
+    this.devDirty = false;
   }
 
   // Instantané récent (≤ maxAgeS) ou nouveau ; null si le modèle est encore vide
@@ -129,17 +142,37 @@ export class SyncHub {
   // ── Registre des écrans synchronisés ──
   seen(req, extra) {
     const id = String(req.headers['x-vn-device'] || '').slice(0, 40) || `ip-${req.socket.remoteAddress}`;
-    const d = this.devices[id] || { id, first: Math.floor(Date.now() / 1000) };
+    let d = this.devices[id];
+    if (!d) {
+      const ids = Object.keys(this.devices);
+      if (ids.length >= MAX_DEVICES) {
+        const old = ids.reduce((a, b) => ((this.touch.get(a) ?? 0) <= (this.touch.get(b) ?? 0) ? a : b));
+        delete this.devices[old];
+        this.touch.delete(old);
+      }
+      d = { id, first: Math.floor(Date.now() / 1000) };
+    }
     d.last = Math.floor(Date.now() / 1000);
     d.ip = req.socket.remoteAddress;
     d.fw = String(req.headers['x-vn-fw'] || d.fw || '').slice(0, 24);
     if (req.headers['x-vn-local']) d.local = String(req.headers['x-vn-local']).slice(0, 160);
-    Object.assign(d, extra || {});
+    for (const [k, v] of Object.entries(extra || {})) d[k] = typeof v === 'string' ? v.slice(0, FIELD_MAX) : v;
     this.devices[id] = d;
+    this.touch.set(id, ++this.tick);
     this.saveDevices();
     return d;
   }
+  // Écriture différée : au plus une toutes les 5 s (et à l'arrêt : flushDevices), plus une par requête
   saveDevices() {
+    this.devDirty = true;
+    if (this.devTimer) return;
+    this.devTimer = setTimeout(() => this.flushDevices(), DEVICES_SAVE_MS);
+    this.devTimer.unref?.();
+  }
+  flushDevices() {
+    if (this.devTimer) { clearTimeout(this.devTimer); this.devTimer = null; }
+    if (!this.devDirty) return;
+    this.devDirty = false;
     try { atomicWrite(this.devicesPath, JSON.stringify(this.devices, null, 2)); } catch (err) { this.log(`[sync] registre : ${err.message}`); }
   }
 }
