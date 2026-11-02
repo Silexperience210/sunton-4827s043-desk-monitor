@@ -149,7 +149,10 @@ et le **profil seul** — les trois colonnes de `sim/bench_reel.cpp`, avec la m�
 
 - par horizon, jour par jour, par heure de la journée et par station (les plus dures à prévoir) ;
 - fiabilité de l'alerte « vide / pleine dans l'heure » : part confirmée, part des ruptures annoncées ;
-- chaque nuit, la journée de la veille est notée et gardée (`data/prevision/note/AAAA-MM-JJ.json`).
+- chaque nuit, la journée de la veille est notée et gardée (`data/prevision/note/AAAA-MM-JJ.json`) ;
+- une station qui ne loue ou ne rend plus, ou dont la valeur n'a pas bougé depuis 24 h ou plus, n'est pas
+  notée (toute prévision y serait « juste ») ; le nombre de prévisions écartées est publié (`skipped`). Le
+  banc natif, lui, les compte encore : écart attendu de l'ordre du centième de vélo.
 
 **Banc de nuit** : l'image Docker compile `sim/bench_prevision` (le même cœur) et le lance chaque nuit
 sur l'archive, en partant du profil du plus ancien instantané (le banc écarte les tranches que ce profil

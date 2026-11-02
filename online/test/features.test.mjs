@@ -157,24 +157,32 @@ for (const p of p1) {
   p.st.forEach((v, i) => { if (!v) return; curN++; if (v[0] !== tr[p.sid[i]]) curBad++; });
 }
 ok(curN > 8000 && curBad === 0, `relevé de chaque prévision = la vérité (${curN} prévisions, ${curBad} écart(s))`);
-ok(p1.every((p) => p.st.every((v) => !v || (v.length === 14 && v.every(Number.isInteger)))), 'prévisions arrondies, 14 valeurs par station');
+ok(p1.every((p) => p.st.every((v) => !v || (v.length === 15 && v.every(Number.isInteger)))), 'prévisions arrondies, 15 valeurs par station (14 + « en service »)');
+// « en service » (loue et rend) d'après le flux envoyé, pas d'après le code testé
+const horsService = new Set(st0.data.stations.filter((s) => s.is_renting === false || s.is_returning === false).map((s) => s.station_id));
+let flagBad = 0, flagOff = 0;
+for (const p of p1) p.st.forEach((v, i) => { if (!v) return; if (v[14] !== (horsService.has(p.sid[i]) ? 0 : 1)) flagBad++; if (!v[14]) flagOff++; });
+ok(flagBad === 0 && flagOff > 0, `« en service » = le flux (${flagOff} prévisions de stations qui ne louent ou ne rendent plus, ${flagBad} écart(s))`);
 
 console.log('3. note de la journée contre un calcul à la main');
 const note = fl.score(day1);
 ok(note.complete, 'journée complète (l\'historique couvre jusqu\'à 2 h le lendemain)');
-// persistance à +60 min, recalculée depuis la vérité seule
-let hs = 0, hn = 0, ms15 = 0, mn15 = 0;
+// persistance à +60 min, recalculée depuis la vérité seule ; stations hors service écartées (m7). Aucune n'est
+// figée depuis 24 h : l'historique commence le jour même.
+let hs = 0, hn = 0, ms15 = 0, mn15 = 0, skipN = 0;
 for (const p of p1) {
   const later = truthBySlot.get(p.slot + 12 * 300), l15 = truthBySlot.get(p.slot + 3 * 300);
   p.st.forEach((v, i) => {
     if (!v) return;
     const sid = p.sid[i];
+    if (horsService.has(sid)) { skipN++; return; }
     if (later && later[sid] !== undefined) { hs += Math.abs(v[0] - later[sid]); hn++; }
     if (l15 && l15[sid] !== undefined) { ms15 += Math.abs(v[1] - l15[sid]); mn15++; }
   });
 }
 ok(note.per[2].n === hn && Math.abs(note.per[2].mae - hs / hn) < 1e-4, `persistance +60 : ${note.per[2].mae} contre ${(hs / hn).toFixed(4)} à la main (n ${note.per[2].n}/${hn})`);
 ok(note.model[0].n === mn15 && Math.abs(note.model[0].mae - ms15 / mn15) < 1e-4, `modèle +15 : ${note.model[0].mae} contre ${(ms15 / mn15).toFixed(4)} à la main`);
+ok(note.skipped?.notRenting === skipN && note.skipped?.frozen === 0, `prévisions écartées : hors service ${note.skipped?.notRenting} (${skipN} attendues), figées ${note.skipped?.frozen} (0)`);
 ok(note.model.every((a) => a.n > 0 && Number.isFinite(a.mae)) && note.prof.every((a) => a.n > 0), 'les cinq horizons sont notés, trois colonnes');
 ok(note.hours.length === 16 && note.stations.length > 100, 'erreur par heure et par station');
 ok(note.alerts.emptyPred >= note.alerts.emptyHit && note.alerts.emptyReal >= note.alerts.emptyCaught, 'fiabilité des alertes « dans l\'heure » cohérente');

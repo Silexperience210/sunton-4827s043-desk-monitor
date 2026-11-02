@@ -6,7 +6,8 @@
 // l'erreur est connue : chaque nuit, la journée de la veille est notée et gardée.
 //
 //   <données>/prevision/AAAA-MM-JJ.jsonl     {"sid":[…]} puis une ligne par quart d'heure :
-//                                            {"slot":…, "t":…, "net60":…, "bikes":…, "st":[[relevé, m15…m240, p15…p240, échéance vide, échéance pleine, capacité] | null, …]}
+//                                            {"slot":…, "t":…, "net60":…, "bikes":…, "st":[[relevé, m15…m240, p15…p240, échéance vide, échéance pleine, capacité, en service] | null, …]}
+//                                            (en service : 1 si la station loue et rend ; absent des journaux d'avant le 02/11/2026)
 //   <données>/prevision/note/AAAA-MM-JJ.json la note du jour (voir score())
 import { mkdirSync, readdirSync, readFileSync, existsSync, statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -18,7 +19,8 @@ import { FEED } from '../public/vn-engine.js';
 export const HK = [3, 6, 12, 24, 48];                     // horizons en tranches de 5 min
 export const HL = ['+15 min', '+30 min', '+60 min', '+120 min', '+240 min'];
 const H60 = 2;
-const NOTE_VERSION = 2;
+const NOTE_VERSION = 3;                                    // 3 : stations figées et hors service écartées (skipped)
+const FROZEN_S = 24 * 3600;
 
 class Acc {
   constructor() { this.s = 0; this.q = 0; this.n = 0; }
@@ -82,7 +84,8 @@ export class ForecastLog {
     if (lp.mi % 15 !== 0 || lp.h < 6 || lp.h >= 22) return false;
     const f = engine.forecast();
     if (f.slot !== head) return false;
-    const sid = engine.stations().map((s) => s.sid);
+    const stations = engine.stations();
+    const sid = stations.map((s) => s.sid);
     const day = dayOf(head);
     const p = join(this.dir, `${day}.jsonl`);
     if (day !== this.curDay) {
@@ -94,7 +97,9 @@ export class ForecastLog {
     let s = '';
     const k = sid.join(',');
     if (k !== this.curKey) { s += JSON.stringify({ sid }) + '\n'; this.curKey = k; }
-    s += JSON.stringify({ slot: head, t: f.t, net60: f.net60, bikes: f.bikes, st: f.st }) + '\n';
+    // « en service » au moment de la prévision (même ordre de stations) : la notation écarte les autres
+    const st = f.st.map((v, i) => (v ? [...v, stations[i]?.renting && stations[i]?.returning ? 1 : 0] : v));
+    s += JSON.stringify({ slot: head, t: f.t, net60: f.net60, bikes: f.bikes, st }) + '\n';
     appendLines(p, s);
     this.lastSlot = head;
     return true;
@@ -111,12 +116,17 @@ export class ForecastLog {
   // vélos de l'anneau à t + h (|e| moyen = MAE, comme le banc). En plus : MAE à +60 min par heure et par
   // station, et la fiabilité de l'alerte « vide / pleine dans l'heure » (échéance ≤ 60 min) : part
   // confirmée (la station a bien été vide / pleine dans l'heure) et part des ruptures annoncées.
+  // Écartées (skipped) : une station qui ne loue ou ne rend plus, ou dont la valeur n'a pas bougé depuis 24 h
+  // ou plus (capteur figé, station à l'arrêt) — toute prévision y est « juste » sans rien prévoir, elle flatte
+  // les deux MAE (2,7 % des paires à +60 min en production, revue du 01/11/2026, m7).
   score(day) {
     const preds = this.readDay(day);
     const H = HK.length;
     const model = HK.map(() => new Acc()), per = HK.map(() => new Acc()), prof = HK.map(() => new Acc());
     const byHour = {}, bySt = {};
     const al = { emptyPred: 0, emptyHit: 0, emptyReal: 0, emptyCaught: 0, fullPred: 0, fullHit: 0, fullReal: 0, fullCaught: 0 };
+    const skipped = { frozen: 0, notRenting: 0 };
+    const frozen = this.frozenAt(day, preds);
     let lastNeeded = 0, missing = 0;
     const colCache = new Map();
     const col = (rec, sid) => {
@@ -130,9 +140,12 @@ export class ForecastLog {
       // tranches de l'heure suivante (alertes) et des horizons
       const fut = [];
       for (let k = 1; k <= 48; k++) fut[k] = this.history.at(p.slot + k * SLOT_S);
+      const still = frozen.get(p.slot);
       p.st.forEach((v, i) => {
         if (!v) return;
         const sid = p.sid[i];
+        if (v.length > 14 && !v[14]) { skipped.notRenting++; return; }
+        if (still?.has(sid)) { skipped.frozen++; return; }
         const cur = v[0];
         for (let h = 0; h < H; h++) {
           const r = fut[HK[h]];
@@ -182,8 +195,29 @@ export class ForecastLog {
       v: NOTE_VERSION, day, preds: preds.length, complete: preds.length > 0 && now > lastNeeded + 600 && this.history.lastT >= lastNeeded,
       missing60: missing, horizons: HL,
       model: model.map((a) => a.json()), per: per.map((a) => a.json()), prof: prof.map((a) => a.json()),
-      hours, stations, alerts: al, scoredAt: now,
+      hours, stations, alerts: al, skipped, scoredAt: now,
     };
+  }
+  // Stations immobiles depuis 24 h ou plus à l'instant de chaque prévision : { slot → Set(sid) }, d'après
+  // l'historique de la veille et du jour (premier jour de l'historique : rien n'est assez ancien pour juger)
+  frozenAt(day, preds) {
+    const out = new Map();
+    const slots = [...new Set(preds.map((p) => p.slot))].sort((a, b) => a - b);
+    if (!slots.length) return out;
+    const recs = this.history.records(dayOf(slots[0] - FROZEN_S - SLOT_S), day);
+    const since = new Map();                       // sid → { v, t } : valeur et début de sa tenue
+    const snap = (t) => out.set(t, new Set([...since].filter(([, x]) => t - x.t >= FROZEN_S).map(([sid]) => sid)));
+    let j = 0;
+    for (const r of recs) {
+      while (j < slots.length && slots[j] < r.t) snap(slots[j++]);
+      r.b.forEach((v, c) => {
+        if (v === null || v === undefined) return;
+        const sid = r.st[c][0], x = since.get(sid);
+        if (!x || x.v !== v) since.set(sid, { v, t: r.t });
+      });
+    }
+    while (j < slots.length) snap(slots[j++]);
+    return out;
   }
   noteFile(day) { return join(this.noteDir, `${day}.json`); }
   readNote(day) { try { const n = JSON.parse(readFileSync(this.noteFile(day), 'utf8')); return n.v === NOTE_VERSION ? n : null; } catch { return null; } }
@@ -220,8 +254,9 @@ export class ForecastLog {
     const H = HK.length;
     const tot = { model: HK.map(() => new Acc()), per: HK.map(() => new Acc()), prof: HK.map(() => new Acc()) };
     const hours = {}, st = {};
-    const al = {};
+    const al = {}, skipped = { frozen: 0, notRenting: 0 };
     for (const n of list) {
+      for (const k of Object.keys(skipped)) skipped[k] += n.skipped?.[k] || 0;
       for (let h = 0; h < H; h++) { tot.model[h].merge(Acc.from(n.model[h])); tot.per[h].merge(Acc.from(n.per[h])); tot.prof[h].merge(Acc.from(n.prof[h])); }
       for (const x of n.hours) { (hours[x.h] ||= [new Acc(), new Acc()])[0].merge(Acc.from(x.model)); hours[x.h][1].merge(Acc.from(x.per)); }
       for (const x of n.stations) { (st[x.sid] ||= [new Acc(), new Acc()])[0].merge(Acc.from(x.model)); st[x.sid][1].merge(Acc.from(x.per)); }
@@ -232,10 +267,10 @@ export class ForecastLog {
       .filter((x) => x.n >= 8).sort((a, b) => b.model - a.model);
     return {
       horizons: HL, days: list.map((n) => ({ day: n.day, preds: n.preds, complete: n.complete,
-        model: n.model.map((a) => a.mae), per: n.per.map((a) => a.mae), prof: n.prof.map((a) => a.mae), n60: n.model[H60].n })),
+        model: n.model.map((a) => a.mae), per: n.per.map((a) => a.mae), prof: n.prof.map((a) => a.mae), n60: n.model[H60].n, skipped: n.skipped })),
       total: { model: tot.model.map((a) => a.json()), per: tot.per.map((a) => a.json()), prof: tot.prof.map((a) => a.json()) },
       hours: Object.keys(hours).map(Number).sort((a, b) => a - b).map((h) => ({ h, model: hours[h][0].json().mae, per: hours[h][1].json().mae, n: hours[h][0].n })),
-      hardest: stations.slice(0, 8), easiest: stations.slice(-5).reverse(), stationsScored: stations.length,
+      hardest: stations.slice(0, 8), easiest: stations.slice(-5).reverse(), stationsScored: stations.length, skipped,
       alerts: { ...al, emptyPrecision: pct(al.emptyHit || 0, al.emptyPred || 0), emptyRecall: pct(al.emptyCaught || 0, al.emptyReal || 0),
         fullPrecision: pct(al.fullHit || 0, al.fullPred || 0), fullRecall: pct(al.fullCaught || 0, al.fullReal || 0) },
       lastSlot: this.lastSlot,
