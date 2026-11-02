@@ -11,10 +11,13 @@
 //      réécrit au plus toutes les 5 s (et à l'arrêt) au lieu d'à chaque requête.
 //  m10. adresse de base du manifeste (où la carte lit les fichiers et envoie les siens, avec son jeton) :
 //      X-Forwarded-Host / -Proto ignorés, sauf s'ils désignent l'adresse publique déclarée (VN_PUBLIC_URL).
+//  m12. la page ne lit jamais le jeton dans l'URL (?token= reste dans l'historique et les journaux du proxy) ;
+//      un ancien lien qui en porte un est effacé de la barre d'adresse, sans être lu.
 // node online/test/securite.test.mjs
-import fs, { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync, readFileSync, existsSync, statSync } from 'node:fs';
+import fs, { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync, readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { req, startServer, simulateCard, fakeService } from './aides.mjs';
 import { profHeader, daysHeader, SyncHub } from '../lib/sync.mjs';
@@ -31,6 +34,7 @@ const fakeBench = join(tmp, 'banc.sh');
 writeFileSync(fakeBench, '#!/bin/sh\nexit 0\n');
 chmodSync(fakeBench, 0o755);
 
+const PUB = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const LAN = 'velohnav.lan:8790';            // un hôte du réseau local, pas 127.0.0.1
 const EVIL = 'http://evil.example';
 
@@ -248,6 +252,23 @@ try {
     ok(got5.startsWith('https://velohnav.example.org/sync/'), `par cloudflared (Host = l'adresse publique, sans X-Forwarded-Host) → base ${got5}`);
     const got4 = await base(a, { host: 'evil.example/x?' });
     ok(!/evil/.test(got4), `Host malformé (« evil.example/x? ») : ${got4}`);
+  }
+
+  console.log('m12. jeton : jamais lu dans l\'URL par la page ; un ancien lien qui en porte un est effacé de la barre d\'adresse');
+  {
+    const scripts = readdirSync(PUB).filter((f) => f.endsWith('.js'));
+    const readers = scripts.filter((f) => /(URLSearchParams\([^)]*location|searchParams)[^;\n]*\.get\(\s*['"]token['"]/.test(readFileSync(join(PUB, f), 'utf8')));
+    ok(scripts.length >= 3 && !readers.length, `scripts de la page qui lisent ?token= : ${readers.join(', ') || 'aucun'} (${scripts.length} lus)`);
+    const m = readFileSync(join(PUB, 'board.js'), 'utf8').match(/^function dropUrlToken\([^)]*\) \{[\s\S]*?^\}/m);
+    ok(!!m, 'board.js : dropUrlToken() présente (efface ?token= de la barre d\'adresse)');
+    if (m) {
+      const drop = new Function(`${m[0]}; return dropUrlToken;`)();
+      const urls = [];
+      const hist = { state: { onglet: 1 }, replaceState: (st, t, u) => urls.push(u) };
+      drop({ href: 'http://umbrel.local:8790/?token=s3cret&x=1#plein', search: '?token=s3cret&x=1' }, hist);
+      drop({ href: 'http://umbrel.local:8790/?x=1', search: '?x=1' }, hist);
+      ok(urls.length === 1 && urls[0] === '/?x=1#plein', `ancien lien « /?token=s3cret&x=1#plein » : barre d'adresse → ${urls.join(' | ') || 'inchangée'} (« /?x=1#plein » attendu, une fois)`);
+    }
   }
 } finally {
   for (const s of servers) await s.stop();
