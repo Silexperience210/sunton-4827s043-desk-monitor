@@ -3,6 +3,7 @@
 // sim/bench_prevision en affichant « 59/59 vérifications réussies », npm test ne lançait pas ce fichier, et la CI
 // ne lançait que trois fichiers sur dix. Vérifié ici, sur des copies de online/ :
 //  - un test qui dépend d'un binaire natif échoue (code 2, message) quand il manque, sans rien déclarer réussi ;
+//  - un fichier qui compte moins de vérifications que son plancher (test/harnais.mjs) fait échouer npm test ;
 //  - npm test (test/tous.mjs) refuse de commencer sans les binaires ;
 //  - la CI construit les deux binaires puis lance npm test, après la reconstruction des moteurs WebAssembly.
 // node online/test/harnais.test.mjs
@@ -11,7 +12,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { ROOT } from './binaires.mjs';
-import { copieOnline } from './harnais.mjs';
+import { copieOnline, decompte, sousPlancher, PLANCHER } from './harnais.mjs';
 
 let fails = 0, checks = 0;
 const ok = (c, msg) => { checks++; console.log(`  ${c ? 'ok   ' : 'ÉCHEC'} ${msg}`); if (!c) fails++; };
@@ -30,6 +31,13 @@ try {
     ok(r.code === 2 && /ÉCHEC/.test(r.out) && named && !/vérifications réussies|vérifications, 0 échec/.test(r.out),
       `${file} sans ${sans.map((b) => `sim/${b}`).join(' ni ')} : code ${r.code}, « ${r.out.split('\n')[0].trim()} »`);
   }
+
+  console.log('un bloc sauté sans bruit fait échouer npm test (plancher par fichier)');
+  // revue §5.1 : sans le binaire du banc, features.test.mjs affichait « 59/59 vérifications réussies » pour 89
+  const low = sousPlancher('features.test.mjs', decompte('59/59 vérifications réussies'));
+  ok(/59 vérifications pour un plancher de 91/.test(low || ''), `features à 59/59 : ${low}`);
+  ok(sousPlancher('nouveau.test.mjs', decompte('3 vérifications, 0 échec(s)')) !== null && Object.keys(PLANCHER).every((f) => sousPlancher(f, { checks: PLANCHER[f], fails: 0 }) === null),
+    'fichier sans plancher refusé ; chaque plancher atteint exactement passe');
 
   console.log('npm test lance toute la suite');
   const pkg = JSON.parse(readFileSync(join(ROOT, 'online', 'package.json'), 'utf8'));
