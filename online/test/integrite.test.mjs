@@ -16,12 +16,14 @@
 //      (historique et journal des prévisions).
 //  m2. jour compressé illisible (.gz abîmé) puis fusion ou compression : le fichier n'est pas écrasé par la
 //      seule tranche nouvelle — mis de côté (<jour>.jsonl.gz.rejete-…), ce qui se relit encore est gardé.
+//  m3. fusion d'un vidage plus récent (merge) : les tranches locales intermédiaires sont encore écrites, à leur
+//      place ; au redémarrage, l'anneau comble les trous de l'historique.
 // node online/test/integrite.test.mjs
 import fs, { mkdtempSync, rmSync, readdirSync, writeFileSync, readFileSync, mkdirSync, utimesSync, existsSync, appendFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { History } from '../lib/history.mjs';
+import { History, dayOf } from '../lib/history.mjs';
 import * as store from '../lib/store.mjs';     // espace de noms : le test tourne (et échoue) sur un code qui n'a pas encore ces fonctions
 import { req, startServer, simulateCard, fakeGbfs, sleep } from './aides.mjs';
 
@@ -329,6 +331,42 @@ try {
       h.compressDone(NEXT);
       const recs = new History(D).readDay(DAY);
       ok(recs.length > 100 && asideOf(D).length === 1, `compression à côté d'un .gz tronqué : ${recs.length} tranches, ${asideOf(D).length} copie(s) du .gz`);
+    }
+  }
+
+  console.log('m3. fusion d\'un vidage plus récent : les tranches locales intermédiaires sont gardées');
+  {
+    const range = (a, b, mk = slot) => Array.from({ length: b - a + 1 }, (_, k) => mk(a + k));
+    const sortedUnique = (recs) => recs.every((r, k) => k === 0 || r.t > recs[k - 1].t);
+    // a. jour passé (chemin .gz) puis b. jour en cours (chemin clair)
+    const now = Math.floor(Date.now() / 1000);
+    let t0 = now - (now % 300);
+    while (dayOf(t0 - 300) === dayOf(now)) t0 -= 300;
+    const todaySlot = (k) => ({ ...slot(k), t: t0 + k * 300 });
+    for (const [what, mk] of [['jour passé', slot], ['jour en cours', todaySlot]]) {
+      const D = fresh();
+      const h = new History(D);
+      h.append(range(0, 9, mk));
+      h.merge(range(100, 110, mk));                      // vidage d'une carte, plus récent que le relevé local
+      ok(h.lastT === mk(9).t, `${what} : la fusion ne déplace pas la dernière tranche relevée (${(h.lastT - mk(0).t) / 300}, 9 attendu)`);
+      h.append(range(10, 99, mk));                       // le relevé local continue
+      const recs = new History(D).readDay(dayOf(mk(0).t));
+      ok(recs.length === 111 && sortedUnique(recs), `${what} : ${recs.length} tranches après le relevé local (111 attendues, triées, sans double)`);
+    }
+    // c. redémarrage : l'historique a 0..9 et 100..110 ; l'anneau relu (0..120) comble les trous
+    {
+      const D = fresh();
+      const h = new History(D);
+      h.append(range(0, 9));
+      h.merge(range(100, 110));
+      const ring = range(0, 120);
+      const engine = { ringHead: () => ring.at(-1).t + 300, slot: (back) => (back >= 1 && back <= ring.length ? { ...ring[ring.length - back], st: undefined } : null),
+        stations: () => ST.map(([sid, name, cap, lat, lon]) => ({ sid, name, cap, lat, lon })) };
+      const h2 = new History(D);
+      const n = h2.capture(engine);
+      const recs = new History(D).readDay(DAY);
+      ok(recs.length === 121 && sortedUnique(recs), `redémarrage : l'anneau comble les trous (${n} tranches écrites, ${recs.length} au total, 121 attendues)`);
+      ok(h2.capture({ ...engine, ringHead: () => ring.at(-1).t + 600 }) === 0, 'l\'anneau relu ensuite ne réécrit rien');
     }
   }
 } finally {

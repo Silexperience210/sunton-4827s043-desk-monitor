@@ -51,9 +51,11 @@ export class History {
     this.dir = join(dataDir, 'historique');
     this.log = log;
     mkdirSync(this.dir, { recursive: true });
-    this.lastT = 0;            // dernière tranche écrite
+    this.lastT = 0;            // dernière tranche écrite par le relevé (une fusion ne la déplace pas)
     this.curDay = '';          // fichier du jour en cours d'écriture
     this.curKey = '';          // liste de stations de la dernière ligne « st » de ce fichier
+    this.tailT = 0;            // dernière tranche de ce fichier : une tranche antérieure n'y est pas ajoutée à la fin
+    this.gapCheck = true;      // premier relevé après le démarrage : l'anneau comble aussi les trous
     this.cache = new Map();    // jour fini → enregistrements (lecture)
     this.stCache = null;       // stations du moteur, mises en cache par clé
     this.damaged = new Set();  // .gz illisibles (en tout ou partie) : mis de côté avant toute réécriture du jour
@@ -145,35 +147,41 @@ export class History {
     const st = engine.stations().map((s) => [s.sid, s.name, s.cap, s.lat, s.lon]);
     return st;
   }
-  // Ajoute des tranches (triées, toutes postérieures à lastT) au fichier de leur jour. Un jour déjà compressé
-  // (redémarrage de nuit, premier relevé tardif) n'est pas rouvert en clair : ses tranches entrent dans son .gz.
+  // Ajoute des tranches (triées) au fichier de leur jour. Une tranche qui ne va pas à la fin de son fichier entre
+  // par merge(), à sa place et sans doublon : jour déjà compressé (redémarrage de nuit, premier relevé tardif),
+  // trou comblé par l'anneau, ou fichier déjà prolongé par la fusion d'un vidage plus récent.
   append(recs) {
     const late = [];
     for (const r of recs) {
-      if (r.t <= this.lastT) continue;
       const day = dayOf(r.t);
       const plain = join(this.dir, `${day}.jsonl`);
-      if (!existsSync(plain) && existsSync(`${plain}.gz`)) { late.push(r); this.lastT = r.t; continue; }
+      if (r.t <= this.lastT || (!existsSync(plain) && existsSync(`${plain}.gz`))) { late.push(r); continue; }
       if (day !== this.curDay) {
         this.curDay = day;
-        const p = join(this.dir, `${day}.jsonl`);
-        // fichier du jour déjà commencé (redémarrage) : reprendre sa dernière liste de stations
-        this.curKey = existsSync(p) ? (() => { const x = parseDay(readFileSync(p)); return x.length ? stKey(x.at(-1).st) : ''; })() : '';
+        // fichier du jour déjà commencé (redémarrage) : reprendre sa dernière liste de stations et sa fin
+        const x = existsSync(plain) ? parseDay(readFileSync(plain)) : [];
+        this.curKey = x.length ? stKey(x.at(-1).st) : '';
+        this.tailT = x.length ? x.at(-1).t : 0;
         this.compressDone(day);
       }
-      const p = join(this.dir, `${day}.jsonl`);
+      if (r.t <= this.tailT) { late.push(r); continue; }
+      const p = plain;
       const k = stKey(r.st);
       let s = '';
       if (k !== this.curKey) { s += JSON.stringify({ st: r.st }) + '\n'; this.curKey = k; }
       s += JSON.stringify({ t: r.t, n: r.n ?? null, w: r.w ?? null, b: r.b }) + '\n';
       appendLines(p, s);
       this._files = null;
-      this.lastT = r.t;
+      this.lastT = this.tailT = r.t;
     }
-    if (late.length) this.merge(late);
+    if (late.length) {
+      this.merge(late);
+      this.lastT = Math.max(this.lastT, ...late.map((r) => r.t));
+    }
   }
   // Relève dans l'anneau du moteur les tranches finies pas encore écrites (appelé après chaque cycle,
-  // et au démarrage : l'anneau relu de /vn_hist.bin comble ce qui manque depuis la dernière écriture)
+  // et au démarrage : l'anneau relu de /vn_hist.bin comble ce qui manque depuis la dernière écriture, et
+  // toute tranche de l'anneau absente de l'historique — trou laissé par une fusion plus récente, une coupure)
   capture(engine) {
     const head = engine.ringHead();
     if (!head || head === this.lastHead) return 0;
@@ -181,10 +189,12 @@ export class History {
     const got = [];
     for (let back = 1; back < 400; back++) {
       const s = engine.slot(back);
-      if (!s || s.t <= this.lastT) break;
+      if (!s || (s.t <= this.lastT && !this.gapCheck)) break;
       if (s.n === null && !s.b.some((v) => v !== null)) continue;     // tranche vide (carte éteinte, trou)
+      if (s.t <= this.lastT && this.at(s.t)) continue;                  // déjà écrite
       got.push(s);
     }
+    this.gapCheck = false;
     if (!got.length) return 0;
     const st = this._stations(engine);
     got.reverse();
@@ -228,13 +238,13 @@ export class History {
         try { rmSync(join(this.dir, `${day}.jsonl`)); } catch { /* absent */ }
       } else {
         atomicWrite(join(this.dir, `${day}.jsonl`), text);
-        if (day === this.curDay) this.curKey = all.length ? stKey(all.at(-1).st) : '';
+        if (day === this.curDay) { this.curKey = all.length ? stKey(all.at(-1).st) : ''; this.tailT = all.length ? all.at(-1).t : 0; }
       }
       this.cache.delete(day);
       this._files = null;
       added += fresh.length;
     }
-    if (recs.length) this.lastT = Math.max(this.lastT, ...recs.map((r) => r.t));
+    // lastT n'avance pas : des tranches plus récentes venues d'ailleurs ne doivent pas faire sauter celles du relevé local
     return added;
   }
 
