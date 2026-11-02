@@ -11,10 +11,10 @@
 // « st » ouvre chaque fichier et revient quand la liste des stations change dans la journée.
 //
 // Une tranche est écrite quand la suivante s'ouvre : elle est alors définitive (retraits et retours compris).
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, existsSync, statSync, rmSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync, gunzipSync } from 'node:zlib';
-import { atomicWrite } from './store.mjs';
+import { atomicWrite, appendLines } from './store.mjs';
 import { SLOT_S, dayOf, luxParts, aggregate, dailySummary } from '../public/vn-series.js';
 
 export { SLOT_S, dayOf };
@@ -147,7 +147,7 @@ export class History {
       let s = '';
       if (k !== this.curKey) { s += JSON.stringify({ st: r.st }) + '\n'; this.curKey = k; }
       s += JSON.stringify({ t: r.t, n: r.n ?? null, w: r.w ?? null, b: r.b }) + '\n';
-      appendFileSync(p, s);
+      appendLines(p, s);
       this._files = null;
       this.lastT = r.t;
     }

@@ -12,8 +12,10 @@
 //  M4. atomicWrite : fsync du fichier temporaire avant le renommage, puis du dossier ; nom temporaire unique
 //      (le PID vaut 1 sous Docker) ; coupure avant le renommage : l'ancienne version reste ; orphelins
 //      (.tmp-*, archive/.instantane-*) supprimés au démarrage.
+//  m1. coupure pendant un ajout : la ligne tronquée en fin de fichier ne doit pas avaler la tranche suivante
+//      (historique et journal des prévisions).
 // node online/test/integrite.test.mjs
-import fs, { mkdtempSync, rmSync, readdirSync, writeFileSync, readFileSync, mkdirSync, utimesSync, existsSync } from 'node:fs';
+import fs, { mkdtempSync, rmSync, readdirSync, writeFileSync, readFileSync, mkdirSync, utimesSync, existsSync, appendFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -260,6 +262,31 @@ try {
     await s.stop();
     ok(old.every((f) => !existsSync(f)) && existsSync(recent) && existsSync(join(D, 'archive', '20261101-060052', 'vn_hist.bin')),
       `orphelins de plus de 10 min supprimés au démarrage, le reste gardé (${(s.log().match(/\[fs\][^\n]*orphelin[^\n]*/) || ['aucun message'])[0]})`);
+  }
+
+  console.log('m1. ligne tronquée en fin de fichier : la tranche suivante n\'y est pas collée');
+  {
+    const D = fresh();
+    const h = new History(D);
+    h.append(Array.from({ length: 10 }, (_, k) => slot(k)));
+    // coupure pendant l'ajout de la tranche 10 : une ligne sans fin
+    const line = JSON.stringify({ t: slot(10).t, n: slot(10).n, w: slot(10).w, b: slot(10).b });
+    appendFileSync(join(D, 'historique', `${DAY}.jsonl`), line.slice(0, 25));
+    const h2 = new History(D);
+    h2.append([slot(11), slot(12)]);
+    const recs = new History(D).readDay(DAY);
+    ok(recs.some((r) => r.t === slot(11).t) && recs.some((r) => r.t === slot(12).t), `tranches écrites après la coupure : ${recs.length} lues (12 attendues : 0 à 9, 11, 12)`);
+    // journal des prévisions : même règle
+    const { ForecastLog } = await import('../lib/forecast.mjs');
+    const F = fresh();
+    const fl = new ForecastLog(F, new History(F));
+    const pday = '2026-10-30', pslot = Date.UTC(2026, 9, 30, 7, 0, 0) / 1000;      // 8 h à Luxembourg
+    mkdirSync(join(F, 'prevision'), { recursive: true });
+    writeFileSync(join(F, 'prevision', `${pday}.jsonl`), `${JSON.stringify({ sid: ['1'] })}\n${JSON.stringify({ slot: pslot, t: pslot, st: [[1]] })}\n{"slot":${pslot + 900},"t":`);
+    const fake = { ringHead: () => pslot + 1800, forecast: () => ({ slot: pslot + 1800, t: pslot + 1800, net60: 0, bikes: 1, st: [[2]] }), stations: () => [{ sid: '1' }] };
+    const fl2 = new ForecastLog(F, new History(F));
+    fl2.capture(fake);
+    ok(fl2.readDay(pday).map((x) => x.slot).join() === `${pslot},${pslot + 1800}`, `journal des prévisions : quart d'heure suivant lisible après la coupure (${fl2.readDay(pday).map((x) => x.slot - pslot).join(', ')})`);
   }
 } finally {
   rmSync(tmp, { recursive: true, force: true });

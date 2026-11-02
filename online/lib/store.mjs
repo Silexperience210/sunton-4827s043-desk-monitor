@@ -4,7 +4,7 @@
 // temporaire écrit puis fsync, renommage, fsync du dossier) : une coupure de courant laisse l'ancienne
 // version ou la nouvelle, entières — jamais un fichier renommé mais vide.
 import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, rmSync, statSync, linkSync, copyFileSync,
-  openSync, closeSync, fsyncSync } from 'node:fs';
+  openSync, closeSync, fsyncSync, fstatSync, readSync, appendFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
@@ -84,6 +84,17 @@ function durableWrite(path, data) {
 function syncDir(dir) {
   let fd = null;
   try { fd = openSync(dir, 'r'); fsyncSync(fd); } catch { /* Windows */ } finally { if (fd !== null) closeSync(fd); }
+}
+// Ajout de lignes JSON à un fichier de jour (historique, journal des prévisions). Une coupure pendant l'ajout
+// précédent laisse une ligne sans fin : la suite y serait collée, et les deux lignes perdues. On repart à la ligne.
+export function appendLines(path, text) {
+  let fd = null, cut = false;
+  try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size, last = Buffer.alloc(1);
+    cut = size > 0 && readSync(fd, last, 0, 1, size - 1) === 1 && last[0] !== 0x0a;
+  } catch { /* fichier neuf */ } finally { if (fd !== null) closeSync(fd); }
+  appendFileSync(path, cut ? `\n${text}` : text);
 }
 // Temporaires d'une écriture interrompue (arrêt brutal) : .tmp-* dans les dossiers de données, .instantane-*
 // dans l'archive. Plus de 10 min seulement : un autre processus sur le même volume peut être en train d'écrire.

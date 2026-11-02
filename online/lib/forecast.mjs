@@ -8,10 +8,10 @@
 //   <données>/prevision/AAAA-MM-JJ.jsonl     {"sid":[…]} puis une ligne par quart d'heure :
 //                                            {"slot":…, "t":…, "net60":…, "bikes":…, "st":[[relevé, m15…m240, p15…p240, échéance vide, échéance pleine, capacité] | null, …]}
 //   <données>/prevision/note/AAAA-MM-JJ.json la note du jour (voir score())
-import { mkdirSync, readdirSync, readFileSync, appendFileSync, existsSync, statSync, rmSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, existsSync, statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync, gunzipSync } from 'node:zlib';
-import { atomicWrite, luxParts } from './store.mjs';
+import { atomicWrite, appendLines, luxParts } from './store.mjs';
 import { dayOf, SLOT_S } from './history.mjs';
 import { FEED } from '../public/vn-engine.js';
 
@@ -95,7 +95,7 @@ export class ForecastLog {
     const k = sid.join(',');
     if (k !== this.curKey) { s += JSON.stringify({ sid }) + '\n'; this.curKey = k; }
     s += JSON.stringify({ slot: head, t: f.t, net60: f.net60, bikes: f.bikes, st: f.st }) + '\n';
-    appendFileSync(p, s);
+    appendLines(p, s);
     this.lastSlot = head;
     return true;
   }
