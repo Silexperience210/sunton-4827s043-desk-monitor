@@ -2,7 +2,7 @@
 // Les fichiers sont ceux de la carte (/vn_prof.bin, /vn_hist.bin, /vn_days.bin — octets exacts de
 // Model::serialize) plus /vn_live.bin, propre au moteur en ligne. Écriture atomique (fichier
 // temporaire puis renommage) : une coupure pendant l'écriture laisse l'ancienne version intacte.
-import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, rmSync, statSync, linkSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const STATE_FILES = ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin', 'vn_live.bin'];
@@ -39,6 +39,30 @@ export function checkLive(b) {
   return { buf: out, why: null };
 }
 
+// Un fichier d'état relu SEUL dans un moteur neuf, à l'heure `now` (la règle des 20 h de l'historique 24 h en
+// dépend) : { ok, buf, why, stale }. stale = historique 24 h trop ancien, pas abîmé (règle de la carte).
+const HIST_MAGIC = 0x31484E56, HIST_FRESH_S = 20 * 3600;
+export async function readable(name, b, makeEngine, now) {
+  if (!b.length) return { ok: false, why: 'fichier vide' };
+  if (name === 'vn_live.bin') {
+    const c = checkLive(b);
+    if (c.why) return { ok: false, why: c.why };
+    b = c.buf;
+  }
+  if (name === 'vn_hist.bin' && b.length >= 40 && b.readUInt32LE(0) === HIST_MAGIC) {
+    const saved = Number(b.readBigInt64LE(32));
+    if (saved > 0 && now - saved >= HIST_FRESH_S) return { ok: false, stale: true, why: `sauvegardé il y a ${Math.floor((now - saved) / 3600)} h (au-delà de 20 h, comme la carte)` };
+  }
+  const live = name === 'vn_live.bin';
+  const e = await makeEngine();
+  e.clock(now, 1000);
+  e.init();
+  e.putFile('/' + name, b);
+  const r = e.load(live);
+  if (live ? r & 2 : r & 1) return { ok: true, buf: b };
+  return { ok: false, why: `illisible par ${live ? 'liveLoad' : 'Model::load'}, ${b.length} octets` };
+}
+
 export function atomicWrite(path, data) {
   const tmp = `${path}.tmp-${process.pid}`;
   writeFileSync(tmp, data);
@@ -61,30 +85,62 @@ export class Store {
   read(name) { try { return readFileSync(this.path(name)); } catch { return null; } }
   write(name, data) { atomicWrite(this.path(name), data); }
 
-  // Dépose dans le moteur ce qui existe sur disque ; renvoie les noms relus
-  restoreInto(engine, names = STATE_FILES) {
-    const got = [];
-    for (const n of names) {
-      let b = this.read(n);
-      if (!b || !b.length) continue;
-      if (n === 'vn_live.bin') {
-        const c = checkLive(b);
-        if (c.why) { this.log(`[fs] vn_live.bin refusé (${c.why}) : état vivant repris de zéro`); continue; }
-        b = c.buf;
-      }
-      engine.putFile('/' + n, b);
-      got.push(n);
+  // ── Reprise de l'état au démarrage ──
+  // Chaque fichier est d'abord relu SEUL dans un moteur neuf (Model::load, liveLoad : les contrôles de la carte),
+  // pour savoir lequel est lisible : la première sauvegarde réécrit tout, un fichier refusé serait perdu en
+  // silence. Non vide et refusé, il est mis de côté (<nom>.rejete-AAAAMMJJ-HHMMSS) et remplacé par la génération
+  // précédente (<nom>.prev, gardée à chaque sauvegarde) si elle est lisible. Le journal nomme chaque fichier.
+  // Un historique 24 h de plus de 20 h n'est pas une erreur (règle de la carte) : non repris, laissé en place.
+  // Dépose dans le moteur ce qui est lisible ; renvoie { nom: { state: oui | prev | non | absent, why } }.
+  async restore(engine, { makeEngine, now }) {
+    const got = {};
+    for (const n of STATE_FILES) {
+      const r = await this._pick(n, makeEngine, now);
+      got[n] = r;
+      if (r.buf) engine.putFile('/' + n, r.buf);
     }
     return got;
   }
-  // Écrit ce que le moteur vient de sérialiser (vn_save)
+  async _pick(n, makeEngine, now) {
+    const main = this.read(n);
+    if (!main) return { state: 'absent' };
+    const c = await readable(n, main, makeEngine, now);
+    if (c.ok) return { state: 'oui', buf: c.buf };
+    if (c.stale) { this.log(`[fs] ${n} non repris : ${c.why}`); return { state: 'non', why: c.why }; }
+    if (main.length) this.log(`[fs] ${n} refusé (${c.why}) : gardé sous ${this.reject(n)}`);
+    else { rmSync(this.path(n), { force: true }); this.log(`[fs] ${n} vide : ignoré`); }
+    const prev = this.read(`${n}.prev`);
+    if (prev && prev.length) {
+      const p = await readable(n, prev, makeEngine, now);
+      if (p.ok) { this.log(`[fs] ${n} repris de ${n}.prev (génération précédente)`); return { state: 'prev', buf: p.buf, why: c.why }; }
+      if (!p.stale) this.log(`[fs] ${n}.prev refusé aussi (${p.why}) : gardé sous ${this.reject(`${n}.prev`)}`);
+    }
+    return { state: 'non', why: c.why };
+  }
+  // Met un fichier refusé de côté (jamais écrasé) ; renvoie son nouveau nom
+  reject(name) {
+    const { stamp } = luxParts(Math.floor(Date.now() / 1000));
+    let to = `${name}.rejete-${stamp}`, k = 2;
+    while (existsSync(this.path(to))) to = `${name}.rejete-${stamp}-${k++}`;
+    renameSync(this.path(name), this.path(to));
+    return to;
+  }
+  // Écrit ce que le moteur vient de sérialiser (vn_save) ; la version remplacée devient <nom>.prev
   persistFrom(engine) {
     let bytes = 0;
     for (const n of STATE_FILES) {
       const b = engine.getFile('/' + n);
-      if (b) { this.write(n, b); bytes += b.length; }
+      if (b) { this.keepPrevious(n); this.write(n, b); bytes += b.length; }
     }
     return bytes;
+  }
+  // Lien dur (aucune copie, le fichier courant reste en place), copie si le système de fichiers les refuse
+  keepPrevious(n) {
+    const p = this.path(n), prev = `${p}.prev`;
+    if (!existsSync(p)) return;
+    try { rmSync(prev, { force: true }); linkSync(p, prev); } catch {
+      try { copyFileSync(p, prev); } catch (err) { this.log(`[fs] ${n}.prev non gardé : ${err.message}`); }
+    }
   }
 
   // ── Archive (même disposition que tools/carte_dump.py) ──

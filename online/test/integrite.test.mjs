@@ -6,6 +6,9 @@
 //  M2. vn_live.bin abîmé mais de bonne taille (rHead, rCount, nLog, logHead hors bornes) : refusé au
 //      démarrage — pas d'erreur WebAssembly à chaque relevé, pas de corruption resauvegardée à l'arrêt ;
 //      une station du journal hors bornes est ramenée à -1.
+//  M3. fichier d'état illisible au démarrage (profil vide, historique tronqué) : nommé au journal, mis de côté
+//      (<nom>.rejete-…) au lieu d'être écrasé par la première sauvegarde ; la génération précédente (<nom>.prev,
+//      gardée à chaque sauvegarde) est reprise si elle est lisible.
 // node online/test/integrite.test.mjs
 import { mkdtempSync, rmSync, readdirSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -133,6 +136,61 @@ try {
     ok(/rHead/.test(at(68, 60)) && /rHead/.test(at(68, -2)) && /rCount/.test(at(72, -1)) && /rCount/.test(at(72, 0)), 'rHead 60 ou −2, rCount −1, ou rCount 0 avec rHead ≥ 0 : refusés');
     ok(/logHead/.test(at(80, 1024)) && /nLog/.test(at(76, 1025)) && /nLog/.test(at(76, 0)), 'logHead 1024, nLog 1025, ou nLog 0 avec logHead ≥ 0 : refusés');
     ok(checkLive(good.subarray(0, 50)).why === 'en-tête tronqué', 'en-tête tronqué : refusé');
+  }
+
+  console.log('M3. fichier d\'état illisible : mis de côté et nommé, génération précédente reprise');
+  {
+    const now = Math.floor(Date.now() / 1000);
+    const A = await simulateCard({ from: now - 86400, to: now - 120, seed: 31 });
+    const B = await simulateCard({ from: now - 2 * 86400, to: now - 150, seed: 32 });
+    const put = (D, files) => { mkdirSync(D, { recursive: true }); for (const [f, b] of Object.entries(files)) writeFileSync(join(D, f), b); };
+    const rejected = (D, f) => readdirSync(D).filter((x) => x.startsWith(`${f}.rejete-`));
+    const rd = (p) => { try { return readFileSync(p); } catch { return null; } };
+    // le scénario de la revue : vn_prof.bin vide, vn_hist.bin tronqué
+    {
+      const D = fresh();
+      const cut = A['vn_hist.bin'].subarray(0, 5000);
+      put(D, { 'vn_prof.bin': Buffer.alloc(0), 'vn_hist.bin': cut, 'vn_days.bin': A['vn_days.bin'], 'vn_live.bin': A['vn_live.bin'] });
+      const s = await startServer({ data: D });
+      await s.stop();
+      const L = s.log(), kept = rejected(D, 'vn_hist.bin');
+      ok(!/profils oui/.test(L) && /profils non/.test(L), `journal : profils non (« ${(L.match(/\[fs\] état relu[^\n]*/) || ['?'])[0]} »)`);
+      ok(/vn_prof\.bin vide/.test(L) && /vn_hist\.bin refusé/.test(L), 'refus nommés fichier par fichier');
+      ok(kept.length === 1 && readFileSync(join(D, kept[0])).equals(cut), `vn_hist.bin tronqué gardé tel quel après la sauvegarde de l'arrêt (${kept.join(', ') || 'aucune copie'})`);
+    }
+    // profil abîmé, génération précédente lisible : elle est reprise
+    {
+      const D = fresh();
+      const cut = B['vn_prof.bin'].subarray(0, 100000);
+      put(D, { 'vn_prof.bin': cut, 'vn_prof.bin.prev': B['vn_prof.bin'], 'vn_hist.bin': B['vn_hist.bin'], 'vn_days.bin': B['vn_days.bin'] });
+      const s = await startServer({ data: D });
+      const sum = (await req(s.port, { path: '/api/summary' })).json;
+      await s.stop();
+      const kept = rejected(D, 'vn_prof.bin');
+      ok(/vn_prof\.bin repris de vn_prof\.bin\.prev/.test(s.log()) && sum.learnSamples === B.summary.learnSamples,
+        `profil abîmé : génération précédente reprise (${sum.learnSamples} relevés appris, ${B.summary.learnSamples} attendus)`);
+      ok(kept.length === 1 && readFileSync(join(D, kept[0])).equals(cut), 'profil abîmé gardé de côté');
+      ok(rd(join(D, 'vn_prof.bin.prev'))?.equals(B['vn_prof.bin']), 'la génération précédente n\'est pas écrasée par la sauvegarde suivante');
+    }
+    // chaque sauvegarde garde la version remplacée
+    {
+      const D = fresh();
+      put(D, { 'vn_prof.bin': A['vn_prof.bin'], 'vn_hist.bin': A['vn_hist.bin'], 'vn_days.bin': A['vn_days.bin'], 'vn_live.bin': A['vn_live.bin'] });
+      const s = await startServer({ data: D });
+      await s.stop();
+      ok(/état sauvegardé \(arrêt/.test(s.log()) && ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin', 'vn_live.bin'].every((f) => rd(join(D, `${f}.prev`))?.equals(A[f])),
+        'sauvegarde : la version remplacée de chaque fichier est gardée (<nom>.prev)');
+    }
+    // historique 24 h de plus de 20 h : règle de la carte, pas une erreur
+    {
+      const D = fresh();
+      const old = await simulateCard({ from: now - 2 * 86400, to: now - 30 * 3600, seed: 33 });
+      put(D, { 'vn_prof.bin': old['vn_prof.bin'], 'vn_hist.bin': old['vn_hist.bin'] });
+      const s = await startServer({ data: D });
+      await s.stop();
+      ok(/vn_hist\.bin non repris : sauvegardé il y a 30 h/.test(s.log()) && rejected(D, 'vn_hist.bin').length === 0 && /profils oui/.test(s.log()),
+        'historique 24 h de 30 h : non repris, nommé, pas mis de côté ; profils repris');
+    }
   }
 } finally {
   rmSync(tmp, { recursive: true, force: true });

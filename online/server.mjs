@@ -86,14 +86,18 @@ if (ia >= 0) {
 }
 
 // ── Reprise de l'état sur disque ─────────────────────────────────────
+// Fichier par fichier (lib/store.mjs) : un fichier refusé est mis de côté et nommé, jamais écrasé en silence.
 {
-  const names = store.restoreInto(engine);
+  const got = await store.restore(engine, { makeEngine: scratchEngine, now: nowS() });
   engine.clock(nowS(), mono());
   const r = engine.load(true);
   flushEngineLog();
   const s = engine.summary();
-  if (names.length) log(`[fs] état relu (${names.join(', ')}) : profils ${r & 1 ? 'oui' : 'non'}, état vivant ${r & 2 ? 'oui' : 'non'} · ${s.stations} stations · ${s.learnSamples} relevés appris · ${s.daysKept} jour(s) résumés`);
-  else log(`[fs] aucun état dans ${store.dir} : apprentissage depuis zéro`);
+  const said = (n, ok = true) => ({ oui: ok ? 'oui' : 'non', prev: ok ? 'oui (génération précédente)' : 'non', non: 'non', absent: 'absent' })[got[n].state];
+  if (Object.values(got).some((x) => x.state !== 'absent')) {
+    log(`[fs] état relu : profils ${said('vn_prof.bin')}, historique 24 h ${said('vn_hist.bin')}, résumés par jour ${said('vn_days.bin')}, ` +
+      `état vivant ${said('vn_live.bin', !!(r & 2))} · ${s.stations} stations · ${s.learnSamples} relevés appris · ${s.daysKept} jour(s) résumés`);
+  } else log(`[fs] aucun état dans ${store.dir} : apprentissage depuis zéro`);
   // l'anneau relu comble l'historique long depuis sa dernière tranche écrite
   const n = history.capture(engine);
   if (n) log(`[historique] ${n} tranche(s) reprises de l'anneau relu`);

@@ -77,6 +77,10 @@ node online/server.mjs --import /tmp/vidage                  # puis lancer le se
 Les réglages des notifications se font aussi (et plus simplement) depuis la page, onglet **Notifications** ;
 ils sont gardés dans `data/notify.json` et priment sur les variables.
 
+Chaque sauvegarde garde la version remplacée de l'état (`vn_prof.bin.prev`…). Au démarrage, chaque fichier
+est relu seul : un fichier illisible est mis de côté sous `<nom>.rejete-AAAAMMJJ-HHMMSS` (jamais écrasé),
+la génération `.prev` le remplace si elle est lisible, et le journal nomme chaque fichier refusé.
+
 ## Le jumeau de l'écran (`http://<machine>:8790`)
 
 C'est l'interface de la carte, **le même code `src/ui`** (LVGL 8.3 compilé en WebAssembly), dans un
