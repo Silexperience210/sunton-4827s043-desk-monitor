@@ -606,9 +606,19 @@ static int opsScenario(const std::string & in, StatusRec * recs, int ns) {
   }
   // 7. Météo apprise (étapes 3a / 4) : état d'un coefficient appris injecté — α = 0,55 ± 0,12 sur
   // 184 fenêtres pluvieuses —, il pleut maintenant, accalmie annoncée dans 5 h.
+  // Modèle 2 : la part météo est a(h)·M ; des coefficients de prévision appris sont donc injectés aussi
+  // (a = 1, b = 0 dans les deux classes de jour) — sans eux, a = 0 (la persistance) et la part météo est nulle.
   int wst = -1;
   {
     plat::LockGuard g;
+    FcLearn & L = *g_model.fcL;
+    for (int c = 0; c < FC_NC; c++)
+      for (int h = 0; h < FC_NH; h++) {
+        for (int j = 0; j < FC_NG; j++) L.err[c][h][j] = 2000.f;
+        L.err[c][h][10 * FC_NB] = 1000.f;           // a = 1,0 ; b = 0
+        L.w[c][h] = 1000.f; L.lots[c][h] = 2 * FC_MIN_LOTS;
+      }
+    g_model.fcSelect();
     WxStats & w = g_model.wxG;
     memset(&w, 0, sizeof(w));
     w.sdd = 1000; w.szz = 10; w.szr = -5.5f; w.sgg = 1.44f; w.sn = 50000; w.nRain = 184;

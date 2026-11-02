@@ -52,6 +52,13 @@ BENCH_OBJ := $(patsubst ../%.cpp,$(BUILD)/app/%.o,$(filter ../%,$(BENCH_CXX))) \
 bench_prevision: $(BENCH_OBJ)
 	$(CXX) -o $@ $^ -lm
 
+# Banc du modèle de prévision sur l'historique réel du serveur (docs/mesures-modele.md) : même cœur, aucune UI
+MODELE_CXX := $(wildcard ../src/core/*.cpp) platform_sim.cpp bench_modele.cpp
+MODELE_OBJ := $(patsubst ../%.cpp,$(BUILD)/app/%.o,$(filter ../%,$(MODELE_CXX))) \
+              $(patsubst %.cpp,$(BUILD)/sim/%.o,$(filter-out ../%,$(MODELE_CXX)))
+bench_modele: $(MODELE_OBJ)
+	$(CXX) -o $@ $^ -lm
+
 # Émetteur simulé de la commande série « dump » (tools/test_carte_dump.py) : même cœur, aucune UI
 DUMP_CXX := $(wildcard ../src/core/*.cpp) platform_sim.cpp dump_sim.cpp
 DUMP_OBJ := $(patsubst ../%.cpp,$(BUILD)/app/%.o,$(filter ../%,$(DUMP_CXX))) \
@@ -67,9 +74,9 @@ sync_sim: $(SYNC_OBJ)
 	$(CXX) -o $@ $^ -lm
 
 # dépendances d'en-têtes (-MMD) : un .h modifié recompile ce qui l'inclut
--include $(APP_OBJ:.o=.d) $(TEST_OBJ:.o=.d) $(BENCH_OBJ:.o=.d) $(DUMP_OBJ:.o=.d) $(SYNC_OBJ:.o=.d)
+-include $(APP_OBJ:.o=.d) $(TEST_OBJ:.o=.d) $(BENCH_OBJ:.o=.d) $(DUMP_OBJ:.o=.d) $(SYNC_OBJ:.o=.d) $(MODELE_OBJ:.o=.d)
 
 clean:
-	rm -rf $(BUILD) sim test_core bench_prevision dump_sim sync_sim
+	rm -rf $(BUILD) sim test_core bench_prevision dump_sim sync_sim bench_modele
 
 .PHONY: clean
