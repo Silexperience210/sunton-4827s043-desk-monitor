@@ -8,6 +8,37 @@ import { join } from 'node:path';
 export const STATE_FILES = ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin', 'vn_live.bin'];
 export const CARD_FILES = ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin'];
 
+// ── /vn_live.bin : index contrôlés avant la relecture ──
+// liveLoad (online/engine/engine.cpp) vérifie l'en-tête et la taille, pas les index rHead, rCount, nLog,
+// logHead ni la station de chaque entrée du journal : un fichier de bonne taille mais abîmé faisait lire et
+// écrire hors des tableaux du modèle à chaque relevé (« memory access out of bounds » dans applyStatus), et
+// la corruption était resauvegardée à l'arrêt. Disposition LiveHdr version 1 (96 octets) : rHead, rCount,
+// nLog, logHead en int32 aux octets 68, 72, 76, 80 ; puis stations, recT[60], rec[60][n], journal[1024].
+// Renvoie { buf, why } : why = raison du refus (le fichier ne doit pas être relu), buf = le fichier, journal
+// ramené dans les bornes (station hors [0, n) → -1). Une autre version est laissée à liveLoad, qui la refuse.
+const LIVE_MAGIC = 0x314C4E56, LIVE_HDR = 96, RECENT_SLOTS = 60, ALERT_LOG = 1024, LOG_ENTRY = 16;
+export function checkLive(b) {
+  if (!b || b.length < LIVE_HDR) return { buf: b, why: 'en-tête tronqué' };
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  if (v.getUint32(0, true) !== LIVE_MAGIC || v.getUint16(4, true) !== 1) return { buf: b, why: null };
+  const nSt = v.getUint16(6, true), szStation = v.getUint16(8, true), szLog = v.getUint16(16, true);
+  const rHead = v.getInt32(68, true), rCount = v.getInt32(72, true), nLog = v.getInt32(76, true), logHead = v.getInt32(80, true);
+  if (rHead < -1 || rHead >= RECENT_SLOTS) return { buf: b, why: `rHead ${rHead} hors [-1, ${RECENT_SLOTS})` };
+  if (rCount < 0 || rCount > RECENT_SLOTS || (rHead < 0) !== (rCount === 0)) return { buf: b, why: `rCount ${rCount} incohérent (rHead ${rHead})` };
+  if (logHead < -1 || logHead >= ALERT_LOG) return { buf: b, why: `logHead ${logHead} hors [-1, ${ALERT_LOG})` };
+  if (nLog < 0 || nLog > ALERT_LOG || (logHead < 0) !== (nLog === 0)) return { buf: b, why: `nLog ${nLog} incohérent (logHead ${logHead})` };
+  const logAt = LIVE_HDR + szStation * nSt + 8 * RECENT_SLOTS + RECENT_SLOTS * nSt;
+  if (szLog !== LOG_ENTRY || b.length < logAt + ALERT_LOG * LOG_ENTRY) return { buf: b, why: null };   // taille : liveLoad
+  let out = b;
+  for (let k = 0; k < ALERT_LOG; k++) {
+    const at = logAt + k * LOG_ENTRY + 12, st = v.getInt16(at, true);
+    if (st === -1 || (st >= 0 && st < nSt)) continue;
+    if (out === b) out = Buffer.from(b);
+    out.writeInt16LE(-1, at);
+  }
+  return { buf: out, why: null };
+}
+
 export function atomicWrite(path, data) {
   const tmp = `${path}.tmp-${process.pid}`;
   writeFileSync(tmp, data);
@@ -34,8 +65,15 @@ export class Store {
   restoreInto(engine, names = STATE_FILES) {
     const got = [];
     for (const n of names) {
-      const b = this.read(n);
-      if (b && b.length) { engine.putFile('/' + n, b); got.push(n); }
+      let b = this.read(n);
+      if (!b || !b.length) continue;
+      if (n === 'vn_live.bin') {
+        const c = checkLive(b);
+        if (c.why) { this.log(`[fs] vn_live.bin refusé (${c.why}) : état vivant repris de zéro`); continue; }
+        b = c.buf;
+      }
+      engine.putFile('/' + n, b);
+      got.push(n);
     }
     return got;
   }

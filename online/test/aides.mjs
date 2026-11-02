@@ -118,3 +118,23 @@ export async function simulateCard({ from, to, seed = 7, stepS = 300 }) {
   for (const f of ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin', 'vn_live.bin']) out[f] = Buffer.from(e.getFile('/' + f));
   return out;
 }
+
+// Faux flux GBFS local (instantané docs/donnees, last_updated à l'heure) : `status` = nombre de station_status servis
+export async function fakeGbfs() {
+  const info = readFileSync(join(D, 'station_information.json'), 'utf8');
+  const types = readFileSync(join(D, 'vehicle_types.json'), 'utf8');
+  const st0 = JSON.parse(readFileSync(join(D, 'station_status.json'), 'utf8'));
+  const g = await fakeService((x) => {
+    if (x.url.includes('station_status')) {
+      g.status++;
+      st0.last_updated = new Date().toISOString();
+      return { body: JSON.stringify(st0) };
+    }
+    if (x.url.includes('station_information')) return { body: info };
+    if (x.url.includes('vehicle_types')) return { body: types };
+    return { status: 404, body: '{}' };
+  });
+  g.status = 0;
+  g.base = `${g.url}/gbfs`;
+  return g;
+}

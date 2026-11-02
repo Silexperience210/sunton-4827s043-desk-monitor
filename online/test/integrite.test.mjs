@@ -3,11 +3,16 @@
 // lib/store.mjs) ou sur le vrai serveur, dans l'ordre exact où le serveur les appelle.
 //  M1. redémarrage de nuit : le jour fini est compressé à 5 s, puis le premier relevé (tardif) écrit sa
 //      dernière tranche — la journée ne doit pas être réduite à cette seule tranche.
+//  M2. vn_live.bin abîmé mais de bonne taille (rHead, rCount, nLog, logHead hors bornes) : refusé au
+//      démarrage — pas d'erreur WebAssembly à chaque relevé, pas de corruption resauvegardée à l'arrêt ;
+//      une station du journal hors bornes est ramenée à -1.
 // node online/test/integrite.test.mjs
-import { mkdtempSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readdirSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { History } from '../lib/history.mjs';
+import * as store from '../lib/store.mjs';     // espace de noms : le test tourne (et échoue) sur un code qui n'a pas encore ces fonctions
+import { req, startServer, simulateCard, fakeGbfs, sleep } from './aides.mjs';
 
 let fails = 0, checks = 0;
 // VN_TEST_DETAIL=1 : chaque vérification réussie est aussi affichée (preuves du rapport de correctifs)
@@ -54,6 +59,80 @@ try {
     ok(h2.readDay(DAY).length === 288, `clair d'une tranche à côté du .gz : ${h2.readDay(DAY).length} tranches lues (288 attendues)`);
     h2.compressDone(NEXT);
     ok(new History(D).readDay(DAY).length === 288, 'compression : le .gz garde ses 288 tranches');
+  }
+
+  console.log('M2. vn_live.bin abîmé mais de bonne taille : refusé au démarrage');
+  {
+    const now = Math.floor(Date.now() / 1000);
+    const card = await simulateCard({ from: now - 2 * 3600, to: now - 60, stepS: 60, seed: 21 });
+    const gbfs = await fakeGbfs();
+    const hdr = (b) => { const v = new DataView(b.buffer, b.byteOffset, b.byteLength); return { rHead: v.getInt32(68, true), rCount: v.getInt32(72, true), nLog: v.getInt32(76, true), logHead: v.getInt32(80, true) }; };
+    const cases = [
+      ['rHead = 1 000 000 000', (b) => b.writeInt32LE(1e9, 68)],
+      ['rHead = −2 000 000 000', (b) => b.writeInt32LE(-2e9, 68)],
+      ['rCount = 61', (b) => b.writeInt32LE(61, 72)],
+      ['nLog = 5000', (b) => b.writeInt32LE(5000, 76)],
+      ['logHead = −5000', (b) => b.writeInt32LE(-5000, 80)],
+    ];
+    try {
+      for (const [what, mutate] of cases) {
+        const D = fresh();
+        mkdirSync(D, { recursive: true });
+        for (const f of ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin']) writeFileSync(join(D, f), card[f]);
+        const live = Buffer.from(card['vn_live.bin']); mutate(live);
+        writeFileSync(join(D, 'vn_live.bin'), live);
+        const n0 = gbfs.status;
+        const s = await startServer({ data: D, env: { VN_GBFS_BASE: gbfs.base } });
+        // premier cycle de relevé : station_status servi puis appliqué
+        let sum = null;
+        for (let k = 0; k < 60; k++) { sum = (await req(s.port, { path: '/api/summary' })).json; if (gbfs.status > n0 && sum.lastUpdate >= now) break; await sleep(100); }
+        await sleep(300);
+        sum = (await req(s.port, { path: '/api/summary' })).json;
+        const health = (await req(s.port, { path: '/healthz' })).status;
+        await s.stop();
+        const log = s.log();
+        const saved = hdr(readFileSync(join(D, 'vn_live.bin')));
+        ok(!/RuntimeError|out of bounds/.test(log), `${what} : aucune erreur WebAssembly au relevé${/RuntimeError/.test(log) ? ` (${(log.match(/RuntimeError[^\n]*/) || [''])[0]})` : ''}`);
+        ok(sum.lastUpdate >= now && health === 200, `${what} : relevé appliqué, /healthz ${health}`);
+        ok(/vn_live\.bin refusé/.test(log), `${what} : refus journalisé`);
+        ok(saved.rHead >= -1 && saved.rHead < 60 && saved.rCount >= 0 && saved.rCount <= 60 && saved.nLog >= 0 && saved.nLog <= 1024 && saved.logHead >= -1 && saved.logHead < 1024,
+          `${what} : fichier resauvegardé à l'arrêt dans les bornes (${JSON.stringify(saved)})`);
+      }
+      // un état vivant sain est toujours repris
+      const D = fresh();
+      mkdirSync(D, { recursive: true });
+      for (const f of ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin', 'vn_live.bin']) writeFileSync(join(D, f), card[f]);
+      const s = await startServer({ data: D });
+      await s.stop();
+      ok(/état vivant oui/.test(s.log()) && !/refusé/.test(s.log()), 'état vivant sain : repris');
+      // journal des ruptures : une station hors [0, n) est ramenée à -1, le reste de l'état est repris
+      const L = Buffer.from(card['vn_live.bin']);
+      const lv = new DataView(L.buffer, L.byteOffset, L.byteLength);
+      const logAt = 96 + lv.getUint16(8, true) * lv.getUint16(6, true) + 8 * 60 + 60 * lv.getUint16(6, true);
+      L.writeInt16LE(5000, logAt + 12);
+      const D2 = fresh();
+      mkdirSync(D2, { recursive: true });
+      for (const f of ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin']) writeFileSync(join(D2, f), card[f]);
+      writeFileSync(join(D2, 'vn_live.bin'), L);
+      const s2 = await startServer({ data: D2 });
+      await s2.stop();
+      const st0 = readFileSync(join(D2, 'vn_live.bin')).readInt16LE(logAt + 12);
+      ok(/état vivant oui/.test(s2.log()) && st0 === -1, `journal : station 5000 (hors bornes) ramenée à ${st0}, état vivant repris`);
+    } finally { await gbfs.close(); }
+  }
+  console.log('M2. checkLive : bornes de l\'en-tête, fichier sain inchangé');
+  if (typeof store.checkLive !== 'function') ok(false, 'lib/store.mjs n\'exporte pas checkLive');
+  else {
+    const { checkLive } = store;
+    const now = Math.floor(Date.now() / 1000);
+    const card = await simulateCard({ from: now - 3600, to: now - 60, stepS: 60, seed: 5 });
+    const good = card['vn_live.bin'];
+    const c0 = checkLive(good);
+    ok(c0.why === null && c0.buf === good, 'fichier sain : accepté, non recopié');
+    const at = (o, v) => { const b = Buffer.from(good); b.writeInt32LE(v, o); return checkLive(b).why; };
+    ok(/rHead/.test(at(68, 60)) && /rHead/.test(at(68, -2)) && /rCount/.test(at(72, -1)) && /rCount/.test(at(72, 0)), 'rHead 60 ou −2, rCount −1, ou rCount 0 avec rHead ≥ 0 : refusés');
+    ok(/logHead/.test(at(80, 1024)) && /nLog/.test(at(76, 1025)) && /nLog/.test(at(76, 0)), 'logHead 1024, nLog 1025, ou nLog 0 avec logHead ≥ 0 : refusés');
+    ok(checkLive(good.subarray(0, 50)).why === 'en-tête tronqué', 'en-tête tronqué : refusé');
   }
 } finally {
   rmSync(tmp, { recursive: true, force: true });
