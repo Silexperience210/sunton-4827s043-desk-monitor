@@ -23,6 +23,9 @@
 //  m5. fichier abîmé à taille égale (un octet de l'anneau à 250 vélos : Model::load l'accepte) : instantané
 //      d'archive refusé s'il ne correspond pas au CRC32 de son manifeste ; état du serveur refusé au démarrage
 //      s'il ne correspond pas au CRC32 noté à sa sauvegarde (etat.crc32.json), génération précédente reprise.
+//  §5.3. import d'une archive : la tranche de tête d'un instantané pris moins de 5 min après son ouverture était en
+//      cours — elle n'est pas versée ; close, elle l'est (la revue importait la tranche en cours sans qu'aucun test
+//      ne bouge : « added >= 3*287+60 » est trop lâche).
 // node online/test/integrite.test.mjs
 import fs, { mkdtempSync, rmSync, readdirSync, writeFileSync, readFileSync, mkdirSync, utimesSync, existsSync, appendFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
@@ -515,6 +518,27 @@ try {
       await s.stop();
       ok(/profils oui,/.test(s.log()) && !/vn_prof\.bin refusé/.test(s.log()), `génération précédente encore en place (coupure avant l'écriture) : reprise (${relu(s.log())})`);
     }
+  }
+
+  console.log('§5.3. import d\'une archive : tranche de tête en cours non versée, close versée');
+  {
+    const now = Math.floor(Date.now() / 1000);
+    const card = await simulateCard({ from: now - 3 * 3600, to: now - 900, seed: 53 });
+    const head = card.engine.ringHead();
+    // même vidage, deux instants d'instantané : 2 min puis 5 min après l'ouverture de la tranche de tête
+    const imp = async (t) => {
+      const D = fresh(), d = join(D, 'archive', '20261101-060000');
+      mkdirSync(d, { recursive: true });
+      for (const f of ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin']) writeFileSync(join(d, f), card[f]);
+      writeFileSync(join(d, 'manifeste.json'), JSON.stringify({ t_carte: t, fichiers: {} }));
+      const h = new History(D);
+      const r = await importArchive({ dirs: [d], history: h, makeEngine: () => loadEngine(CORE, { onLog: () => {} }) });
+      return { r, ts: h.records(dayOf(head - 86400), dayOf(head)).map((x) => x.t) };
+    };
+    const a = await imp(head + 120), b = await imp(head + 300);
+    ok(head > 0 && a.r.snaps === 1 && a.ts.length > 30 && !a.ts.includes(head) && a.ts.at(-1) === head - 300,
+      `instantané à +2 min : tranche de tête en cours non versée (${a.r.added} tranches, dernière à tête − ${(head - a.ts.at(-1)) / 60} min)`);
+    ok(b.r.snaps === 1 && b.ts.includes(head) && b.r.added === a.r.added + 1, `instantané à +5 min : tranche de tête close versée (${b.r.added} tranches)`);
   }
 } finally {
   rmSync(tmp, { recursive: true, force: true });
