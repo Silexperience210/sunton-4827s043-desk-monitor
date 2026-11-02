@@ -7,7 +7,7 @@
 // Activé si VN_BENCH_BIN désigne l'exécutable (l'image Docker le compile et le règle). Rapport complet
 // en Markdown et extrait JSON dans <données>/banc/AAAA-MM-JJ.{md,json}.
 import { spawn } from 'node:child_process';
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { atomicWrite } from './store.mjs';
 import { snapshotDirs } from './history.mjs';
@@ -101,7 +101,7 @@ export class NightBench {
       const parsed = parseBenchReport(r.out);
       const j = { day, ok: r.code === 0 && !parsed.empty, code: r.code, durationS: +((Date.now() - t0) / 1000).toFixed(1), at: Math.floor(Date.now() / 1000),
         snaps: inp.snaps, stderr: r.err.slice(0, 2000), ...parsed };
-      writeFileSync(join(this.dir, `${day}.md`), r.out || r.err);
+      atomicWrite(join(this.dir, `${day}.md`), r.out || r.err);
       atomicWrite(join(this.dir, `${day}.json`), JSON.stringify(j));
       this.prune();
       const all = parsed.rows.find((x) => x.name === 'tous les jours');

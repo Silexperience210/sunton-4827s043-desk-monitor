@@ -9,9 +9,13 @@
 //  M3. fichier d'état illisible au démarrage (profil vide, historique tronqué) : nommé au journal, mis de côté
 //      (<nom>.rejete-…) au lieu d'être écrasé par la première sauvegarde ; la génération précédente (<nom>.prev,
 //      gardée à chaque sauvegarde) est reprise si elle est lisible.
+//  M4. atomicWrite : fsync du fichier temporaire avant le renommage, puis du dossier ; nom temporaire unique
+//      (le PID vaut 1 sous Docker) ; coupure avant le renommage : l'ancienne version reste ; orphelins
+//      (.tmp-*, archive/.instantane-*) supprimés au démarrage.
 // node online/test/integrite.test.mjs
-import { mkdtempSync, rmSync, readdirSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import fs, { mkdtempSync, rmSync, readdirSync, writeFileSync, readFileSync, mkdirSync, utimesSync, existsSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { History } from '../lib/history.mjs';
 import * as store from '../lib/store.mjs';     // espace de noms : le test tourne (et échoue) sur un code qui n'a pas encore ces fonctions
@@ -191,6 +195,71 @@ try {
       ok(/vn_hist\.bin non repris : sauvegardé il y a 30 h/.test(s.log()) && rejected(D, 'vn_hist.bin').length === 0 && /profils oui/.test(s.log()),
         'historique 24 h de 30 h : non repris, nommé, pas mis de côté ; profils repris');
     }
+  }
+
+  console.log('M4. atomicWrite : fsync avant le renommage, puis du dossier ; orphelins supprimés');
+  {
+    // Espion sur node:fs : les liaisons ESM de lib/store.mjs suivent (syncBuiltinESMExports), rien d'autre ne change
+    const names = ['openSync', 'writeSync', 'writeFileSync', 'fsyncSync', 'fdatasyncSync', 'closeSync', 'renameSync'];
+    const orig = Object.fromEntries(names.map((k) => [k, fs[k]]));
+    let calls = [], failRename = false;
+    const fdPath = new Map();
+    for (const k of names) {
+      fs[k] = function (...a) {
+        if (k === 'renameSync' && failRename) { calls.push({ k, a }); throw Object.assign(new Error('coupure simulée'), { code: 'EIO' }); }
+        const r = orig[k].apply(this, a);
+        if (k === 'openSync') fdPath.set(r, String(a[0]));
+        calls.push({ k, a, path: typeof a[0] === 'number' ? fdPath.get(a[0]) : String(a[0]) });
+        return r;
+      };
+    }
+    syncBuiltinESMExports();
+    try {
+      const D = fresh();
+      mkdirSync(D, { recursive: true });
+      const P = join(D, 'vn_prof.bin');
+      writeFileSync(P, 'ancienne version');
+      calls = [];
+      store.atomicWrite(P, Buffer.from('nouvelle version'));
+      const mine = calls.filter((c) => c.path && (c.path.startsWith(P) || c.path === D));
+      const tmpOpen = mine.find((c) => c.k === 'openSync' && c.path.startsWith(`${P}.tmp-`));
+      const ren = mine.findIndex((c) => c.k === 'renameSync');
+      const fsyncTmp = mine.findIndex((c) => (c.k === 'fsyncSync' || c.k === 'fdatasyncSync') && c.path === tmpOpen?.path);
+      const fsyncDir = mine.findIndex((c, i) => i > ren && c.k === 'fsyncSync' && c.path === D);
+      const trace = mine.map((c) => `${c.k}(${c.path === D ? 'dossier' : c.path.slice(P.length) || 'cible'})`).join(' → ');
+      ok(tmpOpen && fsyncTmp >= 0 && ren > fsyncTmp, `fsync du fichier temporaire avant le renommage : ${trace}`);
+      ok(fsyncDir > ren, 'fsync du dossier après le renommage');
+      ok(readFileSync(P, 'utf8') === 'nouvelle version' && !readdirSync(D).some((f) => f.includes('.tmp-')), 'contenu écrit, aucun temporaire laissé');
+      calls = [];
+      store.atomicWrite(P, Buffer.from('v3'));
+      const tmp2 = calls.find((c) => c.k === 'openSync' && c.path.startsWith(`${P}.tmp-`))?.path;
+      ok(tmp2 && tmpOpen && tmp2 !== tmpOpen.path, `nom temporaire unique d'une écriture à l'autre (${tmpOpen?.path.slice(P.length)} puis ${tmp2?.slice(P.length)})`);
+      // coupure entre l'écriture et le renommage
+      failRename = true;
+      let threw = false;
+      try { store.atomicWrite(P, Buffer.from('jamais visible')); } catch { threw = true; }
+      failRename = false;
+      ok(threw && readFileSync(P, 'utf8') === 'v3', `coupure avant le renommage : l'ancienne version reste (« ${readFileSync(P, 'utf8')} »)`);
+      ok(!readdirSync(D).some((f) => f.includes('.tmp-')), 'échec : le temporaire est supprimé');
+    } finally {
+      for (const k of names) fs[k] = orig[k];
+      syncBuiltinESMExports();
+    }
+    // orphelins d'un arrêt brutal : supprimés au démarrage s'ils ont plus de 10 min (un autre processus peut écrire)
+    const D = fresh();
+    mkdirSync(join(D, 'historique'), { recursive: true });
+    mkdirSync(join(D, 'archive', '.instantane-1-1793000000000'), { recursive: true });
+    mkdirSync(join(D, 'archive', '20261101-060052'), { recursive: true });
+    const old = [join(D, 'vn_prof.bin.tmp-1'), join(D, 'historique', '2026-10-31.jsonl.gz.tmp-1-0a1b2c3d'), join(D, 'archive', '.instantane-1-1793000000000')];
+    const recent = join(D, 'vn_hist.bin.tmp-7-deadbeef');
+    for (const f of [old[0], old[1], recent]) writeFileSync(f, 'x');
+    writeFileSync(join(D, 'archive', '20261101-060052', 'vn_hist.bin'), 'instantané');
+    const past = new Date(Date.now() - 3600e3);
+    for (const f of old) utimesSync(f, past, past);
+    const s = await startServer({ data: D });
+    await s.stop();
+    ok(old.every((f) => !existsSync(f)) && existsSync(recent) && existsSync(join(D, 'archive', '20261101-060052', 'vn_hist.bin')),
+      `orphelins de plus de 10 min supprimés au démarrage, le reste gardé (${(s.log().match(/\[fs\][^\n]*orphelin[^\n]*/) || ['aucun message'])[0]})`);
   }
 } finally {
   rmSync(tmp, { recursive: true, force: true });

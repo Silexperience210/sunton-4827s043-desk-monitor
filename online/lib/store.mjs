@@ -1,9 +1,12 @@
 // ── Persistance sur disque et archive pour le banc ───────────────────
 // Les fichiers sont ceux de la carte (/vn_prof.bin, /vn_hist.bin, /vn_days.bin — octets exacts de
-// Model::serialize) plus /vn_live.bin, propre au moteur en ligne. Écriture atomique (fichier
-// temporaire puis renommage) : une coupure pendant l'écriture laisse l'ancienne version intacte.
-import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, rmSync, statSync, linkSync, copyFileSync } from 'node:fs';
-import { join } from 'node:path';
+// Model::serialize) plus /vn_live.bin, propre au moteur en ligne. Écriture atomique et durable (fichier
+// temporaire écrit puis fsync, renommage, fsync du dossier) : une coupure de courant laisse l'ancienne
+// version ou la nouvelle, entières — jamais un fichier renommé mais vide.
+import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, rmSync, statSync, linkSync, copyFileSync,
+  openSync, closeSync, fsyncSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { randomBytes } from 'node:crypto';
 
 export const STATE_FILES = ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin', 'vn_live.bin'];
 export const CARD_FILES = ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin'];
@@ -63,10 +66,44 @@ export async function readable(name, b, makeEngine, now) {
   return { ok: false, why: `illisible par ${live ? 'liveLoad' : 'Model::load'}, ${b.length} octets` };
 }
 
+// Sans fsync, le renommage peut atteindre le disque avant les données : après une coupure (Umbrel, Raspberry
+// Pi), un fichier renommé mais vide, refusé au démarrage. Nom temporaire unique : sous Docker le PID vaut 1.
 export function atomicWrite(path, data) {
-  const tmp = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmp, data);
-  renameSync(tmp, path);
+  const tmp = `${path}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`;
+  try {
+    durableWrite(tmp, data);
+    renameSync(tmp, path);
+  } catch (err) { rmSync(tmp, { force: true }); throw err; }
+  syncDir(dirname(path));
+}
+function durableWrite(path, data) {
+  const fd = openSync(path, 'w');
+  try { writeFileSync(fd, data); fsyncSync(fd); } finally { closeSync(fd); }
+}
+// Le renommage lui-même n'est durable qu'une fois le dossier écrit (sans effet là où un dossier ne s'ouvre pas)
+function syncDir(dir) {
+  let fd = null;
+  try { fd = openSync(dir, 'r'); fsyncSync(fd); } catch { /* Windows */ } finally { if (fd !== null) closeSync(fd); }
+}
+// Temporaires d'une écriture interrompue (arrêt brutal) : .tmp-* dans les dossiers de données, .instantane-*
+// dans l'archive. Plus de 10 min seulement : un autre processus sur le même volume peut être en train d'écrire.
+const ORPHAN = /\.tmp-\d+(-[0-9a-f]{8})?$/;
+export function removeOrphans(root, { ageS = 600, depth = 3 } = {}) {
+  const limit = Date.now() - ageS * 1000;
+  let n = 0;
+  const walk = (d, k) => {
+    let names = [];
+    try { names = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const x of names) {
+      const p = join(d, x.name);
+      const orphan = x.isDirectory() ? x.name.startsWith('.instantane-') : ORPHAN.test(x.name);
+      if (orphan) {
+        try { if (statSync(p).mtimeMs < limit) { rmSync(p, { recursive: true, force: true }); n++; } } catch { /* déjà parti */ }
+      } else if (x.isDirectory() && k < depth) walk(p, k + 1);
+    }
+  };
+  walk(root, 0);
+  return n;
 }
 
 // Heure locale de Luxembourg (la carte et le banc datent tout en heure de Paris/Luxembourg) : public/vn-series.js
@@ -153,13 +190,15 @@ export class Store {
     mkdirSync(tmp);
     const fich = {};
     for (const [name, data] of Object.entries(files)) {
-      writeFileSync(join(tmp, name), data);
+      durableWrite(join(tmp, name), data);
       fich[name] = { taille: data.length, crc32: engine.crc32(data).toString(16).toUpperCase().padStart(8, '0') };
     }
-    writeFileSync(join(tmp, 'manifeste.json'), JSON.stringify({
+    durableWrite(join(tmp, 'manifeste.json'), JSON.stringify({
       source: 'serveur en ligne', version_carte: meta.fw, t_carte: meta.t, redemarrage_vu: false, fichiers: fich,
     }, null, 2));
+    syncDir(tmp);
     renameSync(tmp, final);
+    syncDir(this.archiveDir);
     return final;
   }
   archives() {

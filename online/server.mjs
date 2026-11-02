@@ -17,7 +17,7 @@ import { performance } from 'node:perf_hooks';
 import { CONFIG } from './lib/config.mjs';
 import { loadEngine } from './public/vn-engine.js';
 import { Collector, EventLog } from './lib/collector.mjs';
-import { Store, STATE_FILES, CARD_FILES, luxParts } from './lib/store.mjs';
+import { Store, STATE_FILES, CARD_FILES, luxParts, removeOrphans } from './lib/store.mjs';
 import { SyncHub, profHeader, daysHeader, profImplausible, daysImplausible } from './lib/sync.mjs';
 import { History, importArchive, snapshotDirs, dayOf } from './lib/history.mjs';
 import { ForecastLog } from './lib/forecast.mjs';
@@ -41,6 +41,7 @@ engine.settings({ refreshSec: CONFIG.refreshS });
 const flushEngineLog = () => { const l = engine.logs(); if (l) for (const line of l.trim().split('\n')) log(line); };
 
 const store = new Store(CONFIG.dataDir, log);
+{ const n = removeOrphans(CONFIG.dataDir); if (n) log(`[fs] ${n} fichier(s) temporaire(s) orphelin(s) d'un arrêt brutal supprimé(s)`); }
 const events = new EventLog(CONFIG.eventsKept);
 const history = new History(CONFIG.dataDir, log);
 const forecasts = new ForecastLog(CONFIG.dataDir, history, log);
