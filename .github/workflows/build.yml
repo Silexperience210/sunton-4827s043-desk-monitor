@@ -105,9 +105,11 @@ jobs:
           python3 tools/test_bench_reel.py
           python3 tools/test_sauvegarde_littlefs.py
 
-  # Version en ligne : moteurs WebAssembly reconstruits depuis src/, réplication serveur ⇄ jumeau au bit près,
-  # la synchro du firmware (sim/sync_sim, même code que la carte) contre le vrai serveur, l'historique long,
-  # la note des prévisions, les notifications, le banc de nuit et l'image Docker.
+  # Version en ligne : moteurs WebAssembly reconstruits depuis src/, puis toute la suite (npm test,
+  # online/test/tous.mjs) — réplication serveur ⇄ jumeau au bit près, synchro du firmware (sim/sync_sim, même
+  # code que la carte) contre le vrai serveur, historique long, note des prévisions, notifications, banc de nuit,
+  # sécurité, intégrité des données, flux, séries, et les mutations de la revue (chacune doit être attrapée) —
+  # et l'image Docker.
   en-ligne:
     runs-on: ubuntu-latest
     steps:
@@ -122,16 +124,12 @@ jobs:
           sudo apt-get install -y lld >/dev/null
       - name: Moteurs WebAssembly (clang + wasi-sysroot)
         run: bash online/engine/build.sh
-      - name: Réplication serveur ⇄ jumeau
-        run: node online/test/replication.test.mjs
-      - name: Synchro de bout en bout (carte simulée ⇄ serveur)
-        run: |
-          make -C sim -j4 sync_sim
-          node online/test/sync.e2e.mjs
-      - name: Historique long, erreur des prévisions, notifications, banc de nuit
-        run: |
-          make -C sim -j4 bench_prevision
-          node online/test/features.test.mjs
+      - name: Binaires natifs des tests (synchro de la carte, banc de prévision)
+        run: make -C sim -j4 sync_sim bench_prevision
+      # un fichier de test qui manque à cette liste ne tourne nulle part : npm test les lance tous
+      - name: Suite complète (npm test)
+        working-directory: online
+        run: npm test
       - name: Image Docker (serveur + banc natif compilé sous Alpine)
         run: |
           docker build -f online/Dockerfile -t velohnav-ops-online .
