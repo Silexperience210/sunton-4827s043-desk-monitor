@@ -301,10 +301,11 @@ function dayRange(url) {
   return { from, to };
 }
 
+// Lecture publique : rien qui décrive la machine (le chemin du dossier de données reste au journal du démarrage)
 function serverInfo() {
   return {
     name: CONFIG.name, uptimeS: Math.floor((Date.now() - started) / 1000), seq: events.seq, cycles: collector.cycles,
-    refreshS: CONFIG.refreshS, lastSaveAt: lastSaveOk, archives: store.archives().length, dataDir: CONFIG.dataDir,
+    refreshS: CONFIG.refreshS, lastSaveAt: lastSaveOk, archives: store.archives().length,
     tokenRequired: !!CONFIG.token, devices: Object.keys(hub.devices).length,
     history: history.range(), forecastsLogged: forecasts.lastSlot, notify: notifier.enabled, bench: bench.available,
   };

@@ -13,6 +13,7 @@
 //      X-Forwarded-Host / -Proto ignorés, sauf s'ils désignent l'adresse publique déclarée (VN_PUBLIC_URL).
 //  c1. la colonne d'accès du tableau des routes (online/README.md, « ## API ») dit ce que fait le serveur : chaque
 //      route listée est rejouée sans jeton sur un serveur qui en exige un (protégée ⇔ 401).
+//  c2. aucune réponse publique ne donne le chemin du dossier de données (/api/summary le donnait : dataDir).
 //  m12. la page ne lit jamais le jeton dans l'URL (?token= reste dans l'historique et les journaux du proxy) ;
 //      un ancien lien qui en porte un est effacé de la barre d'adresse, sans être lu.
 // node online/test/securite.test.mjs
@@ -74,6 +75,18 @@ try {
   ok((await req(P, { path: '/sync/zz/report?took=profils&result=1', headers: { host: LAN } })).status === 200, 'compte rendu d\'une carte sans jeton');
   ok((await req(P, { path: '/sync/zz/report?took=x&result=1', headers: { host: LAN, 'sec-fetch-site': 'cross-site' } })).status === 403,
     'compte rendu forgé par une image d\'une page tierce : 403');
+
+  console.log('c2. lectures publiques : le chemin du dossier de données n\'apparaît nulle part');
+  {
+    const dir = join(tmp, 'sans-jeton');
+    const leaks = [];
+    for (const path of ['/', '/healthz', '/api/summary', '/api/ring', '/api/archive', '/api/history', '/api/history/series', '/api/history/daily',
+      '/api/stations', '/api/forecast', '/api/bench', '/api/twin/snapshot']) {
+      const r = await req(P, { path });
+      if (r.text.includes(dir)) leaks.push(`${path} (${r.text.match(/"(\w+)":"[^"]*sans-jeton[^"]*"/)?.[1] || 'champ ?'})`);
+    }
+    ok(!leaks.length, `routes publiques qui donnent ${dir} : ${leaks.join(', ') || 'aucune'}`);
+  }
 
   console.log('B1. VN_OPEN=1 : écritures ouvertes au réseau local, CSRF toujours refusé');
   const s1 = await start('ouvert', { VN_OPEN: '1' });
