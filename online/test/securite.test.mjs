@@ -9,6 +9,8 @@
 //      non routables refusés (adresse littérale, nom résolu, redirection) ; faux services sur 127.0.0.1 seulement.
 //  m9. registre des écrans : 50 écrans au plus (le plus ancien laisse sa place), champs tronqués, devices.json
 //      réécrit au plus toutes les 5 s (et à l'arrêt) au lieu d'à chaque requête.
+//  m10. adresse de base du manifeste (où la carte lit les fichiers et envoie les siens, avec son jeton) :
+//      X-Forwarded-Host / -Proto ignorés, sauf s'ils désignent l'adresse publique déclarée (VN_PUBLIC_URL).
 // node online/test/securite.test.mjs
 import fs, { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
@@ -225,6 +227,27 @@ try {
     const want = Array.from({ length: 50 }, (_, j) => `e${(950 + j) % 70}`);
     ok(Object.keys(saved).length === 50 && want.every((id) => id in saved) && saved.e19?.lastReport === 999,
       `écriture différée faite (flushDevices) : ${Object.keys(saved).length} écrans, les 50 vus en dernier (${want.filter((id) => !(id in saved)).length} manquant(s))`);
+  }
+
+  console.log('m10. manifeste : X-Forwarded-Host et X-Forwarded-Proto ignorés hors adresse publique déclarée');
+  {
+    const card = await simulateCard({ from: now - 3600, to: now - 60, seed: 13 });
+    const withState = (name) => { mkdirSync(join(tmp, name), { recursive: true }); for (const f of ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin']) writeFileSync(join(tmp, name, f), card[f]); };
+    withState('m10'); withState('m10-pub');
+    const a = await start('m10', {});
+    const b = await start('m10-pub', { VN_PUBLIC_URL: 'https://velohnav.example.org' });
+    const base = async (srv, headers) => { const r = await req(srv.port, { path: '/sync/manifest', headers }); return r.json?.base || `${r.status} ${r.text.slice(0, 80)}`; };
+    const evil = { 'x-forwarded-host': 'evil.example', 'x-forwarded-proto': 'https' };
+    const got1 = await base(a, evil);
+    ok(got1.startsWith(`http://127.0.0.1:${a.port}/sync/`), `sans adresse publique, X-Forwarded-Host: evil.example → base ${got1}`);
+    const got2 = await base(b, evil);
+    ok(got2.startsWith(`http://127.0.0.1:${b.port}/sync/`), `VN_PUBLIC_URL réglé, X-Forwarded-Host étranger → base ${got2}`);
+    const got3 = await base(b, { 'x-forwarded-host': 'velohnav.example.org', 'x-forwarded-proto': 'https' });
+    ok(got3.startsWith('https://velohnav.example.org/sync/'), `par le tunnel (X-Forwarded-Host = l'adresse publique) → base ${got3}`);
+    const got5 = await base(b, { host: 'velohnav.example.org', 'x-forwarded-proto': 'https' });
+    ok(got5.startsWith('https://velohnav.example.org/sync/'), `par cloudflared (Host = l'adresse publique, sans X-Forwarded-Host) → base ${got5}`);
+    const got4 = await base(a, { host: 'evil.example/x?' });
+    ok(!/evil/.test(got4), `Host malformé (« evil.example/x? ») : ${got4}`);
   }
 } finally {
   for (const s of servers) await s.stop();

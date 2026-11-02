@@ -72,7 +72,7 @@ node online/server.mjs --import /tmp/vidage                  # puis lancer le se
 | `VN_BENCH_BIN` | (image Docker : réglé) | exécutable `sim/bench_prevision` ; absent = pas de banc de nuit |
 | `VN_NTFY_URL` / `VN_NTFY_TOKEN` | — | sujet ntfy (`https://ntfy.sh/<sujet>`) et jeton d'un serveur ntfy protégé |
 | `VN_NOTIFY_LOCAL` | — | `1` : ntfy ou webhook permis en 127.0.0.1 (même machine, sans Docker). Sinon le bouclage est refusé ; le lien local (169.254.x.x) l'est toujours. Seul le code HTTP de la réponse est gardé |
-| `VN_PUBLIC_URL` | — | adresse de la page, ouverte en touchant une notification |
+| `VN_PUBLIC_URL` | — | adresse publique de la page (tunnel) : ouverte en touchant une notification, et donnée aux cartes qui synchronisent par cette adresse (https compris). `X-Forwarded-Host` / `-Proto` ne sont crus que s'ils la désignent |
 | `VN_NOTIFY_DIGEST` | `07:30` | heure du résumé du matin ; vide = aucun |
 | `VN_NOTIFY_MIN` / `VN_NOTIFY_HOURS` / `VN_NOTIFY_MAX_H` | `15` / `7-22` / `6` | rupture signalée après N min, dans ces heures, au plus N messages par heure |
 
@@ -120,7 +120,8 @@ de port sur la box :
    Tunnels → *Create a tunnel* (cloudflared) → copier le jeton ; *Public hostname* → service
    `http://velohnav-ops:8790`. Puis `TUNNEL_TOKEN=… docker compose -f docker-compose.yml -f docker-compose.tunnel.yml
    --profile tunnel up -d` (ou les jetons dans le fichier `.env`). Mettre cette adresse dans `VN_PUBLIC_URL`
-   pour que les notifications l'ouvrent.
+   pour que les notifications l'ouvrent, et qu'une carte qui synchronise par le tunnel reçoive l'adresse en
+   https (sans elle, le manifeste donne l'adresse en http tirée de l'en-tête Host).
 
 ## Historique long (onglet Historique)
 

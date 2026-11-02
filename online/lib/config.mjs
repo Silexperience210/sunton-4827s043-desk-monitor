@@ -19,6 +19,8 @@ export const CONFIG = {
   // Sans jeton, ouvrir quand même les écritures au réseau (réseau local de confiance seulement)
   open: env('VN_OPEN', '') === '1',
   name: env('VN_NAME', 'VelohNav Ops en ligne'),
+  // Adresse publique (tunnel) : X-Forwarded-Host / -Proto ne sont crus que s'ils la désignent (server.mjs, baseUrl)
+  publicUrl: env('VN_PUBLIC_URL', ''),
 
   // src/config.h
   gbfsBase: env('VN_GBFS_BASE', 'https://api.cyclocity.fr/contracts/luxembourg/gbfs/v3'),

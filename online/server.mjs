@@ -273,9 +273,20 @@ function serveStatic(req, res, path) {
   res.end(req.method === 'HEAD' ? undefined : body);
 }
 
+// Adresse publiée dans le manifeste : la carte y lit les fichiers et y envoie les siens, avec son jeton.
+// X-Forwarded-Host / -Proto viennent du client tant qu'aucun proxy ne les réécrit : jamais crus tels quels.
+// Requête adressée à l'adresse publique déclarée (VN_PUBLIC_URL : Host ou X-Forwarded-Host — cloudflared garde
+// le Host d'origine) : cette adresse, https compris. Sinon l'en-tête Host, celui que la carte a elle-même
+// utilisé — un nom d'hôte et un port, rien d'autre. null = Host malformé.
+const PUBLIC_URL = (() => { try { return CONFIG.publicUrl ? new URL(CONFIG.publicUrl) : null; } catch { return null; } })();
+const HOST_RE = /^([a-z0-9.-]+|\[[0-9a-f:.]+\])(:\d{1,5})?$/i;
 function baseUrl(req) {
-  const proto = req.headers['x-forwarded-proto'] || 'http';
-  return `${proto}://${req.headers['x-forwarded-host'] || req.headers.host}`;
+  const host = String(req.headers.host || '');
+  if (PUBLIC_URL) {
+    const fwd = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+    if ([fwd, host].some((h) => h && h.toLowerCase() === PUBLIC_URL.host.toLowerCase())) return `${PUBLIC_URL.protocol}//${PUBLIC_URL.host}`;
+  }
+  return HOST_RE.test(host) ? `http://${host}` : null;
 }
 
 // ?from=AAAA-MM-JJ&to=AAAA-MM-JJ ou ?days=N (défaut : les 7 derniers jours de l'historique)
@@ -404,7 +415,9 @@ const server = createServer(async (req, res) => {
     if (p === '/sync/manifest') {
       const s = hub.snapshot(60);
       if (!s) return sendJson(req, res, { error: 'aucun relevé pour l\'instant' }, 503);
-      const m = hub.manifest(s, baseUrl(req));
+      const base = baseUrl(req);
+      if (!base) return sendJson(req, res, { error: 'en-tête Host invalide' }, 400);
+      const m = hub.manifest(s, base);
       hub.seen(req, { lastManifest: nowS(), snapshot: s.id });
       return sendJson(req, res, m);
     }
