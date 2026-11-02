@@ -11,6 +11,8 @@
 //      réécrit au plus toutes les 5 s (et à l'arrêt) au lieu d'à chaque requête.
 //  m10. adresse de base du manifeste (où la carte lit les fichiers et envoie les siens, avec son jeton) :
 //      X-Forwarded-Host / -Proto ignorés, sauf s'ils désignent l'adresse publique déclarée (VN_PUBLIC_URL).
+//  c1. la colonne d'accès du tableau des routes (online/README.md, « ## API ») dit ce que fait le serveur : chaque
+//      route listée est rejouée sans jeton sur un serveur qui en exige un (protégée ⇔ 401).
 //  m12. la page ne lit jamais le jeton dans l'URL (?token= reste dans l'historique et les journaux du proxy) ;
 //      un ancien lien qui en porte un est effacé de la barre d'adresse, sans être lu.
 // node online/test/securite.test.mjs
@@ -100,6 +102,36 @@ try {
   ok((await req(Q, { method: 'POST', path: '/sync/zz/upload/vn_prof.bin', headers: { authorization: 'Bearer jeton-test', 'content-type': 'text/plain' }, body: 'x' })).status === 415,
     'envoi de carte en text/plain, même avec le jeton : 415');
   ok((await req(Q, { path: '/api/history' })).status === 200, 'lecture publique sans jeton');
+
+  console.log('c1. README : l\'accès de chaque route du tableau « API » est celui que le serveur applique');
+  {
+    const md = readFileSync(join(PUB, '..', 'README.md'), 'utf8');
+    const table = md.split(/^## API$/m)[1]?.split(/^## /m)[0] || '';
+    const routes = [];
+    for (const line of table.split('\n')) {
+      const cells = line.split('|').map((c) => c.trim());
+      if (cells.length < 4 || !cells[1].startsWith('`')) continue;
+      const doc = /^(oui|protégé)$/.test(cells[2]) ? true : /^(—|-|public)$/.test(cells[2]) ? false : null;
+      // « `GET`/`POST /api/notify` » : méthodes cumulées ; « `/api/bench/report.md` » seule : méthode de la précédente
+      let pending = [], last = ['GET'];
+      for (const [, spec] of cells[1].matchAll(/`([^`]+)`/g)) {
+        const m = spec.match(/^(GET|POST|HEAD)?\s*(\/\S*)?$/);
+        if (!m || (!m[1] && !m[2])) continue;
+        if (m[1] && !m[2]) { pending.push(m[1]); continue; }
+        const methods = m[1] ? [...pending, m[1]] : last;
+        pending = []; last = methods;
+        const path = m[2].replace(/<id>/g, 'zz').replace('vn_*.bin', 'vn_prof.bin').replace(/\[[^\]]*\]/g, '');
+        for (const method of methods) routes.push({ method, path, doc, cell: cells[2] });
+      }
+    }
+    ok(routes.length >= 25, `${routes.length} routes lues dans le tableau du README`);
+    const wrong = [];
+    for (const r of routes) {
+      const got = (await req(Q, { method: r.method, path: r.path, headers: r.method === 'POST' ? { 'content-type': 'application/json' } : {}, body: r.method === 'POST' ? '{}' : null })).status;
+      if (r.doc === null || r.doc !== (got === 401)) wrong.push(`${r.method} ${r.path} : « ${r.cell} » dans le README, ${got} sans jeton`);
+    }
+    ok(!wrong.length, `accès documenté = accès appliqué${wrong.length ? ` — ${wrong.length} écart(s) :\n      ${wrong.join('\n      ')}` : ''}`);
+  }
 
   console.log('B2. profils forgés par un porteur du jeton : refusés ; profil légitime adopté, ancien gardé');
   const now = Math.floor(Date.now() / 1000);

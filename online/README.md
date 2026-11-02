@@ -209,26 +209,33 @@ Commandes série : `sync`, `sync etat`, `sync url …`, `sync jeton …`, `sync 
 
 ## API
 
-| Route | Jeton | Contenu |
+**public** : sans jeton. **protégé** (`lib/acces.mjs`) : avec `VN_TOKEN`, jeton exigé (`Authorization: Bearer` ou
+`X-VN-Token`, jamais dans l'URL), sinon `401` ; sans `VN_TOKEN`, lecture permise sauf depuis une page d'une autre
+origine (`403`), écriture refusée (`403`) sauf en local (127.0.0.1) ou avec `VN_OPEN=1`. Tout ce qui n'est pas
+`GET`/`HEAD` est protégé. Ce tableau est rejoué contre le serveur par `test/securite.test.mjs` (c1).
+
+| Route | Accès | Contenu |
 |---|---|---|
-| `GET /` | — | jumeau de l'écran + panneau serveur |
-| `GET /healthz` | — | `200 ok` si le dernier relevé a moins de 3 périodes, `503` sinon |
-| `GET /api/summary` | — | totaux, apprentissage, météo, compteurs d'ingestion (mêmes champs que la carte) |
-| `GET /api/ring` | — | historique 24 h du réseau, au pas de 5 min |
-| `GET /api/devices` | oui | écrans synchronisés |
-| `GET /api/archive` | oui | instantanés archivés |
-| `GET /api/export/vn_prof.bin` … `vn_stations.csv` | oui | fichiers de la carte, octets exacts |
-| `POST /api/refresh` | oui | relevé immédiat, au plus un toutes les 30 s (`VN_REFRESH_MIN_S`) : sinon `429` et `Retry-After` |
-| `GET /api/twin/snapshot`, `/api/twin/events?since=` | oui | réplication vers les jumeaux (attente longue 25 s) |
-| `GET /sync/manifest`, `/sync/<id>/vn_*.bin`, `POST /sync/<id>/upload/vn_*.bin` | oui | synchro des cartes |
-| `GET /api/history` | oui | jours gardés, taille sur disque |
-| `GET /api/history/series?days=7&step=60&sid=` | oui | série agrégée (pas 5, 15, 30, 60, 180 ou 1440 min) du réseau ou d'une station |
-| `GET /api/history/daily?days=28` | oui | résumé par jour (historique) + disponibilité (vue Service) |
-| `GET /api/history/export.csv?days=28[&stations=1]` | oui | tranches en CSV (réseau, ou station par station) |
-| `GET /api/stations` | oui | stations, relevé et dérivés (statut, échéances, besoin, risque) |
-| `GET /api/forecast?days=14` | oui | erreur des prévisions : par horizon, par jour, par heure, stations, alertes |
-| `GET /api/bench`, `/api/bench/report.md`, `POST /api/bench/run` | oui | banc de nuit : état, rapport, lancement |
-| `GET`/`POST /api/notify`, `POST /api/notify/test`, `POST /api/notify/digest[?send=1]` | oui | notifications : réglages, test, résumé du matin |
+| `GET /` | public | jumeau de l'écran + panneau serveur |
+| `GET /healthz` | public | `200 ok` si le dernier relevé a moins de 3 périodes, `503` sinon |
+| `GET /api/summary` | public | totaux, apprentissage, météo, compteurs d'ingestion (mêmes champs que la carte) |
+| `GET /api/ring` | public | historique 24 h du réseau, au pas de 5 min |
+| `GET /api/devices` | protégé | écrans synchronisés |
+| `GET /api/archive` | public | instantanés archivés (noms) |
+| `GET /api/export/vn_prof.bin` … `vn_stations.csv` | public | fichiers de la carte, octets exacts |
+| `POST /api/refresh` | protégé | relevé immédiat, au plus un toutes les 30 s (`VN_REFRESH_MIN_S`) : sinon `429` et `Retry-After` |
+| `GET /api/twin/snapshot`, `/api/twin/events?since=` | public | réplication vers les jumeaux (attente longue 25 s) |
+| `GET /sync/manifest`, `/sync/<id>/vn_*.bin`, `/sync/<id>/report` | protégé | synchro des cartes : manifeste, fichiers, compte rendu |
+| `POST /sync/<id>/upload/vn_prof.bin`, `POST /sync/<id>/upload/vn_days.bin` | protégé | envoi d'une carte (`application/octet-stream`, `X-VN-CRC32`) |
+| `GET /api/history` | public | jours gardés, taille sur disque |
+| `GET /api/history/series?days=7&step=60&sid=` | public | série agrégée (pas 5, 15, 30, 60, 180 ou 1440 min) du réseau ou d'une station |
+| `GET /api/history/daily?days=28` | public | résumé par jour (historique) + disponibilité (vue Service) |
+| `GET /api/history/export.csv?days=28[&stations=1]` | public | tranches en CSV (réseau, ou station par station) |
+| `GET /api/stations` | public | stations, relevé et dérivés (statut, échéances, besoin, risque) |
+| `GET /api/forecast?days=14` | public | erreur des prévisions : par horizon, par jour, par heure, stations, alertes |
+| `GET /api/bench`, `/api/bench/report.md` | public | banc de nuit : état, rapport |
+| `POST /api/bench/run` | protégé | banc de nuit : lancement |
+| `GET`/`POST /api/notify`, `POST /api/notify/test`, `POST /api/notify/digest[?send=1]` | protégé | notifications : réglages, test, résumé du matin |
 
 ## Affiner les prévisions avec l'archive
 
