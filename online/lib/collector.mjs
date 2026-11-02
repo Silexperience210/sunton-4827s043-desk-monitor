@@ -49,6 +49,7 @@ export class Collector {
     this.lastFetch = 0;                     // ms monotones du dernier cycle (0 = jamais)
     this.wxAt = 0;                          // epoch du dernier essai météo (s_wxAt)
     this.refreshReq = false;
+    this.forcedAt = 0;                      // ms monotones du dernier relevé forcé accepté (POST /api/refresh)
     this.running = false;
     this.busy = false;
     this.cycles = 0;
@@ -71,6 +72,17 @@ export class Collector {
   }
 
   clock() { this.e.clock(nowS(), this.mono()); }
+
+  // Relevé forcé (POST /api/refresh) : au plus un par refreshMinS, compté depuis le début du dernier cycle ou la
+  // dernière demande acceptée — l'API Vel'OH! est partagée. Renvoie 0 (accepté) ou les secondes à attendre.
+  forceRefresh() {
+    const t = this.mono(), last = Math.max(this.lastFetch || 0, this.forcedAt || 0);
+    const wait = last ? Math.ceil((last + this.cfg.refreshMinS * 1000 - t) / 1000) : 0;
+    if (wait > 0) return wait;
+    this.forcedAt = t;
+    this.refreshReq = true;
+    return 0;
+  }
 
   // Un évènement = un appel au moteur, rejouable tel quel par un jumeau
   call(ev) {

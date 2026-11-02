@@ -330,7 +330,11 @@ const server = createServer(async (req, res) => {
 
     if (p === '/api/devices') return sendJson(req, res, Object.values(hub.devices).sort((a, b) => b.last - a.last));
     if (p === '/api/archive') return sendJson(req, res, store.archives());
-    if (p === '/api/refresh' && req.method === 'POST') { collector.refreshReq = true; return sendJson(req, res, { ok: true }); }
+    if (p === '/api/refresh' && req.method === 'POST') {
+      const waitS = collector.forceRefresh();
+      if (waitS) return send(req, res, 429, JSON.stringify({ ok: false, why: `un relevé forcé au plus toutes les ${CONFIG.refreshMinS} s`, retryS: waitS }), null, { 'Retry-After': String(waitS) });
+      return sendJson(req, res, { ok: true });
+    }
 
     // ── Historique long (lib/history.mjs) ──
     if (p === '/api/history') return sendJson(req, res, { ...history.range(), list: history.list() });

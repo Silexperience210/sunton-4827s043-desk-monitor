@@ -30,6 +30,8 @@ export const CONFIG = {
     '&hourly=temperature_2m,precipitation_probability,precipitation,weather_code,wind_speed_10m' +
     '&forecast_hours=6&wind_speed_unit=kmh&timezone=Europe%2FLuxembourg'),
   refreshS: Math.max(30, int('VN_REFRESH_S', 60)),     // g_set.refreshSec (60 s par défaut, 30 s au moins)
+  // POST /api/refresh : un relevé forcé au plus toutes les N s (comptées depuis le dernier cycle), 5 s au moins
+  refreshMinS: Math.max(5, int('VN_REFRESH_MIN_S', 30)),
   // station_status dont last_updated est plus vieux que ce délai : non appliqué (lib/collector.mjs). 0 = règle
   // du bandeau « Relevé figé » de la carte (ops.cpp, staleThresholdS) : 3 périodes, 3 min au moins.
   feedStaleS: Math.max(0, int('VN_FEED_STALE_S', 0)),

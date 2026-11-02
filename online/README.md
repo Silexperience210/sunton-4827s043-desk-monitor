@@ -63,6 +63,7 @@ node online/server.mjs --import /tmp/vidage                  # puis lancer le se
 | `VN_TOKEN` | — | jeton des routes protégées (écritures, réglages, écrans, synchro des cartes), en `Authorization: Bearer` ou `X-VN-Token`, jamais dans l'URL. Vide : écritures fermées (403), sauf en local ou avec `VN_OPEN=1` |
 | `VN_OPEN` | — | `1` : sans jeton, écritures ouvertes au réseau local (de confiance seulement). Une page d'un autre site reste refusée (CSRF) |
 | `VN_REFRESH_S` | `60` | période de `station_status` (30 s au moins), comme Réglages → Rafraîchissement |
+| `VN_REFRESH_MIN_S` | `30` | `POST /api/refresh` : un relevé forcé au plus toutes les N s (5 s au moins), comptées depuis le dernier relevé ; sinon `429` et `Retry-After` |
 | `VN_FEED_STALE_S` | `0` | `station_status` dont `last_updated` est plus vieux : non appliqué (échec −104, `/healthz` en 503). `0` = règle du bandeau « Relevé figé » de la carte : 3 périodes, 3 min au moins |
 | `VN_SAVE_S` | `600` | sauvegarde sur disque (la carte : 30 min) ; aussi à l'arrêt (`docker stop`, Ctrl-C) |
 | `VN_ARCHIVE_HOURS` | `6,18` | instantanés pour le banc (heure de Luxembourg) ; vide = aucun |
@@ -217,7 +218,7 @@ Commandes série : `sync`, `sync etat`, `sync url …`, `sync jeton …`, `sync 
 | `GET /api/devices` | oui | écrans synchronisés |
 | `GET /api/archive` | oui | instantanés archivés |
 | `GET /api/export/vn_prof.bin` … `vn_stations.csv` | oui | fichiers de la carte, octets exacts |
-| `POST /api/refresh` | oui | relevé immédiat |
+| `POST /api/refresh` | oui | relevé immédiat, au plus un toutes les 30 s (`VN_REFRESH_MIN_S`) : sinon `429` et `Retry-After` |
 | `GET /api/twin/snapshot`, `/api/twin/events?since=` | oui | réplication vers les jumeaux (attente longue 25 s) |
 | `GET /sync/manifest`, `/sync/<id>/vn_*.bin`, `POST /sync/<id>/upload/vn_*.bin` | oui | synchro des cartes |
 | `GET /api/history` | oui | jours gardés, taille sur disque |
