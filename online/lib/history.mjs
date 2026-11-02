@@ -11,9 +11,9 @@
 // « st » ouvre chaque fichier et revient quand la liste des stations change dans la journée.
 //
 // Une tranche est écrite quand la suivante s'ouvre : elle est alors définitive (retraits et retours compris).
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, statSync, rmSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, statSync, rmSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
-import { gzipSync, gunzipSync } from 'node:zlib';
+import { gzipSync, gunzipSync, constants as zlibConst } from 'node:zlib';
 import { atomicWrite, appendLines } from './store.mjs';
 import { SLOT_S, dayOf, luxParts, aggregate, dailySummary } from '../public/vn-series.js';
 
@@ -56,6 +56,7 @@ export class History {
     this.curKey = '';          // liste de stations de la dernière ligne « st » de ce fichier
     this.cache = new Map();    // jour fini → enregistrements (lecture)
     this.stCache = null;       // stations du moteur, mises en cache par clé
+    this.damaged = new Set();  // .gz illisibles (en tout ou partie) : mis de côté avant toute réécriture du jour
     this._scanTail();
   }
 
@@ -86,11 +87,29 @@ export class History {
     for (const f of by.values()) { f.gz = !f.plainPath; f.path = f.plainPath || f.gzPath; }
     return [...by.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
   }
+  // Un .gz illisible n'est pas un jour vide : il est noté (damaged), et ce qui précède une coupure se relit encore
   _readFile(path, gz) {
-    try {
-      const b = readFileSync(path);
-      return parseDay(gz ? gunzipSync(b) : b);
-    } catch (err) { this.log(`[historique] ${path} illisible : ${err.message}`); return []; }
+    let b;
+    try { b = readFileSync(path); } catch (err) { this.log(`[historique] ${path} illisible : ${err.message}`); return []; }
+    if (!gz) return parseDay(b);
+    try { const recs = parseDay(gunzipSync(b)); this.damaged.delete(path); return recs; } catch (err) {
+      if (!this.damaged.has(path)) this.log(`[historique] ${path} illisible : ${err.message}`);
+      this.damaged.add(path);
+      try { return parseDay(gunzipSync(b, { finishFlush: zlibConst.Z_SYNC_FLUSH })); } catch { return []; }
+    }
+  }
+  // Avant de réécrire un jour : ses fichiers illisibles sont gardés sous <nom>.rejete-AAAAMMJJ-HHMMSS, jamais écrasés
+  _keepDamaged(f) {
+    for (const p of [f?.gzPath, f?.plainPath]) {
+      if (!p || !this.damaged.has(p)) continue;
+      const { stamp } = luxParts(Math.floor(Date.now() / 1000));
+      let to = `${p}.rejete-${stamp}`, k = 2;
+      while (existsSync(to)) to = `${p}.rejete-${stamp}-${k++}`;
+      renameSync(p, to);
+      this.damaged.delete(p);
+      this._files = null;
+      this.log(`[historique] ${p} illisible : gardé sous ${to}, ce qui s'en relit est repris`);
+    }
   }
   _read(f) {
     if (!f.gzPath || !f.plainPath) return this._readFile(f.path, f.gz);
@@ -180,6 +199,7 @@ export class History {
       if (!f.plainPath || f.day >= today) continue;
       try {
         const data = f.gzPath ? Buffer.from(serialize(this._read(f))) : readFileSync(f.plainPath);
+        this._keepDamaged(f);
         atomicWrite(join(this.dir, `${f.day}.jsonl.gz`), gzipSync(data, { level: 9 }));
         rmSync(f.plainPath);
         this._files = null;
@@ -202,6 +222,7 @@ export class History {
       for (const r of fresh) seen.add(r.t);
       const all = [...have, ...fresh].sort((a, b) => a.t - b.t);
       const text = serialize(all);
+      this._keepDamaged(f);
       if (day < today) {
         atomicWrite(join(this.dir, `${day}.jsonl.gz`), gzipSync(text, { level: 9 }));
         try { rmSync(join(this.dir, `${day}.jsonl`)); } catch { /* absent */ }

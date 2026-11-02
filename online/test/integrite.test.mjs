@@ -14,6 +14,8 @@
 //      (.tmp-*, archive/.instantane-*) supprimés au démarrage.
 //  m1. coupure pendant un ajout : la ligne tronquée en fin de fichier ne doit pas avaler la tranche suivante
 //      (historique et journal des prévisions).
+//  m2. jour compressé illisible (.gz abîmé) puis fusion ou compression : le fichier n'est pas écrasé par la
+//      seule tranche nouvelle — mis de côté (<jour>.jsonl.gz.rejete-…), ce qui se relit encore est gardé.
 // node online/test/integrite.test.mjs
 import fs, { mkdtempSync, rmSync, readdirSync, writeFileSync, readFileSync, mkdirSync, utimesSync, existsSync, appendFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
@@ -287,6 +289,47 @@ try {
     const fl2 = new ForecastLog(F, new History(F));
     fl2.capture(fake);
     ok(fl2.readDay(pday).map((x) => x.slot).join() === `${pslot},${pslot + 1800}`, `journal des prévisions : quart d'heure suivant lisible après la coupure (${fl2.readDay(pday).map((x) => x.slot - pslot).join(', ')})`);
+  }
+
+  console.log('m2. jour compressé illisible : mis de côté, jamais écrasé par la seule tranche nouvelle');
+  {
+    const day288 = (D) => { const h = new History(D); h.append(Array.from({ length: 288 }, (_, k) => slot(k))); h.compressDone(NEXT); return join(D, 'historique', `${DAY}.jsonl.gz`); };
+    const asideOf = (D) => readdirSync(join(D, 'historique')).filter((f) => f.startsWith(`${DAY}.jsonl.gz.rejete-`));
+    // a. octets qui ne sont pas du gzip : rien à relire, mais le fichier est gardé
+    {
+      const D = fresh();
+      const gz = day288(D);
+      const junk = Buffer.from('PAS DU GZIP '.repeat(100));
+      writeFileSync(gz, junk);
+      const h = new History(D);
+      h.merge([slot(150)]);
+      const aside = asideOf(D);
+      ok(aside.length === 1 && readFileSync(join(D, 'historique', aside[0])).equals(junk), `fusion sur un .gz illisible : fichier gardé tel quel (${aside.join(', ') || 'aucune copie'})`);
+    }
+    // b. .gz tronqué (coupure) : ce qui précède la coupure est encore relu et gardé
+    {
+      const D = fresh();
+      const gz = day288(D);
+      const full = readFileSync(gz);
+      writeFileSync(gz, full.subarray(0, Math.floor(full.length / 2)));
+      const h = new History(D);
+      h.merge([slot(276)]);
+      const recs = new History(D).readDay(DAY);
+      ok(recs.length > 100 && recs.some((r) => r.t === slot(276).t), `fusion sur un .gz tronqué : ${recs.length} tranches gardées (le fichier en avait 288 ; avant : la seule tranche nouvelle)`);
+      ok(asideOf(D).length === 1, 'le .gz tronqué est mis de côté');
+    }
+    // c. compression d'un clair à côté d'un .gz tronqué
+    {
+      const D = fresh();
+      const gz = day288(D);
+      const full = readFileSync(gz);
+      writeFileSync(gz, full.subarray(0, Math.floor(full.length / 2)));
+      writeFileSync(join(D, 'historique', `${DAY}.jsonl`), `${JSON.stringify({ st: ST })}\n${JSON.stringify({ t: slot(280).t, n: slot(280).n, w: slot(280).w, b: slot(280).b })}\n`);
+      const h = new History(D);
+      h.compressDone(NEXT);
+      const recs = new History(D).readDay(DAY);
+      ok(recs.length > 100 && asideOf(D).length === 1, `compression à côté d'un .gz tronqué : ${recs.length} tranches, ${asideOf(D).length} copie(s) du .gz`);
+    }
   }
 } finally {
   rmSync(tmp, { recursive: true, force: true });
