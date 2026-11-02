@@ -14,6 +14,24 @@ import { snapshotDirs } from './history.mjs';
 
 const num = (s) => { const v = parseFloat(String(s).replace(',', '.')); return Number.isFinite(v) ? v : null; };
 
+// Sortie d'erreur du banc : son début et sa fin, 32 Kio chacun (la cause d'un échec est à la fin). Accumulée sans
+// limite, un banc bavard ou en boucle remplissait la mémoire du serveur, puis le rapport (qui la reçoit quand la
+// sortie standard est vide).
+const ERR_KEEP = 32 * 1024;
+export function boundedText(keep = ERR_KEEP) {
+  let head = '', tail = '', dropped = 0;
+  return {
+    push(d) {
+      d = String(d);
+      if (head.length < keep) { const k = keep - head.length; head += d.slice(0, k); d = d.slice(k); }
+      if (!d) return;
+      tail += d;
+      if (tail.length > keep) { dropped += tail.length - keep; tail = tail.slice(-keep); }
+    },
+    text: () => (dropped ? `${head}\n[… ${dropped} caractères de la sortie d'erreur omis …]\n${tail}` : head + tail),
+  };
+}
+
 // Extrait ce que la page affiche du rapport Markdown du banc
 export function parseBenchReport(md) {
   const out = { rows: [], perDay: [], verdicts: [], evalDays: null, span: null, leak: /\*\*FUITE\*\*/.test(md), empty: /AUCUNE donnée exploitable/.test(md) };
@@ -91,12 +109,14 @@ export class NightBench {
     try {
       const r = await new Promise((resolve) => {
         const p = spawn(this.bin, inp.args, { cwd: this.cwd || undefined, stdio: ['ignore', 'pipe', 'pipe'] });
-        let out = '', err = '';
+        let out = '';
+        const err = boundedText();
         p.stdout.on('data', (d) => { out += d; if (out.length > 4e6) p.kill('SIGKILL'); });
-        p.stderr.on('data', (d) => { err += d; });
+        p.stderr.setEncoding('utf8');
+        p.stderr.on('data', (d) => err.push(d));
         const to = setTimeout(() => p.kill('SIGKILL'), timeoutS * 1000);
         p.on('error', (e) => { clearTimeout(to); resolve({ code: -1, out, err: String(e) }); });
-        p.on('close', (code) => { clearTimeout(to); resolve({ code, out, err }); });
+        p.on('close', (code) => { clearTimeout(to); resolve({ code, out, err: err.text() }); });
       });
       const parsed = parseBenchReport(r.out);
       const j = { day, ok: r.code === 0 && !parsed.empty, code: r.code, durationS: +((Date.now() - t0) / 1000).toFixed(1), at: Math.floor(Date.now() / 1000),
