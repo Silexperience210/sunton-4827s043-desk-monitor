@@ -17,7 +17,7 @@ import { performance } from 'node:perf_hooks';
 import { CONFIG } from './lib/config.mjs';
 import { loadEngine } from './public/vn-engine.js';
 import { Collector, EventLog } from './lib/collector.mjs';
-import { Store, STATE_FILES, CARD_FILES, luxParts, removeOrphans } from './lib/store.mjs';
+import { Store, STATE_FILES, CARD_FILES, luxParts, removeOrphans, checkHist } from './lib/store.mjs';
 import { SyncHub, profHeader, daysHeader, profImplausible, daysImplausible } from './lib/sync.mjs';
 import { History, importArchive, snapshotDirs, dayOf } from './lib/history.mjs';
 import { ForecastLog } from './lib/forecast.mjs';
@@ -62,7 +62,11 @@ if (imp >= 0) {
   let n = 0;
   for (const f of CARD_FILES) {
     const p = join(dir, f);
-    if (existsSync(p)) { engine.putFile('/' + f, readFileSync(p)); n++; }
+    if (!existsSync(p)) continue;
+    const b = readFileSync(p);
+    const future = f === 'vn_hist.bin' ? checkHist(b, nowS()) : null;     // anneau figé sinon (lib/store.mjs)
+    if (future) { log(`--import : ${f} ignoré (${future})`); continue; }
+    engine.putFile('/' + f, b); n++;
   }
   engine.clock(nowS(), mono());
   const r = engine.load(false);

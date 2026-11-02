@@ -14,7 +14,7 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, statSync, rmSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync, gunzipSync, constants as zlibConst } from 'node:zlib';
-import { atomicWrite, appendLines } from './store.mjs';
+import { atomicWrite, appendLines, checkHist } from './store.mjs';
 import { SLOT_S, dayOf, luxParts, aggregate, dailySummary } from '../public/vn-series.js';
 
 export { SLOT_S, dayOf };
@@ -320,6 +320,9 @@ export async function importArchive({ dirs, history, makeEngine, log = () => {} 
     const hb = readFileSync(hist);
     const t = man?.t_carte || (hb.length >= 40 ? Number(hb.readBigInt64LE(32)) : 0);
     if (!t) { refused++; continue; }
+    // une tranche datée après l'instantané entrerait dans l'historique à une date à venir (lib/store.mjs)
+    const future = checkHist(hb, t);
+    if (future) { log(`[historique] import : ${dir} ignoré (${future})`); refused++; continue; }
     e.clock(t, 1000);
     e.init();
     for (const f of ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin']) if (existsSync(join(dir, f))) e.putFile('/' + f, readFileSync(join(dir, f)));

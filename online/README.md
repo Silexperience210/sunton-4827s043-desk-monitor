@@ -80,7 +80,9 @@ ils sont gardés dans `data/notify.json` et priment sur les variables.
 
 Chaque sauvegarde garde la version remplacée de l'état (`vn_prof.bin.prev`…). Au démarrage, chaque fichier
 est relu seul : un fichier illisible est mis de côté sous `<nom>.rejete-AAAAMMJJ-HHMMSS` (jamais écrasé),
-la génération `.prev` le remplace si elle est lisible, et le journal nomme chaque fichier refusé.
+la génération `.prev` le remplace si elle est lisible, et le journal nomme chaque fichier refusé. Un
+`vn_hist.bin` dont une tranche est datée après sa sauvegarde ou après l'heure du serveur (plus de 5 min) est
+refusé de même, à la reprise comme à l'import (`--import`, `--import-archive`) : il figerait l'anneau.
 
 ## Le jumeau de l'écran (`http://<machine>:8790`)
 

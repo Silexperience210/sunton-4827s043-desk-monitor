@@ -42,9 +42,32 @@ export function checkLive(b) {
   return { buf: out, why: null };
 }
 
+// ── /vn_hist.bin : aucune tranche de l'anneau datée après la sauvegarde ni après l'heure du serveur ──
+// Model::load (src/core/model.cpp) ne borne pas les dates de l'anneau. Une tranche de tête datée dans le futur
+// le figeait : applyStatus cumule dans la tranche de tête tant que l'heure ne l'a pas rattrapée (recul
+// d'horloge), donc aucune tranche nouvelle, ni historique long, ni profil appris pendant ce temps. Disposition
+// FileHdr (40 octets, savedAt en int64 à l'octet 32), sid[n], ringT[288], NetSample[288] (t en tête ; 24 octets
+// en version 1, 32 en version 2), vélos[288][n]. Renvoie la raison du refus, ou null (autre format, taille
+// fausse : laissés à Model::load, qui les refuse). 5 min de marge : un petit recul d'horloge reste permis.
+const HIST_MAGIC = 0x31484E56, HIST_FRESH_S = 20 * 3600, RING_SLOTS = 288, SLOT_S = 300;
+const utc = (t) => (Math.abs(t) < 8.64e12 ? `${new Date(t * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC` : `t=${t}`);
+export function checkHist(b, now) {
+  if (!b || b.length < 40 || b.readUInt32LE(0) !== HIST_MAGIC) return null;
+  const ver = b.readUInt16LE(4), nSt = b.readUInt16LE(6), saved = Number(b.readBigInt64LE(32));
+  const nsz = ver === 1 ? 24 : ver === 2 ? 32 : 0;
+  const ringAt = 40 + nSt * 8, netAt = ringAt + RING_SLOTS * 8;
+  if (!nsz || b.length !== netAt + RING_SLOTS * (nsz + nSt)) return null;
+  const bySave = saved > 0 && saved <= now;
+  const limit = (bySave ? saved : now) + SLOT_S;
+  for (let r = 0; r < RING_SLOTS; r++) {
+    const t = Math.max(Number(b.readBigInt64LE(ringAt + r * 8)), Number(b.readBigInt64LE(netAt + r * nsz)));
+    if (t > limit) return `tranche datée ${utc(t)}, après ${bySave ? `la sauvegarde (${utc(saved)})` : `l'heure du serveur (${utc(now)})`}`;
+  }
+  return null;
+}
+
 // Un fichier d'état relu SEUL dans un moteur neuf, à l'heure `now` (la règle des 20 h de l'historique 24 h en
 // dépend) : { ok, buf, why, stale }. stale = historique 24 h trop ancien, pas abîmé (règle de la carte).
-const HIST_MAGIC = 0x31484E56, HIST_FRESH_S = 20 * 3600;
 export async function readable(name, b, makeEngine, now) {
   if (!b.length) return { ok: false, why: 'fichier vide' };
   if (name === 'vn_live.bin') {
@@ -55,6 +78,8 @@ export async function readable(name, b, makeEngine, now) {
   if (name === 'vn_hist.bin' && b.length >= 40 && b.readUInt32LE(0) === HIST_MAGIC) {
     const saved = Number(b.readBigInt64LE(32));
     if (saved > 0 && now - saved >= HIST_FRESH_S) return { ok: false, stale: true, why: `sauvegardé il y a ${Math.floor((now - saved) / 3600)} h (au-delà de 20 h, comme la carte)` };
+    const future = checkHist(b, now);
+    if (future) return { ok: false, why: future };
   }
   const live = name === 'vn_live.bin';
   const e = await makeEngine();

@@ -18,6 +18,8 @@
 //      seule tranche nouvelle — mis de côté (<jour>.jsonl.gz.rejete-…), ce qui se relit encore est gardé.
 //  m3. fusion d'un vidage plus récent (merge) : les tranches locales intermédiaires sont encore écrites, à leur
 //      place ; au redémarrage, l'anneau comble les trous de l'historique.
+//  m4. vn_hist.bin dont une tranche est datée dans le futur : refusé à la relecture (sinon l'anneau reste figé
+//      sur cette tranche : Model::applyStatus n'en crée pas d'antérieure).
 // node online/test/integrite.test.mjs
 import fs, { mkdtempSync, rmSync, readdirSync, writeFileSync, readFileSync, mkdirSync, utimesSync, existsSync, appendFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
@@ -367,6 +369,89 @@ try {
       const recs = new History(D).readDay(DAY);
       ok(recs.length === 121 && sortedUnique(recs), `redémarrage : l'anneau comble les trous (${n} tranches écrites, ${recs.length} au total, 121 attendues)`);
       ok(h2.capture({ ...engine, ringHead: () => ring.at(-1).t + 600 }) === 0, 'l\'anneau relu ensuite ne réécrit rien');
+    }
+  }
+
+  console.log('m4. tranche de tête datée dans le futur : vn_hist.bin refusé, l\'anneau avance');
+  {
+    const now = Math.floor(Date.now() / 1000);
+    const card = await simulateCard({ from: now - 6 * 3600, to: now - 120, seed: 41 });
+    const forge = (dt) => {
+      const h = Buffer.from(card['vn_hist.bin']);
+      const nSt = h.readUInt16LE(6), head = h.readInt32LE(8), saved = Number(h.readBigInt64LE(32));
+      const ringAt = 40 + nSt * 8, nsz = (h.length - ringAt) / 288 - 8 - nSt;
+      h.writeBigInt64LE(BigInt(saved + dt), ringAt + head * 8);
+      h.writeBigInt64LE(BigInt(saved + dt), ringAt + 288 * 8 + head * nsz);
+      return h;
+    };
+    const gbfs = await fakeGbfs();
+    try {
+      for (const [what, hist, refused] of [['tête datée de +3 jours', forge(3 * 86400), true], ['historique sain', card['vn_hist.bin'], false]]) {
+        const D = fresh();
+        mkdirSync(D, { recursive: true });
+        writeFileSync(join(D, 'vn_prof.bin'), card['vn_prof.bin']);
+        writeFileSync(join(D, 'vn_hist.bin'), hist);
+        const n0 = gbfs.status;
+        const s = await startServer({ data: D, env: { VN_GBFS_BASE: gbfs.base } });
+        for (let k = 0; k < 60 && gbfs.status <= n0; k++) await sleep(100);
+        await sleep(300);
+        const ring = (await req(s.port, { path: '/api/ring' })).json || [];
+        await s.stop();
+        const headT = ring.at(-1)?.[0] ?? 0;
+        if (refused) {
+          ok(/vn_hist\.bin refusé \(tranche datée/.test(s.log()) && readdirSync(D).some((f) => f.startsWith('vn_hist.bin.rejete-')), `${what} : refus journalisé, fichier gardé de côté`);
+          ok(headT > 0 && headT <= now + 300, `${what} : tête de l'anneau après le premier relevé à ${headT - now} s de maintenant (≤ 300 attendu)`);
+        } else ok(/historique 24 h oui/.test(s.log()) && headT <= now + 300 && ring.length > 60, `${what} : repris (${ring.length} tranches)`);
+      }
+      // --import d'un vidage de carte dont l'anneau a une tête datée dans le futur : historique 24 h ignoré
+      const dump = fresh(), D = fresh();
+      mkdirSync(dump, { recursive: true });
+      writeFileSync(join(dump, 'vn_prof.bin'), card['vn_prof.bin']);
+      writeFileSync(join(dump, 'vn_hist.bin'), forge(3 * 86400));
+      const n0 = gbfs.status;
+      const s = await startServer({ data: D, args: ['--import', dump, '--serve'], env: { VN_GBFS_BASE: gbfs.base } });
+      for (let k = 0; k < 60 && gbfs.status <= n0; k++) await sleep(100);
+      await sleep(300);
+      const ring = (await req(s.port, { path: '/api/ring' })).json || [];
+      await s.stop();
+      const headT = ring.at(-1)?.[0] ?? 0;
+      ok(/--import : vn_hist\.bin ignoré \(tranche datée/.test(s.log()) && headT > 0 && headT <= now + 300,
+        `--import, tête datée de +3 jours : historique 24 h ignoré, tête de l'anneau à ${headT - now} s de maintenant (≤ 300 attendu)`);
+    } finally { await gbfs.close(); }
+    console.log('m4. checkHist : tranche après la sauvegarde ou après l\'heure du serveur ; import de l\'archive');
+    if (typeof store.checkHist !== 'function') ok(false, 'lib/store.mjs n\'exporte pas checkHist');
+    else {
+      const { checkHist } = store;
+      const h = card['vn_hist.bin'], saved = Number(h.readBigInt64LE(32));
+      const nSt = h.readUInt16LE(6), ringAt = 40 + nSt * 8;
+      ok(checkHist(h, now) === null, 'historique sain : accepté');
+      ok(/^tranche datée .* après la sauvegarde/.test(checkHist(forge(3 * 86400), now) || ''), 'tête datée de +3 jours : refusée (après la sauvegarde)');
+      ok(checkHist(forge(240), now) === null, 'tête datée de +4 min : acceptée (petit recul d\'horloge, marge de 5 min)');
+      const old = Buffer.from(h); old.writeBigInt64LE(BigInt(saved + 86400), ringAt + ((h.readInt32LE(8) + 5) % 288) * 8);
+      ok(/^tranche datée/.test(checkHist(old, now) || ''), 'tranche ancienne de l\'anneau datée dans le futur : refusée aussi');
+      const ahead = forge(2 * 86400); ahead.writeBigInt64LE(BigInt(saved + 2 * 86400), 32);
+      ok(/après l'heure du serveur/.test(checkHist(ahead, now) || ''), 'sauvegarde et tête datées de +2 jours : refusées (après l\'heure du serveur)');
+    }
+    {
+      // instantané d'archive dont une tranche (10 avant la tête) est datée de +3 jours : il n'entre pas dans
+      // l'historique long (sinon un jour à venir y est écrit)
+      const { importArchive } = await import('../lib/history.mjs');
+      const { loadEngine } = await import('../public/vn-engine.js');
+      const { CORE } = await import('./aides.mjs');
+      const D = fresh(), snap = join(D, 'archive', '20261101-060000');
+      mkdirSync(snap, { recursive: true });
+      writeFileSync(join(snap, 'vn_prof.bin'), card['vn_prof.bin']);
+      const h = Buffer.from(card['vn_hist.bin']);
+      const nSt = h.readUInt16LE(6), ringAt = 40 + nSt * 8, nsz = (h.length - ringAt) / 288 - 8 - nSt, r10 = (h.readInt32LE(8) - 10 + 288) % 288;
+      const saved = Number(h.readBigInt64LE(32));
+      h.writeBigInt64LE(BigInt(saved + 3 * 86400), ringAt + r10 * 8);
+      h.writeBigInt64LE(BigInt(saved + 3 * 86400), ringAt + 288 * 8 + r10 * nsz);
+      writeFileSync(join(snap, 'vn_hist.bin'), h);
+      writeFileSync(join(snap, 'manifeste.json'), JSON.stringify({ t_carte: saved, fichiers: {} }));
+      const hist = new History(D);
+      const r = await importArchive({ dirs: [snap], history: hist, makeEngine: () => loadEngine(CORE, { onLog: () => {} }) });
+      const future = hist.files().filter((f) => f.day > dayOf(now + 3600));
+      ok(r.refused === 1 && future.length === 0, `import de l'archive : instantané refusé (${r.refused}), aucun jour à venir écrit (${future.map((f) => f.day).join(', ') || 'aucun'})`);
     }
   }
 } finally {
