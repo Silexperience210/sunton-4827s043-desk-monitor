@@ -4,7 +4,8 @@
 //  B1. écritures ouvertes sans jeton (défaut) et CSRF : le POST « simple » d'une page tierce doit être refusé ;
 //      lectures publiques, synchro des cartes en lecture, jeton faux ou dans l'URL, banc et relevé sans jeton.
 //  B2. profils forgés par un porteur du jeton (partagé par toutes les cartes) : refusés, le serveur garde les
-//      siens ; un profil légitime plus appris est adopté, l'ancien gardé à côté, l'adresse de l'envoi journalisée.
+//      siens ; un profil légitime plus appris est adopté, l'ancien gardé à côté, l'adresse de l'envoi journalisée ;
+//      un envoi dont le CRC32 annoncé (X-VN-CRC32) est faux est refusé (revue §5.3 : la mutation passait).
 //  M6. SSRF par /api/notify/test : le corps de la réponse n'est jamais renvoyé ; bouclage, lien local et adresses
 //      non routables refusés (adresse littérale, nom résolu, redirection) ; faux services sur 127.0.0.1 seulement.
 //  m9. registre des écrans : 50 écrans au plus (le plus ancien laisse sa place), champs tronqués, devices.json
@@ -26,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { req, startServer, simulateCard, fakeService } from './aides.mjs';
 import { profHeader, daysHeader, SyncHub, profImplausible } from '../lib/sync.mjs';
+import { crc32 } from '../lib/store.mjs';
 
 let fails = 0, checks = 0;
 // VN_TEST_DETAIL=1 : chaque vérification réussie est aussi affichée (preuves du rapport de correctifs)
@@ -170,7 +172,7 @@ try {
   const auth = { authorization: 'Bearer jeton-test', 'x-vn-device': 'carte-b2' };
   const N0 = (await req(s3.port, { path: '/api/summary' })).json.learnSamples;
   ok(N0 === srvState.summary.learnSamples && N0 > 500, `état du serveur relu : ${N0} relevés appris`);
-  const up = (name, body) => req(s3.port, { method: 'POST', path: `/sync/zz/upload/${name}`, headers: { ...auth, 'content-type': 'application/octet-stream' }, body });
+  const up = (name, body, extra = {}) => req(s3.port, { method: 'POST', path: `/sync/zz/upload/${name}`, headers: { ...auth, 'content-type': 'application/octet-stream', ...extra }, body });
   const P0 = srvState['vn_prof.bin'];
   const nSt = P0.readUInt16LE(6), cellsAt = 40 + nSt * 8, cellNAt = cellsAt + nSt * 672 * 4;
   const forge = (fn) => { const b = Buffer.from(P0); fn(b); return b; };
@@ -216,8 +218,14 @@ try {
   const dFut = Buffer.from(card['vn_days.bin']); dFut.writeBigInt64LE(BigInt(now + 30 * 86400), 32);
   const rd = await up('vn_days.bin', dFut);
   ok(rd.json?.adopted === false && /futur/.test(rd.json?.why || ''), `résumés par jour datés dans un mois : ${rd.status} ${JSON.stringify(rd.json)}`);
-  // une carte légitime plus apprise (3 jours contre 2) : adoptée, l'ancien profil gardé, l'envoi journalisé avec son adresse
-  const legit = await up('vn_prof.bin', card['vn_prof.bin']);
+  // revue §5.3 : le CRC32 annoncé par la carte (X-VN-CRC32, src/net/net_esp32.cpp) est vérifié — un fichier abîmé
+  // en route n'est jamais adopté, même plausible et plus appris
+  const crcHex = (b, flip = 0) => ((crc32(b) ^ flip) >>> 0).toString(16).toUpperCase().padStart(8, '0');
+  const badCrc = await up('vn_prof.bin', card['vn_prof.bin'], { 'x-vn-crc32': crcHex(card['vn_prof.bin'], 1) });
+  ok(badCrc.status === 400 && badCrc.json?.adopted === false && /CRC32/.test(badCrc.json?.why || ''), `profil légitime, CRC32 annoncé faux : ${badCrc.status} ${JSON.stringify(badCrc.json)}`);
+  ok((await req(s3.port, { path: '/api/summary' })).json.learnSamples === N0, 'CRC32 faux : l\'état du serveur n\'a pas bougé');
+  // une carte légitime plus apprise (3 jours contre 2), CRC32 juste : adoptée, l'ancien profil gardé, l'envoi journalisé avec son adresse
+  const legit = await up('vn_prof.bin', card['vn_prof.bin'], { 'x-vn-crc32': crcHex(card['vn_prof.bin']) });
   ok(legit.status === 200 && legit.json?.adopted === true, `profil légitime plus appris : ${legit.status} ${JSON.stringify(legit.json)}`);
   const bak = join(tmp, 'b2', 'vn_prof.bin.avant-adoption');
   ok(existsSync(bak) && profHeader(readFileSync(bak))?.learnSamples === N0, 'profil du serveur gardé avant l\'adoption (vn_prof.bin.avant-adoption)');
