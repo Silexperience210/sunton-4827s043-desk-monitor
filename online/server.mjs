@@ -251,6 +251,14 @@ function send(req, res, code, body, type, extra = {}) {
 }
 const sendJson = (req, res, obj, code = 200) => send(req, res, code, JSON.stringify(obj));
 
+// La page : scripts du serveur seulement (WebAssembly compris : 'wasm-unsafe-eval'), styles du serveur, en ligne
+// (plein.js en pose) et Google Fonts, aucune requête hors du serveur, aucun cadre (détournement de clic).
+const PAGE_HEADERS = {
+  'Content-Security-Policy': ["default-src 'self'", "script-src 'self' 'wasm-unsafe-eval'", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data:", "connect-src 'self'", "object-src 'none'", "base-uri 'none'",
+    "form-action 'self'", "frame-ancestors 'none'"].join('; '),
+  'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
+};
 function serveStatic(req, res, path) {
   const rel = path === '/' ? 'index.html' : path.replace(/^\/+/, '');
   if (rel.includes('..')) return send(req, res, 400, 'chemin refusé', 'text/plain');
@@ -269,7 +277,7 @@ function serveStatic(req, res, path) {
     body = gzCache.get(key); enc = 'gzip';
   }
   res.writeHead(200, { 'Content-Type': type, 'Content-Length': body.length, 'Cache-Control': rel === 'index.html' ? 'no-cache' : 'max-age=300',
-    ...(enc ? { 'Content-Encoding': enc } : {}) });
+    ...(enc ? { 'Content-Encoding': enc } : {}), ...(/^text\/html/.test(type) ? PAGE_HEADERS : {}) });
   res.end(req.method === 'HEAD' ? undefined : body);
 }
 

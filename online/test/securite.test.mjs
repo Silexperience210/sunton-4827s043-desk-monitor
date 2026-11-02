@@ -14,6 +14,8 @@
 //  c1. la colonne d'accès du tableau des routes (online/README.md, « ## API ») dit ce que fait le serveur : chaque
 //      route listée est rejouée sans jeton sur un serveur qui en exige un (protégée ⇔ 401).
 //  c2. aucune réponse publique ne donne le chemin du dossier de données (/api/summary le donnait : dataDir).
+//  c5. la page porte une politique de sécurité du contenu (CSP : scripts du serveur seulement, aucun cadre) et
+//      X-Frame-Options : une page tierce ne peut ni l'encadrer (détournement de clic) ni y injecter de script.
 //  m12. la page ne lit jamais le jeton dans l'URL (?token= reste dans l'historique et les journaux du proxy) ;
 //      un ancien lien qui en porte un est effacé de la barre d'adresse, sans être lu.
 // node online/test/securite.test.mjs
@@ -86,6 +88,19 @@ try {
       if (r.text.includes(dir)) leaks.push(`${path} (${r.text.match(/"(\w+)":"[^"]*sans-jeton[^"]*"/)?.[1] || 'champ ?'})`);
     }
     ok(!leaks.length, `routes publiques qui donnent ${dir} : ${leaks.join(', ') || 'aucune'}`);
+  }
+
+  console.log('c5. la page : CSP et X-Frame-Options');
+  {
+    const r = await req(P, { path: '/' });
+    const csp = String(r.headers['content-security-policy'] || '');
+    const dir = Object.fromEntries(csp.split(';').map((d) => d.trim().split(/\s+/)).filter((d) => d[0]).map(([k, ...v]) => [k, v]));
+    ok(r.status === 200 && /text\/html/.test(r.headers['content-type']), `GET / : ${r.status} ${r.headers['content-type']}`);
+    ok(dir['frame-ancestors']?.join(' ') === "'none'" && r.headers['x-frame-options'] === 'DENY',
+      `aucun cadre : frame-ancestors ${dir['frame-ancestors']?.join(' ') || 'absent'}, X-Frame-Options ${r.headers['x-frame-options'] || 'absent'}`);
+    ok(dir['script-src']?.includes("'self'") && !dir['script-src'].some((v) => ["'unsafe-inline'", "'unsafe-eval'"].includes(v) || /\*|https?:|data:|blob:/.test(v)) && dir['object-src']?.join(' ') === "'none'",
+      `scripts du serveur seulement : script-src ${dir['script-src']?.join(' ') || 'absent'}, object-src ${dir['object-src']?.join(' ') || 'absent'}`);
+    ok(dir['connect-src']?.join(' ') === "'self'" && dir['base-uri']?.join(' ') === "'none'", `connect-src ${dir['connect-src']?.join(' ') || 'absent'}, base-uri ${dir['base-uri']?.join(' ') || 'absent'}`);
   }
 
   console.log('B1. VN_OPEN=1 : écritures ouvertes au réseau local, CSRF toujours refusé');
