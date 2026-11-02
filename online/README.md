@@ -63,6 +63,7 @@ node online/server.mjs --import /tmp/vidage                  # puis lancer le se
 | `VN_TOKEN` | — | jeton des routes protégées (écritures, réglages, écrans, synchro des cartes), en `Authorization: Bearer` ou `X-VN-Token`, jamais dans l'URL. Vide : écritures fermées (403), sauf en local ou avec `VN_OPEN=1` |
 | `VN_OPEN` | — | `1` : sans jeton, écritures ouvertes au réseau local (de confiance seulement). Une page d'un autre site reste refusée (CSRF) |
 | `VN_REFRESH_S` | `60` | période de `station_status` (30 s au moins), comme Réglages → Rafraîchissement |
+| `VN_FEED_STALE_S` | `0` | `station_status` dont `last_updated` est plus vieux : non appliqué (échec −104, `/healthz` en 503). `0` = règle du bandeau « Relevé figé » de la carte : 3 périodes, 3 min au moins |
 | `VN_SAVE_S` | `600` | sauvegarde sur disque (la carte : 30 min) ; aussi à l'arrêt (`docker stop`, Ctrl-C) |
 | `VN_ARCHIVE_HOURS` | `6,18` | instantanés pour le banc (heure de Luxembourg) ; vide = aucun |
 | `VN_ARCHIVE_KEEP_DAYS` | `0` | durée de l'archive (0 = tout garder, ~0,9 Mo par jour) |

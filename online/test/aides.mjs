@@ -119,7 +119,9 @@ export async function simulateCard({ from, to, seed = 7, stepS = 300 }) {
   return out;
 }
 
-// Faux flux GBFS local (instantané docs/donnees, last_updated à l'heure) : `status` = nombre de station_status servis
+// Faux flux GBFS local (instantané docs/donnees, last_updated à l'heure) : `status` = nombre de station_status servis.
+// g.lastUpdated (modifiable en cours de route) : valeur de last_updated servie, ou fonction ; défaut : maintenant.
+// g.edit(st) : retouche du flux avant envoi (stations, last_reported…).
 export async function fakeGbfs() {
   const info = readFileSync(join(D, 'station_information.json'), 'utf8');
   const types = readFileSync(join(D, 'vehicle_types.json'), 'utf8');
@@ -127,8 +129,10 @@ export async function fakeGbfs() {
   const g = await fakeService((x) => {
     if (x.url.includes('station_status')) {
       g.status++;
-      st0.last_updated = new Date().toISOString();
-      return { body: JSON.stringify(st0) };
+      const lu = typeof g.lastUpdated === 'function' ? g.lastUpdated() : g.lastUpdated;
+      st0.last_updated = lu === undefined ? new Date().toISOString() : lu;
+      const st = g.edit ? g.edit(structuredClone(st0)) || st0 : st0;
+      return { body: JSON.stringify(st) };
     }
     if (x.url.includes('station_information')) return { body: info };
     if (x.url.includes('vehicle_types')) return { body: types };
