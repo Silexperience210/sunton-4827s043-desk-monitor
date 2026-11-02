@@ -20,14 +20,18 @@
 //      place ; au redémarrage, l'anneau comble les trous de l'historique.
 //  m4. vn_hist.bin dont une tranche est datée dans le futur : refusé à la relecture (sinon l'anneau reste figé
 //      sur cette tranche : Model::applyStatus n'en crée pas d'antérieure).
+//  m5. fichier abîmé à taille égale (un octet de l'anneau à 250 vélos : Model::load l'accepte) : instantané
+//      d'archive refusé s'il ne correspond pas au CRC32 de son manifeste ; état du serveur refusé au démarrage
+//      s'il ne correspond pas au CRC32 noté à sa sauvegarde (etat.crc32.json), génération précédente reprise.
 // node online/test/integrite.test.mjs
 import fs, { mkdtempSync, rmSync, readdirSync, writeFileSync, readFileSync, mkdirSync, utimesSync, existsSync, appendFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { History, dayOf } from '../lib/history.mjs';
+import { History, dayOf, importArchive } from '../lib/history.mjs';
+import { loadEngine } from '../public/vn-engine.js';
 import * as store from '../lib/store.mjs';     // espace de noms : le test tourne (et échoue) sur un code qui n'a pas encore ces fonctions
-import { req, startServer, simulateCard, fakeGbfs, sleep } from './aides.mjs';
+import { req, startServer, simulateCard, fakeGbfs, sleep, CORE } from './aides.mjs';
 
 let fails = 0, checks = 0;
 // VN_TEST_DETAIL=1 : chaque vérification réussie est aussi affichée (preuves du rapport de correctifs)
@@ -435,9 +439,6 @@ try {
     {
       // instantané d'archive dont une tranche (10 avant la tête) est datée de +3 jours : il n'entre pas dans
       // l'historique long (sinon un jour à venir y est écrit)
-      const { importArchive } = await import('../lib/history.mjs');
-      const { loadEngine } = await import('../public/vn-engine.js');
-      const { CORE } = await import('./aides.mjs');
       const D = fresh(), snap = join(D, 'archive', '20261101-060000');
       mkdirSync(snap, { recursive: true });
       writeFileSync(join(snap, 'vn_prof.bin'), card['vn_prof.bin']);
@@ -452,6 +453,67 @@ try {
       const r = await importArchive({ dirs: [snap], history: hist, makeEngine: () => loadEngine(CORE, { onLog: () => {} }) });
       const future = hist.files().filter((f) => f.day > dayOf(now + 3600));
       ok(r.refused === 1 && future.length === 0, `import de l'archive : instantané refusé (${r.refused}), aucun jour à venir écrit (${future.map((f) => f.day).join(', ') || 'aucun'})`);
+    }
+  }
+
+  console.log('m5. CRC32 : fichier abîmé à taille égale (anneau à 250 vélos) — instantané d\'archive, état du serveur');
+  {
+    const now = Math.floor(Date.now() / 1000);
+    const card = await simulateCard({ from: now - 4 * 3600, to: now - 120, seed: 51 });
+    const eng = await loadEngine(CORE, { onLog: () => {} });
+    const hex = (b) => eng.crc32(b).toString(16).toUpperCase().padStart(8, '0');
+    const mkEngine = () => loadEngine(CORE, { onLog: () => {} });
+    // vélos de la première station dans la tranche de tête : 250 (même taille ; Model::load relit le fichier)
+    const at250 = (src) => {
+      const h = Buffer.from(src);
+      const nSt = h.readUInt16LE(6), ringAt = 40 + nSt * 8, nsz = (h.length - ringAt) / 288 - 8 - nSt;
+      h[ringAt + 288 * (8 + nsz) + h.readInt32LE(8) * nSt] = 250;
+      return h;
+    };
+    const snap = (D, name, hist, decl = {}) => {
+      const d = join(D, 'archive', name);
+      mkdirSync(d, { recursive: true });
+      const files = { 'vn_prof.bin': card['vn_prof.bin'], 'vn_hist.bin': hist, 'vn_days.bin': card['vn_days.bin'] };
+      for (const [f, b] of Object.entries(files)) writeFileSync(join(d, f), b);
+      // le manifeste décrit les fichiers d'origine (store.archive, tools/carte_dump.py)
+      const fichiers = {};
+      for (const f of Object.keys(files)) fichiers[f] = { taille: card[f].length, crc32: hex(card[f]), ...(decl[f] || {}) };
+      writeFileSync(join(d, 'manifeste.json'), JSON.stringify({ t_carte: Number(card['vn_hist.bin'].readBigInt64LE(32)), fichiers }));
+      return d;
+    };
+    {
+      const D = fresh(), logs = [];
+      const r = await importArchive({ dirs: [snap(D, '20261101-060000', at250(card['vn_hist.bin']))], history: new History(D), makeEngine: mkEngine, log: (m) => logs.push(m) });
+      ok(r.refused === 1 && r.added === 0, `archive : vn_hist.bin différent de son manifeste (même taille) → instantané refusé (${r.refused} refusé, ${r.added} tranches ajoutées)`);
+      ok(logs.some((m) => /ignoré \(vn_hist\.bin : CRC32/.test(m)), `refus journalisé et nommé (${logs.find((m) => /ignoré/.test(m)) || logs.at(-1)})`);
+      const D2 = fresh();
+      const r2 = await importArchive({ dirs: [snap(D2, '20261101-060000', card['vn_hist.bin'], { 'vn_days.bin': { taille: card['vn_days.bin'].length + 1 } })], history: new History(D2), makeEngine: mkEngine });
+      ok(r2.refused === 1 && r2.added === 0, `archive : taille déclarée fausse → instantané refusé (${r2.refused})`);
+      const D3 = fresh();
+      const r3 = await importArchive({ dirs: [snap(D3, '20261101-060000', card['vn_hist.bin'])], history: new History(D3), makeEngine: mkEngine });
+      ok(r3.snaps === 1 && r3.added >= 45, `archive conforme à son manifeste : importée (${r3.added} tranches)`);
+    }
+    {
+      const D = fresh();
+      mkdirSync(D, { recursive: true });
+      for (const f of ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin', 'vn_live.bin']) writeFileSync(join(D, f), card[f]);
+      const rejected = (f) => readdirSync(D).filter((x) => x.startsWith(`${f}.rejete-`));
+      const relu = (L) => (L.match(/\[fs\] état relu[^\n]*/) || ['?'])[0];
+      let s = await startServer({ data: D });
+      await s.stop();
+      s = await startServer({ data: D });
+      await s.stop();
+      ok(/profils oui, historique 24 h oui, résumés par jour oui, état vivant oui/.test(s.log()) && !/refusé/.test(s.log()), `redémarrage sans altération : tout est repris (${relu(s.log())})`);
+      writeFileSync(join(D, 'vn_hist.bin'), at250(readFileSync(join(D, 'vn_hist.bin'))));
+      s = await startServer({ data: D });
+      await s.stop();
+      ok(/vn_hist\.bin refusé \(CRC32/.test(s.log()) && rejected('vn_hist.bin').length === 1, `vn_hist.bin abîmé sur le disque (même taille) : refusé, gardé de côté (${(s.log().match(/vn_hist\.bin (refusé|repris)[^\n]*/) || [relu(s.log())])[0]})`);
+      ok(/vn_hist\.bin repris de vn_hist\.bin\.prev/.test(s.log()) && /historique 24 h oui \(génération précédente\)/.test(s.log()), 'génération précédente reprise');
+      // coupure entre le manifeste et l'écriture des fichiers : la génération précédente, encore en place, est reconnue
+      writeFileSync(join(D, 'vn_prof.bin'), readFileSync(join(D, 'vn_prof.bin.prev')));
+      s = await startServer({ data: D });
+      await s.stop();
+      ok(/profils oui,/.test(s.log()) && !/vn_prof\.bin refusé/.test(s.log()), `génération précédente encore en place (coupure avant l'écriture) : reprise (${relu(s.log())})`);
     }
   }
 } finally {

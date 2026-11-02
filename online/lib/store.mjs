@@ -91,6 +91,28 @@ export async function readable(name, b, makeEngine, now) {
   return { ok: false, why: `illisible par ${live ? 'liveLoad' : 'Model::load'}, ${b.length} octets` };
 }
 
+// ── CRC32 de l'état écrit par le serveur ──
+// Les fichiers de la carte n'ont pas de somme de contrôle (format de src/core, partagé avec le firmware) : un
+// fichier abîmé sur le disque mais de bonne taille (un octet de l'anneau à 250 vélos) passait Model::load, puis
+// partait vers les cartes. Le serveur note le CRC32 de ce qu'il écrit dans etat.crc32.json, AVANT les fichiers :
+// chaque nom y garde la génération écrite et celle encore sur le disque (une coupure entre le manifeste et les
+// fichiers laisse l'ancienne, toujours reconnue). Sans manifeste (version précédente du serveur), rien n'est
+// vérifié ; un fichier posé à la main est refusé : passer par --import.
+export const SEALS = 'etat.crc32.json';
+let CRC_TABLE = null;
+export function crc32(b) {
+  if (!CRC_TABLE) {
+    CRC_TABLE = new Int32Array(256);
+    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; CRC_TABLE[n] = c; }
+  }
+  let c = -1;
+  for (let i = 0; i < b.length; i++) c = CRC_TABLE[(c ^ b[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ -1) >>> 0;
+}
+export const hex8 = (n) => (n >>> 0).toString(16).toUpperCase().padStart(8, '0');
+const seal = (b) => ({ taille: b.length, crc32: hex8(crc32(b)) });
+const sameSeal = (a, b) => !!a && !!b && a.taille === b.taille && String(a.crc32).toUpperCase() === b.crc32;
+
 // Sans fsync, le renommage peut atteindre le disque avant les données : après une coupure (Umbrel, Raspberry
 // Pi), un fichier renommé mais vide, refusé au démarrage. Nom temporaire unique : sous Docker le PID vaut 1.
 export function atomicWrite(path, data) {
@@ -166,6 +188,7 @@ export class Store {
   // Un historique 24 h de plus de 20 h n'est pas une erreur (règle de la carte) : non repris, laissé en place.
   // Dépose dans le moteur ce qui est lisible ; renvoie { nom: { state: oui | prev | non | absent, why } }.
   async restore(engine, { makeEngine, now }) {
+    this.seals = this.readSeals();
     const got = {};
     for (const n of STATE_FILES) {
       const r = await this._pick(n, makeEngine, now);
@@ -177,14 +200,14 @@ export class Store {
   async _pick(n, makeEngine, now) {
     const main = this.read(n);
     if (!main) return { state: 'absent' };
-    const c = await readable(n, main, makeEngine, now);
+    const c = this.unsealed(n, main) || await readable(n, main, makeEngine, now);
     if (c.ok) return { state: 'oui', buf: c.buf };
     if (c.stale) { this.log(`[fs] ${n} non repris : ${c.why}`); return { state: 'non', why: c.why }; }
     if (main.length) this.log(`[fs] ${n} refusé (${c.why}) : gardé sous ${this.reject(n)}`);
     else { rmSync(this.path(n), { force: true }); this.log(`[fs] ${n} vide : ignoré`); }
     const prev = this.read(`${n}.prev`);
     if (prev && prev.length) {
-      const p = await readable(n, prev, makeEngine, now);
+      const p = this.unsealed(n, prev) || await readable(n, prev, makeEngine, now);
       if (p.ok) { this.log(`[fs] ${n} repris de ${n}.prev (génération précédente)`); return { state: 'prev', buf: p.buf, why: c.why }; }
       if (!p.stale) this.log(`[fs] ${n}.prev refusé aussi (${p.why}) : gardé sous ${this.reject(`${n}.prev`)}`);
     }
@@ -200,12 +223,38 @@ export class Store {
   }
   // Écrit ce que le moteur vient de sérialiser (vn_save) ; la version remplacée devient <nom>.prev
   persistFrom(engine) {
+    const files = {};
+    for (const n of STATE_FILES) { const b = engine.getFile('/' + n); if (b) files[n] = b; }
+    this.writeSeals(files);
     let bytes = 0;
-    for (const n of STATE_FILES) {
-      const b = engine.getFile('/' + n);
-      if (b) { this.keepPrevious(n); this.write(n, b); bytes += b.length; }
-    }
+    for (const [n, b] of Object.entries(files)) { this.keepPrevious(n); this.write(n, b); bytes += b.length; }
     return bytes;
+  }
+  // etat.crc32.json : { fichiers: { nom: [écrite, sur le disque] } }. Le fichier sur le disque n'y est repris que
+  // s'il était lui-même connu (un fichier abîmé depuis sa sauvegarde ne devient pas « reconnu »).
+  readSeals() {
+    if (!this.has(SEALS)) return null;
+    try { return JSON.parse(readFileSync(this.path(SEALS), 'utf8')).fichiers || null; } catch (err) {
+      this.log(`[fs] ${SEALS} illisible (${err.message}) : CRC32 de l'état non vérifiés`);
+      return null;
+    }
+  }
+  writeSeals(files) {
+    const old = this.readSeals() || {}, out = { ...old };
+    for (const [n, b] of Object.entries(files)) {
+      const next = seal(b), d = this.read(n), disk = d && seal(d);
+      const known = disk && (!Array.isArray(old[n]) || old[n].some((g) => sameSeal(g, disk)));
+      out[n] = known && !sameSeal(disk, next) ? [next, disk] : [next];
+    }
+    atomicWrite(this.path(SEALS), JSON.stringify({ fichiers: out }, null, 1));
+  }
+  // Raison du refus si `b` n'est aucune des générations notées pour ce nom ; null sinon (ou sans manifeste)
+  unsealed(n, b) {
+    const gens = this.seals?.[n];
+    if (!Array.isArray(gens) || !gens.length) return null;
+    const got = seal(b);
+    return gens.some((g) => sameSeal(g, got)) ? null
+      : { ok: false, why: `CRC32 ${got.crc32} (${got.taille} octets) différent de la sauvegarde (${gens.map((g) => g.crc32).join(' ou ')}) : abîmé sur le disque` };
   }
   // Lien dur (aucune copie, le fichier courant reste en place), copie si le système de fichiers les refuse
   keepPrevious(n) {

@@ -14,7 +14,7 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, statSync, rmSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync, gunzipSync, constants as zlibConst } from 'node:zlib';
-import { atomicWrite, appendLines, checkHist } from './store.mjs';
+import { atomicWrite, appendLines, checkHist, crc32, hex8 } from './store.mjs';
 import { SLOT_S, dayOf, luxParts, aggregate, dailySummary } from '../public/vn-series.js';
 
 export { SLOT_S, dayOf };
@@ -320,6 +320,9 @@ export async function importArchive({ dirs, history, makeEngine, log = () => {} 
     const hb = readFileSync(hist);
     const t = man?.t_carte || (hb.length >= 40 ? Number(hb.readBigInt64LE(32)) : 0);
     if (!t) { refused++; continue; }
+    // fichiers différents de ce que le manifeste déclare : abîmés (même à taille égale, Model::load les relirait)
+    const broken = unlike(dir, man);
+    if (broken) { log(`[historique] import : ${dir} ignoré (${broken})`); refused++; continue; }
     // une tranche datée après l'instantané entrerait dans l'historique à une date à venir (lib/store.mjs)
     const future = checkHist(hb, t);
     if (future) { log(`[historique] import : ${dir} ignoré (${future})`); refused++; continue; }
@@ -348,6 +351,20 @@ export async function importArchive({ dirs, history, makeEngine, log = () => {} 
   }
   log(`[historique] import : ${snaps} instantané(s) lus, ${refused} sans anneau exploitable, ${added} tranche(s) ajoutée(s)`);
   return { snaps, added, refused };
+}
+
+// Premier fichier déclaré par le manifeste (store.archive, tools/carte_dump.py : taille et CRC32) qui n'y
+// correspond pas, ou absent ; null si tout correspond. Un vidage sans manifeste n'est pas vérifié.
+function unlike(dir, man) {
+  for (const [f, want] of Object.entries(man?.fichiers || {})) {
+    let b;
+    try { b = readFileSync(join(dir, f)); } catch { return `${f} déclaré par le manifeste mais absent`; }
+    const c = hex8(crc32(b));
+    if (b.length !== want?.taille || c !== String(want?.crc32).toUpperCase()) {
+      return `${f} : CRC32 ${c} (${b.length} octets) au lieu de ${want?.crc32} (${want?.taille} octets) déclarés par le manifeste`;
+    }
+  }
+  return null;
 }
 
 // vn_stations.csv (Model::stationsCsv) : « # vn_stations v1 t=… », puis sid;capacite;publiee;lat;lon;nom

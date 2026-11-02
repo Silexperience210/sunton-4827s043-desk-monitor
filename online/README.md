@@ -83,6 +83,10 @@ est relu seul : un fichier illisible est mis de côté sous `<nom>.rejete-AAAAMM
 la génération `.prev` le remplace si elle est lisible, et le journal nomme chaque fichier refusé. Un
 `vn_hist.bin` dont une tranche est datée après sa sauvegarde ou après l'heure du serveur (plus de 5 min) est
 refusé de même, à la reprise comme à l'import (`--import`, `--import-archive`) : il figerait l'anneau.
+Le CRC32 de chaque fichier écrit est noté dans `data/etat.crc32.json` : au démarrage, un fichier qui n'y
+correspond pas (abîmé sur le disque, même à taille égale) est refusé de même. Pour remplacer l'état par celui
+d'une carte, passer par `--import` (un fichier posé à la main serait refusé). À l'import de l'archive, un
+instantané dont un fichier ne correspond pas à son `manifeste.json` (taille, CRC32) est ignoré.
 
 ## Le jumeau de l'écran (`http://<machine>:8790`)
 
