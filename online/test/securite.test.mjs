@@ -20,7 +20,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { req, startServer, simulateCard, fakeService } from './aides.mjs';
-import { profHeader, daysHeader, SyncHub } from '../lib/sync.mjs';
+import { profHeader, daysHeader, SyncHub, profImplausible } from '../lib/sync.mjs';
 
 let fails = 0, checks = 0;
 // VN_TEST_DETAIL=1 : chaque vérification réussie est aussi affichée (preuves du rapport de correctifs)
@@ -140,6 +140,14 @@ try {
     const r = await up('vn_prof.bin', body);
     ok(r.json?.adopted === false && why.test(r.json?.why || ''), `profil forgé (${what}) : ${r.status} ${JSON.stringify(r.json)}`);
   }
+  // /vn_prof.bin version 5 (feat/modele-v2, 1.4.0) = version 4 + FcLearn (13 520 octets) en fin de fichier : ce que le
+  // contrôle lit est au même endroit. Refusée comme « inconnue », toute carte 1.4.0 le serait après la fusion.
+  const v5 = (b) => { const x = Buffer.concat([b, Buffer.alloc(13520)]); x.writeUInt16LE(5, 4); return x; };
+  const w5 = profImplausible(v5(P0), now), f5 = profImplausible(v5(forged[0][1]), now);
+  ok(w5 === null, `profil v5 (v4 + 13 520 octets) légitime : ${w5 || 'plausible'}`);
+  ok(/tranches/.test(f5 || ''), `profil v5 forgé (4 000 000 000 relevés) : ${f5}`);
+  const v6 = Buffer.from(P0); v6.writeUInt16LE(6, 4);
+  ok(/version 6 inconnue/.test(profImplausible(v6, now) || ''), `version 6 : ${profImplausible(v6, now)}`);
   const man = await req(s3.port, { path: '/sync/manifest', headers: auth });
   ok(man.json?.prof?.samples === N0, `manifeste après les envois forgés : ${man.json?.prof?.samples} relevés (le serveur garde ses ${N0})`);
   ok(!existsSync(join(tmp, 'b2', 'vn_prof.bin.avant-adoption')), 'aucune adoption : aucune copie');

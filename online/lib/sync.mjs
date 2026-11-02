@@ -34,15 +34,16 @@ export function daysHeader(b) {
 // station relevée dans cette cellule. D'où : learnSamples ≤ tranches écoulées entre learnSince et savedAt,
 // Σ cellN = learnSamples (tant qu'aucune cellule n'est saturée), n ≤ cellN, et des cellules apprises
 // renseignées pour presque toutes les stations (98 % sur les 13 profils de production du 26/10 au 01/11/2026).
-// Ces règles lisent la disposition des versions 1 à 4 de /vn_prof.bin (Model::profFileOk) : une autre
-// version est refusée tant que ce contrôle ne la connaît pas.
+// Ces règles lisent la disposition des versions 1 à 5 de /vn_prof.bin (Model::profFileOk ; la version 5, modèle 2
+// de feat/modele-v2 en 1.4.0, ajoute FcLearn en fin de fichier : en-tête, cellules et cellN restent en place) : une
+// autre version est refusée tant que ce contrôle ne la connaît pas.
 const PROF_MAGIC = 0x31504E56, DAYQ = 672;
 export const LEARN_EPOCH = Date.UTC(2026, 9, 1) / 1000;    // VelohNav Ops 1.0.0 date du 13/10/2026 : aucune carte n'apprenait avant
 const iso = (t) => new Date(t * 1000).toISOString().slice(0, 16).replace('T', ' ');
 export function profImplausible(b, now) {
   const h = profHeader(b);
   if (!h || h.magic !== PROF_MAGIC) return 'en-tête illisible';
-  if (h.ver < 1 || h.ver > 4) return `version ${h.ver} inconnue du contrôle de plausibilité`;
+  if (h.ver < 1 || h.ver > 5) return `version ${h.ver} inconnue du contrôle de plausibilité`;
   const cell = h.ver >= 3 ? 4 : 3, nMask = h.ver >= 3 ? 0x1f : 0xff;       // ProfCell : n sur 5 bits depuis la v3
   const cellsAt = 40 + h.nSt * 8, cellNAt = cellsAt + h.nSt * DAYQ * cell;
   if (b.length < cellNAt + DAYQ) return 'fichier trop court';
