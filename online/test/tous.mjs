@@ -9,17 +9,10 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { exigerBinaires } from './binaires.mjs';
+import { decompte } from './harnais.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 exigerBinaires();
-
-// « 89/89 vérifications réussies » (features) ou « 75 vérifications, 0 échec(s) » (les autres)
-function decompte(out) {
-  let m = out.match(/(\d+)\/(\d+) vérifications réussies/);
-  if (m) return { checks: +m[2], fails: +m[2] - +m[1] };
-  m = out.match(/(\d+) vérifications, (\d+) échec/);
-  return m ? { checks: +m[1], fails: +m[2] } : null;
-}
 
 const files = readdirSync(HERE).filter((f) => /\.(test|e2e)\.mjs$/.test(f)).sort();
 const rows = [];
