@@ -5,11 +5,13 @@
 //      lectures publiques, synchro des cartes en lecture, jeton faux ou dans l'URL, banc et relevé sans jeton.
 //  B2. profils forgés par un porteur du jeton (partagé par toutes les cartes) : refusés, le serveur garde les
 //      siens ; un profil légitime plus appris est adopté, l'ancien gardé à côté, l'adresse de l'envoi journalisée.
+//  M6. SSRF par /api/notify/test : le corps de la réponse n'est jamais renvoyé ; bouclage, lien local et adresses
+//      non routables refusés (adresse littérale, nom résolu, redirection) ; faux services sur 127.0.0.1 seulement.
 // node online/test/securite.test.mjs
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { req, startServer, simulateCard } from './aides.mjs';
+import { req, startServer, simulateCard, fakeService } from './aides.mjs';
 import { profHeader, daysHeader } from '../lib/sync.mjs';
 
 let fails = 0, checks = 0;
@@ -146,6 +148,42 @@ try {
   ok(legitD.json?.adopted === true && existsSync(join(tmp, 'b2', 'vn_days.bin.avant-adoption')) && daysHeader(readFileSync(join(tmp, 'b2', 'vn_days.bin.avant-adoption')))?.nDays >= 1,
     `résumés légitimes adoptés, anciens gardés : ${JSON.stringify(legitD.json)}`);
   ok(/carte-b2 envoie vn_prof\.bin .*depuis 127\.0\.0\.1/.test(s3.log()), 'adresse de l\'envoi journalisée');
+
+  console.log('M6. notification de test : aucune lecture de la réponse, adresses internes refusées');
+  // faux service interne (127.0.0.1) : répond 418 avec un secret ; un second, cible d'une redirection
+  const secret = 'REPONSE-SERVICE-INTERNE: admin_password=hunter2';
+  const inner = await fakeService(() => ({ status: 418, type: 'text/plain', body: secret }));
+  const hop = await fakeService(() => ({ status: 200, body: secret }));
+  try {
+    const H = { authorization: 'Bearer jeton-test', 'content-type': 'application/json' };
+    const s4 = await start('m6', { VN_TOKEN: 'jeton-test' });
+    const set = (port, body) => req(port, { method: 'POST', path: '/api/notify', headers: H, body: JSON.stringify(body) });
+    for (const u of [`http://127.0.0.1:${inner.port}/interne/admin`, `http://2130706433:${inner.port}/`, `http://[::1]:${inner.port}/`, `http://[::ffff:127.0.0.1]:${inner.port}/`,
+      `http://0.0.0.0:${inner.port}/`, 'http://169.254.169.254/latest/meta-data/', 'http://[fe80::1]/']) {
+      const r = await set(s4.port, { webhook: u });
+      ok(r.status === 400 && /refusée/.test(r.json?.error || ''), `webhook ${u} : ${r.status} ${r.json?.error || ''}`);
+    }
+    // nom qui se résout en 127.0.0.1 : refusé à la connexion (DNS), rien n'atteint le service
+    const n0 = inner.got.length;
+    ok((await set(s4.port, { webhook: `http://localhost:${inner.port}/interne/admin` })).status === 200, 'nom d\'hôte : accepté au réglage (la résolution a lieu à l\'envoi)');
+    const t1 = await req(s4.port, { method: 'POST', path: '/api/notify/test', headers: H });
+    ok(t1.json?.ok === false && /refusée/.test(t1.json?.why || '') && inner.got.length === n0, `localhost → 127.0.0.1 à l'envoi : ${JSON.stringify(t1.json)}, ${inner.got.length - n0} requête(s) reçue(s)`);
+    await set(s4.port, { webhook: '' });
+    // VN_NOTIFY_LOCAL=1 (ntfy sur la même machine) : bouclage permis, mais la réponse n'est jamais lue ni renvoyée
+    const s5 = await start('m6-local', { VN_TOKEN: 'jeton-test', VN_NOTIFY_LOCAL: '1' });
+    ok((await set(s5.port, { webhook: `http://127.0.0.1:${inner.port}/interne/admin` })).status === 200, 'VN_NOTIFY_LOCAL=1 : webhook en 127.0.0.1 accepté');
+    const t2 = await req(s5.port, { method: 'POST', path: '/api/notify/test', headers: H });
+    const st2 = await req(s5.port, { path: '/api/notify', headers: H });
+    ok(inner.got.length === n0 + 1 && t2.json?.why === 'HTTP 418', `réponse du service interne : seul le code est rendu (${JSON.stringify(t2.json)})`);
+    ok(!/hunter2|REPONSE/.test(t2.text + st2.text), 'le corps n\'apparaît ni dans la réponse ni dans le journal des messages');
+    ok((await set(s5.port, { webhook: 'http://169.254.169.254/latest/meta-data/' })).status === 400, 'VN_NOTIFY_LOCAL=1 : lien local toujours refusé');
+    // redirection vers un autre service : jamais suivie
+    const r3 = await fakeService(() => ({ status: 302, body: '', headers: { location: `http://127.0.0.1:${hop.port}/secret` } }));
+    await set(s5.port, { webhook: `http://127.0.0.1:${r3.port}/` });
+    const t3 = await req(s5.port, { method: 'POST', path: '/api/notify/test', headers: H });
+    ok(hop.got.length === 0 && t3.json?.why === 'HTTP 302', `redirection non suivie (${JSON.stringify(t3.json)}, ${hop.got.length} requête(s) au service visé)`);
+    await r3.close();
+  } finally { await inner.close(); await hop.close(); }
 } finally {
   for (const s of servers) await s.stop();
 }

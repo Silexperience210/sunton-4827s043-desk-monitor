@@ -300,7 +300,8 @@ const BIN = BINAIRES.bench_prevision;
   cpSync(join(W, 'archive'), join(SD, 'archive'), { recursive: true });
   const port = 18790 + Math.floor(Math.random() * 1000);
   const srv = spawn(process.execPath, [join(HERE, '..', 'server.mjs')], { env: { ...process.env, VN_DATA: SD, VN_PORT: String(port), VN_HOST: '127.0.0.1', VN_TOKEN: 'jeton-test',
-    VN_GBFS_BASE: 'http://127.0.0.1:9/gbfs', VN_WX_URL: 'http://127.0.0.1:9/wx', VN_BENCH_BIN: BIN, VN_BENCH_CWD: join(ROOT, 'sim'), VN_NIGHT_AT: '23:59' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    VN_GBFS_BASE: 'http://127.0.0.1:9/gbfs', VN_WX_URL: 'http://127.0.0.1:9/wx', VN_BENCH_BIN: BIN, VN_BENCH_CWD: join(ROOT, 'sim'), VN_NIGHT_AT: '23:59',
+    VN_NOTIFY_LOCAL: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });        // faux ntfy en 127.0.0.1 : bouclage permis (lib/notify.mjs)
   let slog = '';
   srv.stdout.on('data', (d) => { slog += d; }); srv.stderr.on('data', (d) => { slog += d; });
   const base = `http://127.0.0.1:${port}`;

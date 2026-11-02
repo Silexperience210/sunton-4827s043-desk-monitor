@@ -70,6 +70,7 @@ node online/server.mjs --import /tmp/vidage                  # puis lancer le se
 | `VN_NIGHT_AT` | `03:30` | tâches de nuit (heure de Luxembourg) : jours finis compressés, prévisions de la veille notées, banc |
 | `VN_BENCH_BIN` | (image Docker : réglé) | exécutable `sim/bench_prevision` ; absent = pas de banc de nuit |
 | `VN_NTFY_URL` / `VN_NTFY_TOKEN` | — | sujet ntfy (`https://ntfy.sh/<sujet>`) et jeton d'un serveur ntfy protégé |
+| `VN_NOTIFY_LOCAL` | — | `1` : ntfy ou webhook permis en 127.0.0.1 (même machine, sans Docker). Sinon le bouclage est refusé ; le lien local (169.254.x.x) l'est toujours. Seul le code HTTP de la réponse est gardé |
 | `VN_PUBLIC_URL` | — | adresse de la page, ouverte en touchant une notification |
 | `VN_NOTIFY_DIGEST` | `07:30` | heure du résumé du matin ; vide = aucun |
 | `VN_NOTIFY_MIN` / `VN_NOTIFY_HOURS` / `VN_NOTIFY_MAX_H` | `15` / `7-22` / `6` | rupture signalée après N min, dans ces heures, au plus N messages par heure |

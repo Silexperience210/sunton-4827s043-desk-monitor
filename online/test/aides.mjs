@@ -77,7 +77,7 @@ export async function fakeService(reply = () => ({ status: 200, body: '{}' })) {
       const x = { method: rq.method, url: rq.url, headers: rq.headers, body: Buffer.concat(parts).toString('utf8') };
       got.push(x);
       const r = reply(x) || {};
-      rs.writeHead(r.status || 200, { 'Content-Type': r.type || 'application/json' });
+      rs.writeHead(r.status || 200, { 'Content-Type': r.type || 'application/json', ...(r.headers || {}) });
       rs.end(r.body ?? '');
     });
   });
