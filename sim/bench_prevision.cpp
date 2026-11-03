@@ -408,6 +408,8 @@ int main(int argc, char ** argv) {
       else if (k == "ferie_dimanche") g_pred.holidaySunday = v;                 // (b) prévoir un férié en dimanche
       else if (k == "ferie_appris" && num >= 0 && num <= 1) g_pred.holidayLearn = (uint8_t)num;       // (a) 0 son jour (v1.0.8), 1 dimanche (livré)
       else if (k == "profil_n") g_pred.profDecayN = (int)num;                 // récence : constante de temps (relevés)
+      else if (k == "modele" && (num == FC_RULE_V1 || num == FC_RULE_V2)) g_pred.fcRule = (uint8_t)num;   // 1 = règle 1.3.0, 2 = modèle 2 (livré)
+      else if (k == "echeances" && (num == FC_RULE_V1 || num == FC_RULE_V2)) g_pred.etaRule = (uint8_t)num; // trajectoire des échéances vide / pleine
       else { fprintf(stderr, "levier inconnu : %s\n", k.c_str()); return 1; }
     }
     else { fprintf(stderr, "option inconnue : %s\n", argv[a]); return 1; }

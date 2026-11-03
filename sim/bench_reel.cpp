@@ -386,6 +386,8 @@ static bool applyLever(const std::string & k, double num, bool v) {
   else if (k == "ferie_dimanche") g_pred.holidaySunday = v;
   else if (k == "ferie_appris" && num >= 0 && num <= 1) g_pred.holidayLearn = (uint8_t)num;
   else if (k == "profil_n") g_pred.profDecayN = (int)num;
+  else if (k == "modele" && (num == FC_RULE_V1 || num == FC_RULE_V2)) g_pred.fcRule = (uint8_t)num;
+  else if (k == "echeances" && (num == FC_RULE_V1 || num == FC_RULE_V2)) g_pred.etaRule = (uint8_t)num;
   else return false;
   return true;
 }
