@@ -28,10 +28,11 @@ import { tmpdir } from 'node:os';
 import { req, startServer, simulateCard, fakeService } from './aides.mjs';
 import { profHeader, daysHeader, SyncHub, profImplausible } from '../lib/sync.mjs';
 import { crc32 } from '../lib/store.mjs';
+import { site } from './harnais.mjs';
 
 let fails = 0, checks = 0;
 // VN_TEST_DETAIL=1 : chaque vérification réussie est aussi affichée (preuves du rapport de correctifs)
-const ok = (c, msg) => { checks++; if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } else if (process.env.VN_TEST_DETAIL) console.log(`  ok : ${msg}`); };
+const ok = (c, msg) => { checks++; site(); if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } else if (process.env.VN_TEST_DETAIL) console.log(`  ok : ${msg}`); };
 const tmp = mkdtempSync(join(tmpdir(), 'vn-securite-'));
 const servers = [];
 const start = async (name, env) => { const s = await startServer({ data: join(tmp, name), env }); servers.push(s); return s; };

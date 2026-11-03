@@ -12,10 +12,11 @@ import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync, readFileSync 
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { NightBench, parseBenchReport } from '../lib/bench.mjs';
+import { site } from './harnais.mjs';
 
 let fails = 0, checks = 0;
 // VN_TEST_DETAIL=1 : chaque vérification réussie est aussi affichée (preuves du rapport de correctifs)
-const ok = (c, msg) => { checks++; if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } else if (process.env.VN_TEST_DETAIL) console.log(`  ok : ${msg}`); };
+const ok = (c, msg) => { checks++; site(); if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } else if (process.env.VN_TEST_DETAIL) console.log(`  ok : ${msg}`); };
 const tmp = mkdtempSync(join(tmpdir(), 'vn-banc-'));
 
 try {

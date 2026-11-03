@@ -6,9 +6,10 @@
 //      même règle pour le résumé par jour (dailySummary, depFull).
 // node online/test/series.test.mjs
 import { luxParts, dayOf, aggregate, dailySummary, SLOT_S } from '../public/vn-series.js';
+import { site } from './harnais.mjs';
 
 let fails = 0, checks = 0;
-const ok = (c, msg) => { checks++; if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } else if (process.env.VN_TEST_DETAIL) console.log(`  ok : ${msg}`); };
+const ok = (c, msg) => { checks++; site(); if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } else if (process.env.VN_TEST_DETAIL) console.log(`  ok : ${msg}`); };
 const iso = (t) => new Date(t * 1000).toISOString().slice(0, 16);
 const ST = [['1', 'Gare', 20, 49.6, 6.13]];
 // tranches de 5 min de `from` (inclus) à `to` (exclu), epoch UTC

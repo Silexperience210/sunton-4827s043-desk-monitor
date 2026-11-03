@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { tmpdir, availableParallelism } from 'node:os';
 import { spawn } from 'node:child_process';
 import { exigerBinaires } from './binaires.mjs';
-import { decompte, copieOnline } from './harnais.mjs';
+import { decompte, copieOnline, site } from './harnais.mjs';
 
 exigerBinaires();
 
@@ -52,10 +52,13 @@ const MUTATIONS = [
     from: 'if (crossOrigin(req)) return', to: 'if (false) return', tests: ['securite.test.mjs'] },
   { id: 'plausible', what: 'B2 : profil ou résumés forgés adoptés (aucun contrôle de vraisemblance)', file: 'server.mjs',
     from: 'const implausible = name === \'vn_prof.bin\' ? profImplausible(body, nowS()) : daysImplausible(body, nowS());', to: 'const implausible = null;', tests: ['securite.test.mjs'] },
+  // revue du plancher (03/11) : un ok( écrit qui ne tourne plus doit faire échouer npm test, même à total égal
+  { id: 'sites', what: 'ok( jamais exécutés tolérés par npm test', file: 'test/harnais.mjs',
+    from: 'if (!manquent.length) return null;', to: 'return null;', tests: ['harnais.test.mjs'] },
 ];
 
 let fails = 0, checks = 0;
-const ok = (c, msg) => { checks++; console.log(`  ${c ? 'ok   ' : 'ÉCHEC'} ${msg}`); if (!c) fails++; };
+const ok = (c, msg) => { checks++; site(); console.log(`  ${c ? 'ok   ' : 'ÉCHEC'} ${msg}`); if (!c) fails++; };
 const only = process.argv.slice(2);
 const chosen = only.length ? MUTATIONS.filter((m) => only.includes(m.id)) : MUTATIONS;
 const work = mkdtempSync(join(tmpdir(), 'vn-mutations-'));
@@ -79,7 +82,7 @@ async function pool(jobs, width) {
   }));
   return res;
 }
-const firstFail = (out) => (out.match(/ÉCHEC[^\n]*/) || [''])[0].slice(0, 160);
+const firstFail = (out) => (out.match(/^ *ÉCHEC[^\n]*/m) || [''])[0].trim().slice(0, 160);
 
 console.log(`Mutations de la revue (${chosen.length}), chacune sur sa copie de online/`);
 const temoins = [...new Set(chosen.flatMap((m) => m.tests))];

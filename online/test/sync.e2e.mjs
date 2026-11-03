@@ -16,13 +16,14 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEngine, FEED } from '../public/vn-engine.js';
 import { exigerBinaires, BINAIRES } from './binaires.mjs';
+import { site } from './harnais.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..', '..');
 const D = join(ROOT, 'docs', 'donnees');
 const SIM = BINAIRES.sync_sim;
 let fails = 0, checks = 0;
-const ok = (c, msg) => { checks++; console.log(`  ${c ? 'ok   ' : 'ÉCHEC'} ${msg}`); if (!c) fails++; };
+const ok = (c, msg) => { checks++; site(); console.log(`  ${c ? 'ok   ' : 'ÉCHEC'} ${msg}`); if (!c) fails++; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 exigerBinaires(['sync_sim']);
 

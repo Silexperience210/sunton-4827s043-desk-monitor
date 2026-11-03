@@ -11,13 +11,14 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEngine, FEED, ING } from '../public/vn-engine.js';
+import { site } from './harnais.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..', '..');
 const D = join(ROOT, 'docs', 'donnees');
 const PUB = join(HERE, '..', 'public');
 let fails = 0, checks = 0;
-const ok = (c, msg) => { checks++; if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } };
+const ok = (c, msg) => { checks++; site(); if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } };
 const quiet = { onLog: () => {} };
 
 // ── Parc simulé (graine fixe) ──

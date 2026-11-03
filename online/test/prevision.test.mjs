@@ -13,9 +13,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { History } from '../lib/history.mjs';
 import { ForecastLog } from '../lib/forecast.mjs';
+import { site } from './harnais.mjs';
 
 let fails = 0, checks = 0;
-const ok = (c, msg) => { checks++; if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } else if (process.env.VN_TEST_DETAIL) console.log(`  ok : ${msg}`); };
+const ok = (c, msg) => { checks++; site(); if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } else if (process.env.VN_TEST_DETAIL) console.log(`  ok : ${msg}`); };
 const tmp = mkdtempSync(join(tmpdir(), 'vn-prevision-'));
 let dirN = 0;
 const fresh = () => join(tmp, `d${++dirN}`);

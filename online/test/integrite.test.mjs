@@ -35,10 +35,11 @@ import { History, dayOf, importArchive } from '../lib/history.mjs';
 import { loadEngine } from '../public/vn-engine.js';
 import * as store from '../lib/store.mjs';     // espace de noms : le test tourne (et échoue) sur un code qui n'a pas encore ces fonctions
 import { req, startServer, simulateCard, fakeGbfs, sleep, CORE } from './aides.mjs';
+import { site } from './harnais.mjs';
 
 let fails = 0, checks = 0;
 // VN_TEST_DETAIL=1 : chaque vérification réussie est aussi affichée (preuves du rapport de correctifs)
-const ok = (c, msg) => { checks++; if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } else if (process.env.VN_TEST_DETAIL) console.log(`  ok : ${msg}`); };
+const ok = (c, msg) => { checks++; site(); if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } else if (process.env.VN_TEST_DETAIL) console.log(`  ok : ${msg}`); };
 const tmp = mkdtempSync(join(tmpdir(), 'vn-integrite-'));
 let dirN = 0;
 const fresh = () => join(tmp, `d${++dirN}`);

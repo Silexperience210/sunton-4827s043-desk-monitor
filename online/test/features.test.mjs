@@ -28,6 +28,7 @@ import { NightBench, parseBenchReport } from '../lib/bench.mjs';
 import { luxParts } from '../lib/store.mjs';
 import { packRecords, unpackRecords, aggregate } from '../public/vn-series.js';
 import { exigerBinaires, BINAIRES } from './binaires.mjs';
+import { site } from './harnais.mjs';
 
 exigerBinaires(['bench_prevision', 'sync_sim']);
 
@@ -36,7 +37,7 @@ const ROOT = join(HERE, '..', '..');
 const D = join(ROOT, 'docs', 'donnees');
 const PUB = join(HERE, '..', 'public');
 let fails = 0, checks = 0;
-const ok = (c, msg) => { checks++; if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } };
+const ok = (c, msg) => { checks++; site(); if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } };
 const quiet = { onLog: () => {} };
 const tmp = mkdtempSync(join(tmpdir(), 'vn-features-'));
 

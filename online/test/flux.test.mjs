@@ -11,9 +11,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { req, startServer, fakeGbfs, fakeService, sleep } from './aides.mjs';
+import { site } from './harnais.mjs';
 
 let fails = 0, checks = 0;
-const ok = (c, msg) => { checks++; if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } else if (process.env.VN_TEST_DETAIL) console.log(`  ok : ${msg}`); };
+const ok = (c, msg) => { checks++; site(); if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } else if (process.env.VN_TEST_DETAIL) console.log(`  ok : ${msg}`); };
 const tmp = mkdtempSync(join(tmpdir(), 'vn-flux-'));
 let dirN = 0;
 const fresh = () => join(tmp, `d${++dirN}`);
