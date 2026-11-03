@@ -203,14 +203,22 @@ try {
     const r = await up('vn_prof.bin', body);
     ok(r.json?.adopted === false && why.test(r.json?.why || ''), `profil forgé (${what}) : ${r.status} ${JSON.stringify(r.json)}`);
   }
-  // /vn_prof.bin version 5 (feat/modele-v2, 1.4.0) = version 4 + FcLearn (13 520 octets) en fin de fichier : ce que le
-  // contrôle lit est au même endroit. Refusée comme « inconnue », toute carte 1.4.0 le serait après la fusion.
-  const v5 = (b) => { const x = Buffer.concat([b, Buffer.alloc(13520)]); x.writeUInt16LE(5, 4); return x; };
-  const w5 = profImplausible(v5(P0), now), f5 = profImplausible(v5(forged[0][1]), now);
-  ok(w5 === null, `profil v5 (v4 + 13 520 octets) légitime : ${w5 || 'plausible'}`);
+  // /vn_prof.bin a changé DEUX fois pendant la 1.4.0 : la version 5 (feat/modele-v2) ajoute FcLearn (13 520 o)
+  // en fin de fichier, la version 6 ajoute FcSt (752 o par station, un couple de coefficients chacune). Le
+  // contrôle lit en-tête, cellules et cellN aux mêmes offsets dans les trois cas ; il vérifie aussi la taille.
+  // Le profil de référence P0 est celui que le serveur produit lui-même : il est donc en v6 depuis la 1.4.0,
+  // et une v5 s'en obtient en retirant le bloc FcSt — non en rajoutant FcLearn à une base qui le porte déjà.
+  const hP = profHeader(P0), fcst = 752 * hP.nSt;
+  const v5 = Buffer.from(P0.subarray(0, P0.length - fcst)); v5.writeUInt16LE(5, 4);
+  const f5b = Buffer.from(forged[0][1].subarray(0, forged[0][1].length - fcst)); f5b.writeUInt16LE(5, 4);
+  const w5 = profImplausible(v5, now), f5 = profImplausible(f5b, now);
+  ok(w5 === null, `profil v5 (v6 moins le bloc FcSt) légitime : ${w5 || 'plausible'}`);
   ok(/tranches/.test(f5 || ''), `profil v5 forgé (4 000 000 000 relevés) : ${f5}`);
-  const v6 = Buffer.from(P0); v6.writeUInt16LE(6, 4);
-  ok(/version 6 inconnue/.test(profImplausible(v6, now) || ''), `version 6 : ${profImplausible(v6, now)}`);
+  ok(profImplausible(P0, now) === null, `profil v6 (celui des cartes 1.4.0) légitime : ${profImplausible(P0, now) || 'plausible'}`);
+  const v6court = Buffer.from(P0.subarray(0, P0.length - fcst)); v6court.writeUInt16LE(6, 4);
+  ok(/taille/.test(profImplausible(v6court, now) || ''), `profil v6 amputé du bloc FcSt : ${profImplausible(v6court, now)}`);
+  const v7 = Buffer.from(P0); v7.writeUInt16LE(7, 4);
+  ok(/version 7 inconnue/.test(profImplausible(v7, now) || ''), `version inconnue (7) : ${profImplausible(v7, now)}`);
   const man = await req(s3.port, { path: '/sync/manifest', headers: auth });
   ok(man.json?.prof?.samples === N0, `manifeste après les envois forgés : ${man.json?.prof?.samples} relevés (le serveur garde ses ${N0})`);
   ok(!existsSync(join(tmp, 'b2', 'vn_prof.bin.avant-adoption')), 'aucune adoption : aucune copie');

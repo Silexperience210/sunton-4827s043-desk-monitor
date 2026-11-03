@@ -43,10 +43,17 @@ const iso = (t) => new Date(t * 1000).toISOString().slice(0, 16).replace('T', ' 
 export function profImplausible(b, now) {
   const h = profHeader(b);
   if (!h || h.magic !== PROF_MAGIC) return 'en-tête illisible';
-  if (h.ver < 1 || h.ver > 5) return `version ${h.ver} inconnue du contrôle de plausibilité`;
+  if (h.ver < 1 || h.ver > 6) return `version ${h.ver} inconnue du contrôle de plausibilité`;
   const cell = h.ver >= 3 ? 4 : 3, nMask = h.ver >= 3 ? 0x1f : 0xff;       // ProfCell : n sur 5 bits depuis la v3
   const cellsAt = 40 + h.nSt * 8, cellNAt = cellsAt + h.nSt * DAYQ * cell;
   if (b.length < cellNAt + DAYQ) return 'fichier trop court';
+  // Taille exacte des versions 5 et 6, miroir de Model::profFileOk : une version 6 amputée de ses couples par
+  // station (FcSt, 752 o × nSt) passerait sinon le minimum ci-dessus. La version 6 ajoute FcSt après FcLearn ;
+  // l'en-tête, les cellules et cellN restent aux mêmes offsets, donc les règles ci-dessous lisent juste.
+  if (h.ver >= 5) {
+    const need = 40 + h.nSt * 8 + h.nSt * DAYQ * cell + DAYQ + 192 + 32 + 8 * h.nSt + 13520 + (h.ver >= 6 ? 752 * h.nSt : 0);
+    if (b.length !== need) return `taille ${b.length} octets inattendue pour la version ${h.ver} (${need} attendus)`;
+  }
   if (h.savedAt > now + 600) return `enregistré dans le futur (${iso(h.savedAt)} UTC)`;
   if (!h.learnSamples) return null;
   if (h.learnSince < LEARN_EPOCH || h.learnSince > h.savedAt) return `début d'apprentissage impossible (${iso(h.learnSince)} UTC)`;

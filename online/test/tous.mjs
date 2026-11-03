@@ -11,11 +11,12 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { exigerBinaires } from './binaires.mjs';
+import { exigerBinaires, exigerMoteurs } from './binaires.mjs';
 import { decompte, sousPlancher, sitesNonExecutes } from './harnais.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 exigerBinaires();
+exigerMoteurs();
 
 const tous = readdirSync(HERE).filter((f) => /\.(test|e2e)\.mjs$/.test(f)).sort();
 const only = process.argv.slice(2);
