@@ -1,0 +1,16 @@
+# Contexte = racine du dépôt : n'envoyer que ce que l'image utilise
+*
+!include/
+!src/
+!sim/
+!docs/donnees/
+!online/package.json
+!online/server.mjs
+!online/lib/
+!online/public/
+sim/build/
+sim/sim
+sim/test_core
+sim/bench_prevision
+sim/dump_sim
+sim/sync_sim

@@ -1,6 +1,7 @@
 // ── Sheets : transferts suggérés, configuration Wi-Fi ────────────────
 #include "ui_internal.h"
 #include "../net/net.h"
+#include "../core/sync.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -255,6 +256,83 @@ void openWifi() {
   net::requestScan();
   if (s_wTimer) lv_timer_del(s_wTimer);
   s_wTimer = lv_timer_create(scanPoll, 300, nullptr);
+}
+
+// ── Serveur en ligne : adresse ───────────────────────────────────────
+// Une ligne de texte et le clavier, comme pour le mot de passe Wi-Fi. L'adresse est normalisée
+// (« umbrel.local:8790 » → « http://umbrel.local:8790 ») et enregistrée dans /vn_sync.cfg ; elle ne
+// sert qu'à la synchro (core/sync.h), jamais aux flux Vel'OH!.
+static lv_obj_t * s_uTa, * s_uKb;
+
+static void urlDone() {
+  char u[128];
+  const char * in = s_uTa ? lv_textarea_get_text(s_uTa) : "";
+  bool empty = true;
+  for (const char * p = in; *p; p++) if (*p != ' ') empty = false;
+  if (empty || !strcmp(in, "http://")) {
+    vn::g_sync.url[0] = 0;
+    vn::syncCfgSave();
+    sheetClose();                                // emporte le clavier (voir doConnect)
+    toast("Synchro d\xC3\xA9sactiv\xC3\xA9" "e", "Aucun serveur en ligne", T_NEUTRAL, &ic_globe_16);
+    return;
+  }
+  if (!vn::syncNormalizeUrl(in, u, sizeof(u))) {
+    toast("Adresse refus\xC3\xA9" "e", "http://adresse:port attendu", T_WARN, &ic_globe_16);
+    return;
+  }
+  snprintf(vn::g_sync.url, sizeof(vn::g_sync.url), "%s", u);
+  bool ok = vn::syncCfgSave();
+  sheetClose();
+  toast(ok ? "Serveur enregistr\xC3\xA9" : "\xC3\x89" "criture impossible", u, ok ? T_GOOD : T_BAD, &ic_globe_16);
+}
+
+void openSyncUrl() {
+  lv_obj_t * body = sheetOpen("Serveur en ligne");
+  const lv_coord_t BW = CONTENT_W - 8 - 24;
+  s_uKb = nullptr;
+  lv_obj_t * sub = label(body, &vn_inter_12, HX_TEXT2,
+    "Adresse du serveur VelohNav Ops en ligne (online/README.md), par exemple http://umbrel.local:8790. Vide = aucune synchro.");
+  lv_label_set_long_mode(sub, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(sub, BW - 30);
+  s_uTa = lv_textarea_create(body);
+  lv_textarea_set_one_line(s_uTa, true);
+  lv_textarea_set_max_length(s_uTa, sizeof(vn::g_sync.url) - 1);
+  lv_textarea_set_placeholder_text(s_uTa, "http://umbrel.local:8790");
+  lv_textarea_set_text(s_uTa, vn::g_sync.url[0] ? vn::g_sync.url : "http://");
+  lv_obj_set_width(s_uTa, BW);
+  lv_obj_set_style_bg_color(s_uTa, C(HX_S2), 0);
+  lv_obj_set_style_border_color(s_uTa, C(HX_ACCENT), 0);
+  lv_obj_set_style_border_opa(s_uTa, 180, 0);
+  lv_obj_set_style_text_color(s_uTa, C(HX_TEXT), 0);
+  lv_obj_set_style_text_font(s_uTa, &vn_inter_13s, 0);
+  lv_obj_set_style_radius(s_uTa, 8, 0);
+  lv_obj_add_state(s_uTa, LV_STATE_FOCUSED);
+  lv_obj_t * sheet = lv_obj_get_parent(body);
+  s_uKb = lv_keyboard_create(sheet);
+  lv_obj_set_size(s_uKb, CONTENT_W - 10, 126);
+  lv_obj_align(s_uKb, LV_ALIGN_BOTTOM_MID, 0, -(250 - (272 - 38)));
+  lv_obj_add_event_cb(s_uKb, [](lv_event_t *) { s_uKb = nullptr; }, LV_EVENT_DELETE, nullptr);
+  lv_obj_set_style_bg_color(s_uKb, C(HX_S1), 0);
+  lv_obj_set_style_bg_opa(s_uKb, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_color(s_uKb, lv_color_white(), 0);
+  lv_obj_set_style_border_opa(s_uKb, OPA_BORDER_STRONG, 0);
+  lv_obj_set_style_border_side(s_uKb, LV_BORDER_SIDE_TOP, 0);
+  lv_obj_set_style_pad_all(s_uKb, 4, 0);
+  lv_obj_set_style_pad_gap(s_uKb, 4, 0);
+  lv_obj_set_style_text_font(s_uKb, &lv_font_montserrat_14, LV_PART_ITEMS);
+  lv_obj_set_style_bg_color(s_uKb, C(HX_S3), LV_PART_ITEMS);
+  lv_obj_set_style_text_color(s_uKb, C(HX_TEXT), LV_PART_ITEMS);
+  lv_obj_set_style_radius(s_uKb, 6, LV_PART_ITEMS);
+  lv_obj_set_style_border_width(s_uKb, 0, LV_PART_ITEMS);
+  lv_obj_set_style_bg_color(s_uKb, C(HX_ACCENT), LV_PART_ITEMS | LV_STATE_PRESSED);
+  lv_obj_set_style_bg_color(s_uKb, C(HX_S2), LV_PART_ITEMS | LV_STATE_CHECKED);
+  lv_keyboard_set_mode(s_uKb, LV_KEYBOARD_MODE_TEXT_LOWER);
+  lv_keyboard_set_textarea(s_uKb, s_uTa);
+  lv_obj_add_event_cb(s_uKb, [](lv_event_t * e) {
+    lv_event_code_t c = lv_event_get_code(e);
+    if (c == LV_EVENT_READY) urlDone();
+    else if (c == LV_EVENT_CANCEL) sheetClose();
+  }, LV_EVENT_ALL, nullptr);
 }
 
 } // namespace ui

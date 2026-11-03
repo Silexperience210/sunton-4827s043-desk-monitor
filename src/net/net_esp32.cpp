@@ -7,6 +7,7 @@
 #include "../core/gbfs.h"
 #include "../core/weather.h"
 #include "../core/wifiscan.h"
+#include "../core/sync.h"
 #include "../platform/platform.h"
 #include <Arduino.h>
 #include <WiFi.h>
@@ -61,6 +62,8 @@ Status status() {
 }
 
 void requestRefresh() { s_refreshReq = true; }
+static volatile bool s_syncReq = false;
+void requestSync() { s_syncReq = true; }
 void requestScan() { s_scanCount = -2; s_scanReq = true; }
 bool scanDone(int & count) { int c = s_scanCount; if (c == -2) return false; count = c; return true; }
 void scanResults(vn::WifiList & out) {
@@ -231,6 +234,106 @@ static void saveHistory() {
   }
 }
 
+// ── Synchronisation avec le serveur en ligne (core/sync.h) ───────────
+// Transport HTTP de la synchro : HTTP simple sur le réseau local (Umbrel, Raspberry Pi…), HTTPS sans
+// vérification de certificat derrière un tunnel (même choix que pour les flux publics). Les fichiers
+// arrivent en PSRAM, sont vérifiés (taille, CRC32, en-tête) et seulement ensuite écrits (syncRun).
+static char s_devId[24] = "";
+static vn::SyncStatus s_sync = {};
+
+static void syncPublish() {
+  portENTER_CRITICAL(&s_mux);
+  memcpy(&s_status.sync, &s_sync, sizeof(s_sync));
+  portEXIT_CRITICAL(&s_mux);
+}
+
+static void syncHeaders(HTTPClient & http, const vn::SyncIo * io) {
+  http.addHeader("X-VN-Device", s_devId);
+  http.addHeader("X-VN-Fw", VN_VERSION);
+  if (io && io->localHdr[0]) http.addHeader("X-VN-Local", io->localHdr);
+  if (vn::g_sync.token[0]) { String a = "Bearer "; a += vn::g_sync.token; http.addHeader("Authorization", a); }
+}
+
+static int syncGet(void * ctx, const char * url, uint8_t * buf, size_t cap, size_t & len) {
+  len = 0;
+  WiFiClient plain;
+  WiFiClientSecure tls;
+  tls.setInsecure();
+  tls.setHandshakeTimeout(15);
+  const bool https = !strncmp(url, "https://", 8);
+  HTTPClient http;
+  http.useHTTP10(true);
+  http.setReuse(false);
+  http.setConnectTimeout(8000);
+  http.setTimeout(15000);
+  http.setUserAgent("VelohNavOps/" VN_VERSION " (ESP32-S3)");
+  if (!(https ? http.begin(tls, url) : http.begin(plain, url))) return vn::ING_E_BEGIN;
+  syncHeaders(http, (const vn::SyncIo *)ctx);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) { http.end(); return code; }
+  int total = http.getSize();
+  WiFiClient * st = http.getStreamPtr();
+  uint32_t last = millis();
+  while (len < cap) {
+    size_t av = st->available();
+    if (av) {
+      size_t want = av < cap - len ? av : cap - len;
+      len += st->readBytes(buf + len, want);
+      last = millis();
+      if (total > 0 && len >= (size_t)total) break;
+    } else {
+      if (!st->connected()) break;
+      if (millis() - last > 10000) break;
+      delay(4);
+    }
+  }
+  http.end();
+  return (total > 0 && len < (size_t)total) ? vn::ING_E_TRUNC : 200;
+}
+
+static int syncPost(void * ctx, const char * url, const uint8_t * buf, size_t len, uint32_t crc) {
+  WiFiClient plain;
+  WiFiClientSecure tls;
+  tls.setInsecure();
+  tls.setHandshakeTimeout(15);
+  const bool https = !strncmp(url, "https://", 8);
+  HTTPClient http;
+  http.setReuse(false);
+  http.setConnectTimeout(8000);
+  http.setTimeout(30000);
+  http.setUserAgent("VelohNavOps/" VN_VERSION " (ESP32-S3)");
+  if (!(https ? http.begin(tls, url) : http.begin(plain, url))) return vn::ING_E_BEGIN;
+  syncHeaders(http, (const vn::SyncIo *)ctx);
+  char c[12];
+  snprintf(c, sizeof(c), "%08lX", (unsigned long)crc);
+  http.addHeader("Content-Type", "application/octet-stream");
+  http.addHeader("X-VN-CRC32", c);
+  int code = http.POST((uint8_t *)buf, len);
+  http.end();
+  return code;
+}
+
+// Une synchro complète ; renvoie le nombre de fichiers adoptés (‑1 = serveur injoignable ou absent)
+static int doSync() {
+  if (!vn::g_sync.url[0]) return -1;
+  if (!s_devId[0]) {
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    snprintf(s_devId, sizeof(s_devId), "sunton-%02x%02x%02x", mac[3], mac[4], mac[5]);
+  }
+  s_sync.state = vn::SS_RUNNING;
+  syncPublish();
+  vn::SyncIo io = {};
+  io.ctx = &io;
+  io.get = syncGet;
+  io.post = syncPost;
+  uint32_t t0 = millis();
+  int r = vn::syncRun(io, vn::g_sync.url, plat::now(), vn::g_sync.push, s_sync);
+  syncPublish();
+  plat::logf("[sync] termin\xC3\xA9" "e en %u ms : %s", (unsigned)(millis() - t0), s_sync.text);
+  return r;
+}
+
 // ── Recherche des réseaux ────────────────────────────────────────────
 // Le pilote REFUSE tout balayage pendant qu'une association est en cours
 // (ESP_ERR_WIFI_STATE, « wifi still connecting »), et l'auto-reconnexion du framework
@@ -350,7 +453,7 @@ static void task(void *) {
     plat::logf("[wifi] aucun r\xC3\xA9seau enregistr\xC3\xA9 : rien ne sera r\xC3\xA9" "cup\xC3\xA9r\xC3\xA9");
   }
 
-  bool loaded = false, wasUp = false, timeLogged = false;
+  bool loaded = false, wasUp = false, timeLogged = false, s_bootSyncDone = false;
   uint32_t lastFetch = 0, lastSave = millis(), wifiSince = millis(), lastWait = 0, discSeen = 0, discLogAt = 0;
   uint8_t lastBl = 255;
   for (;;) {
@@ -442,7 +545,14 @@ static void task(void *) {
       plat::logf("[net] heure NTP synchronis\xC3\xA9" "e");
     }
 
-    // Historique / profils : chargés une fois l'heure connue
+    // Historique / profils : chargés une fois l'heure connue. Avant, si un serveur en ligne est réglé, la
+    // carte lui reprend ce qu'il a de meilleur (week-end éteint, coupure) : le chargement relit ensuite
+    // ses fichiers, adoptés ou non, par le chemin habituel (Model::load).
+    if (timeOk && !loaded && up && vn::g_sync.atBoot && vn::g_sync.url[0] && !s_bootSyncDone) {
+      s_bootSyncDone = true;
+      setStage("Synchronisation avec le serveur en ligne\xE2\x80\xA6");
+      doSync();
+    }
     if (timeOk && !loaded) {
       plat::LockGuard g;
       bool any = g_model.load(plat::now());
@@ -462,6 +572,17 @@ static void task(void *) {
       portEXIT_CRITICAL(&s_mux);
       vn::offlineCause(why, sizeof(why), w, s_status.ssid, reason, timeOk, st);
       plat::logf("[net] en attente, aucune r\xC3\xA9" "cup\xC3\xA9ration : %s", why);
+    }
+    // Synchro demandée (écran, port série) : l'état courant est d'abord sauvegardé, pour que la comparaison
+    // et l'envoi portent sur lui ; un fichier adopté se relit par un redémarrage (Model::load au démarrage).
+    if (s_syncReq && up && timeOk && loaded) {
+      s_syncReq = false;
+      saveHistory();
+      lastSave = millis();
+      if (doSync() > 0) {
+        plat::logf("[sync] red\xC3\xA9marrage pour relire l'\xC3\xA9tat adopt\xC3\xA9");
+        plat::restart();
+      }
     }
     if (up && timeOk && loaded) {
       bool due = s_refreshReq || !lastFetch || millis() - lastFetch >= (uint32_t)g_set.refreshSec * 1000;

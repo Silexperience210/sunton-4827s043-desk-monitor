@@ -5,6 +5,7 @@
 #include "../platform/platform.h"
 #include "../config.h"
 #include "../core/ops.h"
+#include "../core/sync.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -16,6 +17,7 @@ namespace ui {
 static lv_obj_t * s_wifiSub, * s_srcSub, * s_srcBadge, * s_refSub, * s_learnSub, * s_learnBar, * s_confSub;
 static lv_obj_t * s_memSub, * s_fsSub, * s_upSub, * s_resetBtn, * s_touchSub;
 static lv_obj_t * s_freshSub, * s_ingSub;
+static lv_obj_t * s_syncUrlSub, * s_syncSub;
 static uint32_t s_resetArmed = 0;
 
 static lv_obj_t * section(lv_obj_t * parent, const char * title) {
@@ -140,6 +142,17 @@ static void refresh() {
   snprintf(b, sizeof(b), "%s \xC2\xB7 %s", hal::touchName(),
            g_set.tcal.valid ? "\xC3\xA9talonnage enregistr\xC3\xA9" : "r\xC3\xA9glage d'usine");
   lv_label_set_text(s_touchSub, b);
+  // Synchro en ligne
+  if (vn::g_sync.url[0]) snprintf(b, sizeof(b), "%s%s", vn::g_sync.url, vn::g_sync.token[0] ? " \xC2\xB7 jeton enregistr\xC3\xA9" : "");
+  else snprintf(b, sizeof(b), "Aucun \xE2\x80\x94 touchez pour saisir l'adresse (http://umbrel.local:8790)");
+  lv_label_set_text(s_syncUrlSub, b);
+  {
+    char line[160];
+    vn::syncStatusLine(ns.sync, t, line, sizeof(line));
+    lv_label_set_text(s_syncSub, line);
+    lv_obj_set_style_text_color(s_syncSub, C(ns.sync.state == vn::SS_FAIL ? HX_WARN : HX_TEXT2), 0);
+  }
+
   plat::SysInfo si;
   plat::sysInfo(si);
   fmtInt(a, sizeof(a), (int)(si.heapFree / 1024));
@@ -205,6 +218,32 @@ static void build(lv_obj_t * root) {
   lv_obj_set_style_bg_opa(r, LV_OPA_COVER, LV_STATE_PRESSED);
   icon(r, &ic_chevron_right_16, HX_TEXT3);
   lv_obj_add_event_cb(r, [](lv_event_t *) { openIngest(); }, LV_EVENT_CLICKED, nullptr);
+
+  // Synchro en ligne (core/sync.h, online/server.mjs)
+  lv_obj_t * s6 = section(sc, "SYNCHRO EN LIGNE");
+  r = srow(s6, &ic_globe_16, "Serveur", "", &s_syncUrlSub, 300);
+  lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_style_bg_color(r, C(HX_S2), LV_STATE_PRESSED);
+  lv_obj_set_style_bg_opa(r, LV_OPA_COVER, LV_STATE_PRESSED);
+  icon(r, &ic_chevron_right_16, HX_TEXT3);
+  lv_obj_add_event_cb(r, [](lv_event_t *) { openSyncUrl(); }, LV_EVENT_CLICKED, nullptr);
+  r = srow(s6, &ic_refresh_16, "Synchroniser", "", &s_syncSub, 210);
+  lv_obj_t * sb = button(r, "Maintenant", &ic_refresh_16, B_SECONDARY, true);
+  lv_obj_add_event_cb(sb, [](lv_event_t *) {
+    if (!vn::g_sync.url[0]) { toast("Aucun serveur", "Saisir son adresse dans \xC2\xAB Serveur \xC2\xBB", T_WARN, &ic_globe_16); return; }
+    net::requestSync();
+    toast("Synchronisation", "La carte red\xC3\xA9marre si elle adopte un fichier", T_ACCENT, &ic_refresh_16);
+  }, LV_EVENT_CLICKED, nullptr);
+  r = srow(s6, &ic_power_16, "Au d\xC3\xA9marrage", "Reprendre l'\xC3\xA9tat du serveur avant de relire l'historique", nullptr, 230);
+  toggle(r, vn::g_sync.atBoot, [](lv_event_t * e) {
+    vn::g_sync.atBoot = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    vn::syncCfgSave();
+  }, nullptr);
+  r = srow(s6, &ic_layers_16, "Partager l'apprentissage", "Envoyer au serveur les profils et les jours mieux connus ici", nullptr, 230);
+  toggle(r, vn::g_sync.push, [](lv_event_t * e) {
+    vn::g_sync.push = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    vn::syncCfgSave();
+  }, nullptr);
 
   // Seuils
   lv_obj_t * s2 = section(sc, "SEUILS D'ALERTE");

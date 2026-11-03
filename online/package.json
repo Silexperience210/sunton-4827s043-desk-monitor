@@ -1,0 +1,14 @@
+{
+  "name": "velohnav-ops-online",
+  "version": "1.3.0",
+  "description": "VelohNav Ops en ligne : le cœur du firmware Sunton relève les flux Vel'OH! 24 h/24, sert le jumeau de l'écran et resynchronise les cartes",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.mjs",
+    "build:engine": "bash engine/build.sh",
+    "test": "node test/replication.test.mjs && node test/sync.e2e.mjs"
+  }
+}

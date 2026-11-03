@@ -34,6 +34,31 @@ courbe 24 h réelle + profil habituel + prévision 2 h, prévisions +15 min / +3
 lecture opérationnelle (« Rupture prévue dans ~25 min », tendance, comportement habituel), action
 conseillée (« Apporter +6 vélos »), confiance du modèle, dernier mouvement, adresse.
 
+## Version en ligne : serveur, jumeau de l'écran, synchro (1.3.0)
+
+Le dossier [`online/`](online/README.md) fait tourner **le même cœur que la carte** (`src/core`,
+compilé en WebAssembly) sur une machine allumée en permanence — Umbrel, Raspberry Pi, NAS — avec
+`docker compose up -d` ou `node online/server.mjs`, sans dépendance :
+
+- **il apprend 24 h/24** : mêmes flux, mêmes périodes, même modèle ; les profils du week-end et les
+  résumés par jour n'ont plus de trous quand les écrans sont éteints ;
+- **le jumeau de l'écran** : l'interface de la carte (`src/ui`, LVGL compilé en WebAssembly) dans un
+  navigateur, interactive, alimentée par le serveur — ses chiffres sont ceux du serveur au bit près ;
+- **les Sunton se resynchronisent au démarrage** (Réglages → Synchro en ligne) : chaque fichier appris
+  (profils, historique 24 h, résumés par jour) est repris du serveur s'il vaut mieux que celui de la
+  carte, vérifié (taille, CRC32, contrôles de `Model::load`) avant d'être écrit ; et une carte plus
+  apprise que le serveur lui envoie ce qu'elle sait ;
+- **l'archive pour le banc** (`bench_prevision --reel`) se constitue toute seule, sans câble série ;
+- **historique long** : chaque tranche de 5 min gardée sans limite (l'archive existante y est versée au
+  premier démarrage) ; la page trace le réseau ou une station sur 24 h, 7 jours, 4 semaines, 3 mois ;
+- **erreur des prévisions mesurée en continu** : tous les quarts d'heure, ce que l'écran afficherait à
+  +15 min… +4 h est noté, puis comparé au relevé (contre la persistance et le profil seul, règle du banc) ;
+  et **chaque nuit, le banc natif rejoue l'archive** et publie son rapport ;
+- **notifications sur le téléphone** (ntfy) : station vide ou pleine qui dure, flux muet ou figé, Sunton
+  resynchronisé, et un **résumé chaque matin** (la veille, l'erreur de la prévision, l'état du moment).
+
+![Jumeau de l'écran](docs/en-ligne.png)
+
 ## Ce qui est repris de VelohNav
 
 - **Design system v4** à l'identique : jetons de `src/ui/tokens.js` / `ui.css` (noir #07090B, surfaces
@@ -94,8 +119,8 @@ jour après jour (progression visible dans **Réglages → Prédiction**).
 
 | Version | Tactile | Environnement PlatformIO | Binaire |
 |---|---|---|---|
-| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.0.6.bin` |
-| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.0.6.bin` |
+| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.3.0.bin` |
+| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.3.0.bin` |
 | C monté tête en bas | capacitif, rotation 180° | `esp32-4827s043c-180` | — |
 
 Brochage (dans `src/hal/board.h`), recoupé avec deux références indépendantes
@@ -135,8 +160,8 @@ L'étalonnage détecte seul un axe inversé ou des axes échangés et s'enregist
 ### A. Binaire prêt à flasher (le plus simple)
 
 Télécharger le binaire de sa version de carte :
-[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.0.6.bin) ·
-[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.0.6.bin)
+[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.3.0.bin) ·
+[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.3.0.bin)
 
 **Sans rien installer (Chrome ou Edge)** :
 
@@ -152,7 +177,7 @@ En ligne de commande :
 ```bash
 pip install esptool
 esptool.py --chip esp32s3 --baud 460800 erase_flash
-esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.0.6.bin
+esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.3.0.bin
 ```
 
 ### Mise à jour d'une carte déjà en service (1.0.x → 1.1.0)
@@ -160,6 +185,24 @@ esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-
 La 1.1.0 relit sans perte les profils et l'historique d'une 1.0.x, puis les réécrit dans un format plus
 récent (`/vn_prof.bin` v4, `/vn_hist.bin` v2, nouveau `/vn_days.bin`) que **les 1.0.8 et 1.0.9 refusent**.
 Revenir en arrière sans sauvegarde, c'est repartir d'un profil vide. Donc :
+
+> **1.2.9 → 1.3.0 : aucune migration.** Mêmes formats de fichiers ; la 1.3.0 ajoute seulement
+> `/vn_sync.cfg` (adresse du serveur en ligne, en texte), absent tant qu'on ne règle rien.
+
+#### 1.3.0 — synchro en ligne : une carte éteinte le week-end repart avec le week-end appris
+
+Réglages → **Synchro en ligne** (ou en série : `sync url http://<machine>:8790`). Au démarrage, avant de
+relire son historique, la carte demande au serveur (`online/`) son manifeste et décide fichier par
+fichier (`src/core/sync.cpp`) : profils s'il a **strictement plus de relevés**, historique 24 h s'il est
+**plus récent** et encore relisible (< 20 h), résumés par jour s'il en a **plus**. Chaque fichier est
+vérifié — taille, CRC32, puis les contrôles d'en-tête de `Model::load`, factorisés dans
+`Model::profFileOk` / `histFileOk` — **avant** d'être écrit : un téléchargement faux n'efface jamais la
+flash. Avec « Partager l'apprentissage », la carte envoie au serveur ses profils et ses jours quand ils
+valent mieux que les siens (premier amorçage d'un serveur neuf, sans câble). « Maintenant » fait la même
+chose en cours de route et redémarre la carte si un fichier a été adopté. Serveur absent ou injoignable :
+la carte démarre avec ce qu'elle a. Testé sans carte : 39 vérifications dans `test_core`, et
+`online/test/sync.e2e.mjs` fait dialoguer la vraie synchro du firmware (`sim/sync_sim`) avec le vrai
+serveur. La ligne de commande série accepte désormais 160 caractères (au lieu de 24) pour l'adresse.
 
 > **1.1.0 → 1.2.0 : aucune migration.** La 1.2.0 n'ajoute aucun format de fichier (`/vn_hist.bin`
 > reste en v2) : elle se flashe par-dessus et retrouve l'historique, les profils et les résumés tels
@@ -530,7 +573,7 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision dump_sim
-./test_core ../docs/donnees     # 1 080 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 1 119 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2, v3 → v4),
                                  # écart habituel (dispersion apprise, affichée pour information, textes de l'écart),
@@ -539,7 +582,8 @@ make sim test_core bench_prevision dump_sim
                                  # liste Wi-Fi (tri, dédoublonnage, masqués, réessais, suspension de l'association),
                                  # vue Service (résumés par jour, disponibilité, détecteur de récurrent sur un monde
                                  # à vérité connue, /vn_days.bin : migration et fichiers abîmés),
-                                 # vidage série « dump » (CRC32, base64, émetteur, lecteur de commandes)
+                                 # vidage série « dump » (CRC32, base64, émetteur, lecteur de commandes),
+                                 # synchro en ligne (adresse, décision, contrôles, fichiers corrompus, envois)
 ./sim ../docs/donnees /tmp/captures   # scénario tactile, captures, audit des zones tactiles, étalonnage
 ./sim ../docs/donnees /tmp/boot boot              # premier démarrage : sans heure, sans Wi-Fi, sans données
 ./sim ../docs/donnees /tmp/boot2 boot-wifi-ko     # réseau enregistré mais injoignable
@@ -554,6 +598,8 @@ make sim test_core bench_prevision dump_sim
 python3 ../tools/bench_grille.py --config "N12=profil_n=12" --config "N24=" --ref N24 --absorption   # grille de réglages appariés
 ../.venv/bin/python ../tools/test_carte_dump.py   # liaison « dump » simulée sur un pseudo-terminal (38 vérifications)
 python3 ../tools/test_bench_reel.py              # banc --reel sur 9 semaines d'une « carte simulée » (28 vérifications, ~1 min)
+make sync_sim && node ../online/test/sync.e2e.mjs # synchro du firmware contre le vrai serveur en ligne (10 vérifications)
+make bench_prevision && node ../online/test/features.test.mjs   # historique long, note des prévisions, notifications, banc de nuit (82 vérifications)
 ```
 
 ### Données réelles de la carte : vidage série et banc `--reel`
@@ -652,13 +698,15 @@ src/
   serial_cmd.cpp           commandes série (« dump » : données apprises vers le PC, lecture seule)
   boot.cpp                 écran de démarrage, cause du dernier redémarrage, mode sans échec
   config.h                 URLs, périodes, tailles d'historique
-  core/                    modèle : GBFS, météo, historique, profils, prévisions, alertes, transferts
+  core/                    modèle : GBFS, météo, historique, profils, prévisions, alertes, transferts,
+                           synchro avec le serveur en ligne (sync.cpp)
   ui/                      coquille (en-tête, rail, sheet, toasts), écrans, fiche station, Wi-Fi
   ui/widgets/              graphique sur mesure (aire en fondu, pointillés), carte du réseau
   ui/fonts, ui/icons       polices et icônes générées (tools/gen_fonts.sh, tools/gen_icons.mjs)
   hal/                     dalle RGB (esp_lcd), GT911, XPT2046, étalonnage tactile, brochage
   net/                     tâche réseau (cœur 0) : Wi-Fi, NTP, flux, sauvegardes
   platform/                abstraction ESP32 / simulateur
+online/                    version en ligne : serveur Node, jumeau de l'écran, moteurs WebAssembly (online/README.md)
 sim/                       simulateur headless + tests
 tools/                     générateurs (polices, icônes, tracé du tram, planche d'aperçu), test QEMU,
                            vidage de la carte (carte_dump.py) et ses tests (test_carte_dump.py, test_bench_reel.py),

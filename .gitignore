@@ -7,6 +7,11 @@ sim/sim
 sim/test_core
 sim/bench_prevision
 sim/dump_sim
+sim/sync_sim
+online/data/
+online/engine/.toolchain/
+online/engine/build/
+online/node_modules/
 sim_fs/
 .deps
 .deps/

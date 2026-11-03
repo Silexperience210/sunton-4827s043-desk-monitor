@@ -59,10 +59,17 @@ DUMP_OBJ := $(patsubst ../%.cpp,$(BUILD)/app/%.o,$(filter ../%,$(DUMP_CXX))) \
 dump_sim: $(DUMP_OBJ)
 	$(CXX) -o $@ $^ -lm
 
+# Carte simulée pour la synchro en ligne (online/test/sync.e2e.mjs) : même cœur, transport curl
+SYNC_CXX := $(wildcard ../src/core/*.cpp) platform_sim.cpp sync_sim.cpp
+SYNC_OBJ := $(patsubst ../%.cpp,$(BUILD)/app/%.o,$(filter ../%,$(SYNC_CXX))) \
+            $(patsubst %.cpp,$(BUILD)/sim/%.o,$(filter-out ../%,$(SYNC_CXX)))
+sync_sim: $(SYNC_OBJ)
+	$(CXX) -o $@ $^ -lm
+
 # dépendances d'en-têtes (-MMD) : un .h modifié recompile ce qui l'inclut
--include $(APP_OBJ:.o=.d) $(TEST_OBJ:.o=.d) $(BENCH_OBJ:.o=.d) $(DUMP_OBJ:.o=.d)
+-include $(APP_OBJ:.o=.d) $(TEST_OBJ:.o=.d) $(BENCH_OBJ:.o=.d) $(DUMP_OBJ:.o=.d) $(SYNC_OBJ:.o=.d)
 
 clean:
-	rm -rf $(BUILD) sim test_core bench_prevision dump_sim
+	rm -rf $(BUILD) sim test_core bench_prevision dump_sim sync_sim
 
 .PHONY: clean

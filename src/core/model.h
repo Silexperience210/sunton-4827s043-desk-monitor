@@ -299,6 +299,12 @@ struct Model {
   bool serialize(Blob & out) const;
   static bool writeSaved(Blob & b);
   bool load(int64_t now);
+  // Contrôles d'en-tête et de taille appliqués par load() à /vn_prof.bin et /vn_hist.bin (format connu,
+  // taille exacte ; pour l'historique, sauvegardé depuis moins de 20 h à l'instant now). La synchro en
+  // ligne (core/sync) les applique AVANT d'écrire un fichier reçu : un fichier que load() refuserait
+  // n'efface jamais celui qui est en flash.
+  static bool profFileOk(const uint8_t * b, size_t len);
+  static bool histFileOk(const uint8_t * b, size_t len, int64_t now);
   void resetHistory();
 };
 
