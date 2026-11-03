@@ -3125,8 +3125,9 @@ static void testModele2() {
   }
   settingsDefaults(g_set);
   CHECK(memcmp(u1.fcL, u2.fcL, sizeof(FcLearn)) == 0 && memcmp(u1.prof, u2.prof, sizeof(ProfCell) * 6 * 672) == 0
-        && memcmp(u1.fcA, u2.fcA, sizeof(u1.fcA)) == 0 && u1.fcL->w[0][2] > 0,
-        "modèle 2 : seuils de l'utilisateur différents → apprentissage et profils identiques au bit près");
+        && memcmp(u1.fcA, u2.fcA, sizeof(u1.fcA)) == 0 && memcmp(u1.fcS, u2.fcS, 6 * sizeof(FcSt)) == 0 && u1.fcL->w[0][2] > 0
+        && u1.fcS[0].w[0][0] > 0,
+        "modèle 2 : seuils de l'utilisateur différents → apprentissage (classe et stations) et profils identiques au bit près");
   // 7. Déterminisme : le même monde rejoué → les mêmes octets (apprentissage, prévisions)
   static Model d1;
   CHECK(d1.init(), "modèle 2 : init déterminisme");
@@ -3135,7 +3136,8 @@ static void testModele2() {
   m2Run(d1, T0, 10, wd, ir);
   bool sameFc = true;
   for (int i = 0; i < 6; i++) sameFc &= memcmp(d1.st[i].fc, u1.st[i].fc, sizeof(d1.st[i].fc)) == 0;
-  CHECK(memcmp(d1.fcL, u1.fcL, sizeof(FcLearn)) == 0 && sameFc, "modèle 2 : même monde rejoué → mêmes octets");
+  CHECK(memcmp(d1.fcL, u1.fcL, sizeof(FcLearn)) == 0 && memcmp(d1.fcS, u1.fcS, 6 * sizeof(FcSt)) == 0 && sameFc,
+        "modèle 2 : même monde rejoué → mêmes octets (classe, stations, prévisions)");
 
   // 8. Sauvegarde : apprentissage relu à l'identique ; lots en attente perdus (au plus 4 h), apprentissage repris
   sim::g_fsDir = "/tmp/vn_test_modele2";
