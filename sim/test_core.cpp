@@ -1322,25 +1322,43 @@ static void testDispersionInfo() {
   }
   const int64_t ti = tq + 3600 - (tq + 3600) % 300;
 
-  // 5. Persistance v5 : aller-retour exact (moyenne, n, dispersion, compte, date de début, coefficients appris)
+  // 5. Persistance v6 : aller-retour exact (moyenne, n, dispersion, compte, date de début, coefficients appris,
+  //    couples par station)
   sim::g_fsDir = "/tmp/vn_test_calm";
   if (system("rm -rf /tmp/vn_test_calm") != 0) {}
   Model::Blob b;
-  CHECK(m.serialize(b), "sérialisation profils v5");
-  std::vector<uint8_t> v3(b.prof, b.prof + b.profLen);          // (nom historique : le fichier courant, v5)
+  CHECK(m.serialize(b), "sérialisation profils v6");
+  std::vector<uint8_t> v3(b.prof, b.prof + b.profLen);          // (nom historique : le fichier courant, v6)
   Model::writeSaved(b);
   uint16_t ver; memcpy(&ver, v3.data() + 4, 2);
   const size_t v4Len = 40 + 3 * 8 + 3 * 672 * 4 + 672 + sizeof(WxClimate) + sizeof(WxStats) + 3 * 8;
-  CHECK(ver == 5 && v3.size() == v4Len + sizeof(FcLearn) && sizeof(FcLearn) == 13520,
-        "fichier v5 : version %d, %zu octets (v4 + %zu octets d'apprentissage des coefficients)", ver, v3.size(), sizeof(FcLearn));
+  const size_t v5Len = v4Len + sizeof(FcLearn);
+  CHECK(ver == 6 && v3.size() == v5Len + 3 * sizeof(FcSt) && sizeof(FcLearn) == 13520 && sizeof(FcSt) == 752,
+        "fichier v6 : version %d, %zu octets (v4 + %zu octets d'apprentissage des coefficients + %zu par station)", ver, v3.size(),
+        sizeof(FcLearn), sizeof(FcSt));
   const int64_t tl = ti + 4500;
   static Model r;
   r.init(); r.load(tl);
   CHECK(memcmp(r.prof, m.prof, sizeof(ProfCell) * 3 * 672) == 0 && memcmp(r.dispSince, m.dispSince, 3 * 8) == 0
         && memcmp(&r.wxG, &m.wxG, sizeof(WxStats)) == 0,
-        "v5 relu : cellules, dates de dispersion et apprentissage météo identiques");
+        "v6 relu : cellules, dates de dispersion et apprentissage météo identiques");
   CHECK(memcmp(r.fcL, m.fcL, sizeof(FcLearn)) == 0 && memcmp(r.fcA, m.fcA, sizeof(r.fcA)) == 0 && memcmp(r.fcB, m.fcB, sizeof(r.fcB)) == 0
-        && m.fcL->w[0][0] > 0, "v5 relu : apprentissage des coefficients et couples appliqués identiques (%.0f prévisions jugées à +15, jours ouvrés)", m.fcL->w[0][0]);
+        && memcmp(r.fcS, m.fcS, 3 * sizeof(FcSt)) == 0 && m.fcL->w[0][0] > 0,
+        "v6 relu : apprentissage des coefficients, des stations et couples appliqués identiques (%.0f prévisions jugées à +15, jours ouvrés)", m.fcL->w[0][0]);
+  // 5'. v5 (commit 755d7c1, jamais publiée) : apprentissage de la classe gardé, pas de couple par station
+  {
+    std::vector<uint8_t> f5(v3.begin(), v3.begin() + v5Len);
+    uint16_t v5v = 5; memcpy(f5.data() + 4, &v5v, 2);
+    plat::fsWrite("/vn_prof.bin", f5.data(), f5.size());
+    static Model r5b;
+    r5b = Model(); r5b.init();
+    bool none = true;
+    for (int i = 0; i < 3; i++) for (int c = 0; c < FC_NC; c++) for (int k = 0; k < FC_NSH; k++) none &= r5b.fcS[i].sel[c][k] == FC_SEL_NONE && r5b.fcS[i].w[c][k] == 0;
+    CHECK(r5b.load(tl) && memcmp(r5b.prof, m.prof, sizeof(ProfCell) * 3 * 672) == 0 && memcmp(r5b.fcL, m.fcL, sizeof(FcLearn)) == 0
+          && memcmp(r5b.fcA, m.fcA, sizeof(r5b.fcA)) == 0 && none,
+          "v5 relu : profils et apprentissage de la classe identiques, couples par station à apprendre (ceux de la classe)");
+    plat::fsWrite("/vn_prof.bin", v3.data(), v3.size());
+  }
   // 5a. v4 (1.1.0 → 1.3.0) : relue sans perte, coefficients à apprendre (la persistance d'abord)
   {
     std::vector<uint8_t> f4(v3.begin(), v3.begin() + v4Len);
@@ -1403,10 +1421,11 @@ static void testDispersionInfo() {
   // 7. Fichiers corrompus : ignorés sans plantage, jamais lus de travers
   struct Bad { std::string what; std::vector<uint8_t> data; };
   std::vector<Bad> bads;
-  { auto x = v3; uint16_t v = 6; memcpy(x.data() + 4, &v, 2); bads.push_back({ "version 6 (inconnue)", x }); }
-  { auto x = v3; x.pop_back(); bads.push_back({ "v5 tronqué d'un octet", x }); }
-  { auto x = v3; uint16_t v = 4; memcpy(x.data() + 4, &v, 2); bads.push_back({ "v5 annoncé v4 (taille fausse)", x }); }
-  { auto x = v3; uint16_t v = 3; memcpy(x.data() + 4, &v, 2); bads.push_back({ "v5 annoncé v3 (taille fausse)", x }); }
+  { auto x = v3; uint16_t v = 7; memcpy(x.data() + 4, &v, 2); bads.push_back({ "version 7 (inconnue)", x }); }
+  { auto x = v3; x.pop_back(); bads.push_back({ "v6 tronqué d'un octet", x }); }
+  { auto x = v3; uint16_t v = 5; memcpy(x.data() + 4, &v, 2); bads.push_back({ "v6 annoncé v5 (taille fausse)", x }); }
+  { auto x = v3; uint16_t v = 4; memcpy(x.data() + 4, &v, 2); bads.push_back({ "v6 annoncé v4 (taille fausse)", x }); }
+  { auto x = v3; uint16_t v = 3; memcpy(x.data() + 4, &v, 2); bads.push_back({ "v6 annoncé v3 (taille fausse)", x }); }
   { auto x = legacyProf(v3, 3, 2); uint16_t v = 3; memcpy(x.data() + 4, &v, 2); bads.push_back({ "v2 annoncé v3 (taille fausse)", x }); }
   { auto x = v3; uint16_t v = 0; memcpy(x.data() + 4, &v, 2); bads.push_back({ "version 0", x }); }
   { auto x = v3; uint16_t ns = 9999; memcpy(x.data() + 6, &ns, 2); bads.push_back({ "nombre de stations aberrant", x }); }
@@ -1429,7 +1448,7 @@ static void testDispersionInfo() {
     CHECK(q2.prof[0].n == VN_PROFILE_DECAY_N, "v2, n = 200 dans une cellule : plafonné à %d (%d)", VN_PROFILE_DECAY_N, q2.prof[0].n);
     auto y = v3;
     int64_t fut = tl + 400 * 86400;
-    memcpy(y.data() + y.size() - sizeof(FcLearn) - 3 * 8, &fut, 8);
+    memcpy(y.data() + y.size() - 3 * sizeof(FcSt) - sizeof(FcLearn) - 3 * 8, &fut, 8);
     plat::fsWrite("/vn_prof.bin", y.data(), y.size());
     static Model q3; q3.init(); q3.load(tl);
     CHECK(q3.dispSince[0] == 0 && q3.dispSince[1] == m.dispSince[1], "date de dispersion dans le futur : oubliée (les autres gardées)");
@@ -1648,7 +1667,7 @@ static void testWxLearn() {
     float worst = 0; int used = 0;
     for (int k = 1; k < 97; k++) {
       float a, b;
-      m.fcCoefAt(cl, k * 15.f, a, b);
+      m.fcCoefAt(cl, k * 15.f, a, b, 0);                   // le couple de la station 0 (à partir de 60 min)
       if (c1[k] <= 0) continue;
       worst = fmaxf(worst, fabsf(w24[k] * c1[k] - p1[k] * a));
       used++;
@@ -1744,7 +1763,7 @@ static void testWxLearn() {
           "v%d relu : apprentissage météo du parc et α identiques (%.3f), statistiques par station ignorées", lv, rv.wxAlpha);
   }
   std::vector<uint8_t> bad = prof;
-  float nanv = NAN; memcpy(bad.data() + (prof.size() - sizeof(FcLearn) - dsLen - wxLen) + sizeof(WxClimate), &nanv, 4);
+  float nanv = NAN; memcpy(bad.data() + (prof.size() - 4 * sizeof(FcSt) - sizeof(FcLearn) - dsLen - wxLen) + sizeof(WxClimate), &nanv, 4);
   plat::fsWrite("/vn_prof.bin", bad.data(), bad.size());
   static Model r2;
   r2.init();
@@ -2063,8 +2082,8 @@ static void testDecay() {
       bool same = r.prof[C].a == 10 * 256 && r.prof[C].n == 24;
       feedCell(r, tl, 1, 16);                                   // mardi suivant (tl est un mardi 00:00)
       double expect = N == 12 ? 16 - 6 * pow(11.0 / 12, 3) : 10 + (16 - 10) * (1 - (24.0 / 25) * (25.0 / 26) * (26.0 / 27));
-      CHECK(ver == 5 && same && fabsf(r.prof[C].a / 256.f - (float)expect) < 0.02f && r.prof[C].n == (N == 12 ? 12 : 27),
-            "fichier v5 écrit avec N = 24, relu avec N = %d : moyenne et n = 24 relus, puis %s (a = %.3f, attendu %.3f, n = %d)", N,
+      CHECK(ver == 6 && same && fabsf(r.prof[C].a / 256.f - (float)expect) < 0.02f && r.prof[C].n == (N == 12 ? 12 : 27),
+            "fichier v6 écrit avec N = 24, relu avec N = %d : moyenne et n = 24 relus, puis %s (a = %.3f, attendu %.3f, n = %d)", N,
             N == 12 ? "poids 1/12 et n ramené à 12" : "la montée continue (1/25, 1/26, 1/27)", r.prof[C].a / 256.f, expect, r.prof[C].n);
     }
     // une v2 (cellules de 3 octets) relue avec N = 12 : n plafonné à 12 dès la lecture
@@ -3020,6 +3039,50 @@ static void testModele2() {
         "modèle 2 : semaine pendulaire régulière → le mouvement du profil est suivi à +1 h, +2 h, +4 h (a = %.1f/%.1f/%.1f)",
         m.fcA[0][2], m.fcA[0][3], m.fcA[0][4]);
   CHECK(m.fcL->w[1][2] > 0 && m.fcL->lots[1][2] >= FC_MIN_LOTS, "modèle 2 : la classe week-end apprend sur ses jours (%.0f prévisions jugées à +60)", m.fcL->w[1][2]);
+  // 4'. Couples par station (+60, +120, +240) : les pendulaires suivent leur profil (a ≥ 0,7), les marches
+  //     aléatoires s'en tiennent plus loin que la classe (rétrécies vers elle par κ = 200 prévisions fictives, elles
+  //     ne descendent pas à 0) ; +15 et +30 : le couple de la classe ; levier coupé : le couple de la classe partout
+  {
+    float sa[6][3], sb[6][3];
+    bool classAt15 = true, classOff = true, differs = false;
+    for (int i = 0; i < 6; i++)
+      for (int k = 0; k < FC_NH; k++) {
+        float a1, b1, ac, bc;
+        m.fcCoefAt(0, FC_HMIN[k], a1, b1, i);
+        m.fcCoefAt(0, FC_HMIN[k], ac, bc);
+        if (k < FC_SH0) classAt15 &= a1 == ac && b1 == bc;
+        else { sa[i][k - FC_SH0] = a1; sb[i][k - FC_SH0] = b1; differs |= a1 != ac || b1 != bc; }
+        g_pred.fcStation = false;
+        float a0, b0;
+        m.fcCoefAt(0, FC_HMIN[k], a0, b0, i);
+        classOff &= a0 == ac && b0 == bc;
+        g_pred.fcStation = true;
+      }
+    printf("  couples par station, jours ouvrés (+60 / +120 / +240) :");
+    for (int i = 0; i < 6; i++) printf(" st%d %.1f;%.2f %.1f;%.2f %.1f;%.2f ·", i, sa[i][0], sb[i][0], sa[i][1], sb[i][1], sa[i][2], sb[i][2]);
+    printf("\n");
+    bool commute = true, walk = true;
+    for (int k = 0; k < FC_NSH; k++) {
+      commute &= sa[0][k] >= 0.7f && sa[1][k] >= 0.7f;
+      for (int i = 3; i < 6; i++) walk &= sa[i][k] < m.fcA[0][FC_SH0 + k];
+    }
+    CHECK(commute && walk && differs, "modèle 2 : couples par station — pendulaires a ≥ 0,7, marches aléatoires a < celui de la classe (%.1f/%.1f/%.1f) à +60, +120, +240",
+          m.fcA[0][2], m.fcA[0][3], m.fcA[0][4]);
+    CHECK(classAt15 && classOff, "modèle 2 : +15 et +30 min → le couple de la classe ; levier « fcStation » coupé → la classe partout");
+    // la projection lit bien le couple de la station (même calcul que fcCoefAt, au pas de 60 min)
+    float o[5], c5[5];
+    const int64_t tp = lux(2026, 10, 26, 7, 30);          // un lundi : classe des jours ouvrés
+    m.project(3, tp, 60, 5, o, c5);
+    g_pred.fcStation = false;
+    float o0[5];
+    m.project(3, tp, 60, 5, o0, c5);
+    g_pred.fcStation = true;
+    printf("  st3 (marche aléatoire) %d vélos, 1 à 4 h : %.1f %.1f %.1f %.1f (couple de la classe : %.1f %.1f %.1f %.1f)\n", m.st[3].bikes,
+           o[1], o[2], o[3], o[4], o0[1], o0[2], o0[3], o0[4]);
+    float dSt = 0, dCl = 0;
+    for (int k = 1; k < 5; k++) { dSt += fabsf(o[k] - m.st[3].bikes); dCl += fabsf(o0[k] - m.st[3].bikes); }
+    CHECK(dSt <= dCl, "modèle 2 : la marche aléatoire s'écarte moins de son relevé avec son propre couple (%.1f contre %.1f vélos sur 4 pas)", dSt, dCl);
+  }
   // lundi 26/10 07:30, juste après l'apprentissage (daté en heure locale : le 25/10 change d'heure) : st0 doit
   // prévoir sa vidange (vide vers 9 h), st1 son remplissage ; st2 stable
   const int64_t tq = lux(2026, 10, 26, 7, 30);
@@ -3083,14 +3146,25 @@ static void testModele2() {
   Model::writeSaved(bl);
   static Model r;
   CHECK(r.init() && r.load(tq + 600) && memcmp(r.fcL, m.fcL, sizeof(FcLearn)) == 0 && memcmp(r.fcA, m.fcA, sizeof(r.fcA)) == 0
-        && r.fcPendHead == -1, "modèle 2 : relu à l'identique, sans lot en attente");
+        && memcmp(r.fcS, m.fcS, 6 * sizeof(FcSt)) == 0 && r.fcPendHead == -1, "modèle 2 : relu à l'identique (classe et stations), sans lot en attente");
+  // 8'. Stations dans un autre ordre avant la relecture : l'apprentissage de chaque station suit son sid
+  {
+    static Model q;
+    q = Model(); q.init();
+    InfoRec rev[6];
+    for (int i = 0; i < 6; i++) rev[i] = ir[5 - i];
+    q.applyInfo(rev, 6, tq + 600);
+    bool follow = q.load(tq + 600);
+    for (int i = 0; i < 6; i++) { const int j = q.find(m.st[i].sid); follow &= j == 5 - i && memcmp(&q.fcS[j], &m.fcS[i], sizeof(FcSt)) == 0; }
+    CHECK(follow, "modèle 2 : stations relues dans l'ordre inverse → chaque couple suit son sid");
+  }
   const float w0 = r.fcL->w[0][0];
   M2World wr = w;
   r.applyInfo(ir, 6, tq + 600);
   m2Run(r, tq + 600, 1, wr, ir);
   CHECK(r.fcL->w[0][0] != w0, "modèle 2 : l'apprentissage reprend après relecture");
   // 9. Bloc d'apprentissage forgé : comptes aberrants, erreurs impossibles → ignoré, profils gardés
-  const size_t off = f5.size() - sizeof(FcLearn);
+  const size_t off = f5.size() - 6 * sizeof(FcSt) - sizeof(FcLearn);
   struct Forge { const char * what; size_t at; float v; };
   const Forge forges[] = {
     { "4·10⁹ prévisions jugées", offsetof(FcLearn, w), 4e9f },
@@ -3107,7 +3181,30 @@ static void testModele2() {
     bool z = true;
     const bool ok = q.init() && q.load(tq + 600);
     for (int c = 0; c < FC_NC; c++) for (int h = 0; h < FC_NH; h++) z &= q.fcA[c][h] == 0 && q.fcB[c][h] == 0 && q.fcL->w[c][h] == 0;
-    CHECK(ok && z && memcmp(q.prof, m.prof, sizeof(ProfCell) * 6 * 672) == 0, "modèle 2 : %s → apprentissage ignoré, profils gardés", fg.what);
+    for (int i = 0; i < 6; i++) z &= q.fcS[i].w[0][0] == 0 && q.fcS[i].sel[0][0] == FC_SEL_NONE;
+    CHECK(ok && z && memcmp(q.prof, m.prof, sizeof(ProfCell) * 6 * 672) == 0, "modèle 2 : %s → apprentissage ignoré (classe et stations), profils gardés", fg.what);
+  }
+  // 9'. Bloc d'une station forgé : cette station repart de zéro (le couple de sa classe), les autres sont gardées
+  {
+    const size_t offS = f5.size() - 6 * sizeof(FcSt);
+    struct ForgeS { const char * what; size_t at; uint8_t bytes[4]; size_t len; };
+    float nanv = NAN, neg = -1.f;
+    ForgeS fs[3] = { { "erreur non finie", offsetof(FcSt, err) + 4 * 7, {}, 4 }, { "poids négatif", offsetof(FcSt, w) + 4, {}, 4 },
+                     { "couple hors de la sous-grille", offsetof(FcSt, sel) + 1, { 77 }, 1 } };
+    memcpy(fs[0].bytes, &nanv, 4); memcpy(fs[1].bytes, &neg, 4);
+    for (const ForgeS & f : fs) {
+      std::vector<uint8_t> x = f5;
+      memcpy(x.data() + offS + 2 * sizeof(FcSt) + f.at, f.bytes, f.len);   // station d'index 2
+      plat::fsWrite("/vn_prof.bin", x.data(), x.size());
+      static Model q;
+      q = Model();
+      const bool ok = q.init() && q.load(tq + 600);
+      bool kept = memcmp(q.fcL, m.fcL, sizeof(FcLearn)) == 0;
+      for (int i = 0; i < 6; i++) if (i != 2) kept &= memcmp(&q.fcS[i], &m.fcS[i], sizeof(FcSt)) == 0;
+      bool reset = true;
+      for (int c = 0; c < FC_NC; c++) for (int k = 0; k < FC_NSH; k++) reset &= q.fcS[2].w[c][k] == 0 && q.fcS[2].sel[c][k] == FC_SEL_NONE;
+      CHECK(ok && kept && reset, "modèle 2 : station forgée (%s) → elle seule repart de zéro, classe et autres stations gardées", f.what);
+    }
   }
   plat::fsWrite("/vn_prof.bin", f5.data(), f5.size());
   g_pred = PredictOpts();
@@ -3123,7 +3220,7 @@ static void testVersion() {
   CHECK(ver > 1, "/vn_prof.bin écrit en version %d (> 1, illisible par les 1.0.x publiées)", ver);
   CHECK(strcmp(VN_VERSION, "1.0.8") != 0 && strcmp(VN_VERSION, "1.0.9") != 0,
         "VN_VERSION « %s » distinct des versions publiées qui écrivent le format 1", VN_VERSION);
-  CHECK(ver == 5 && strcmp(VN_VERSION, "1.3.0") != 0, "/vn_prof.bin v5 (modèle 2) : VN_VERSION « %s » distinct de la 1.3.0, qui écrit le format 4", VN_VERSION);
+  CHECK(ver == 6 && strcmp(VN_VERSION, "1.3.0") != 0, "/vn_prof.bin v6 (modèle 2, couples par station) : VN_VERSION « %s » distinct de la 1.3.0, qui écrit le format 4", VN_VERSION);
   plat::psFree(b.prof); plat::psFree(b.hist); plat::psFree(b.days);
 }
 

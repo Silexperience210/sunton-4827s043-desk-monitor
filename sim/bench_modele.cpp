@@ -292,6 +292,11 @@ struct Row {
   // candidat « profil de quartier » : mouvement prévu moyen (part de la capacité utile) des 6 stations les plus
   // proches notées au même instant, × capacité utile de la station (neighbourPass, après le rejeu)
   float nb[NH];
+  // candidat « intensité du jour » : activité du parc sur l'heure écoulée (Σ stations Σ 12 pas de 5 min de
+  // |Δ| < 5, l'anneau) ÷ la même activité au même quart d'heure des jours passés de même classe ; 1 si inconnue
+  float rn;
+  // candidats « lissage » : profil relu avec un noyau triangulaire de ±K quarts d'heure (K = BK[k]), NaN si inconnu
+  float P0K[2], PhK[2][NH];
 };
 struct Run {
   std::vector<Row> rows;
@@ -313,7 +318,7 @@ static int64_t g_day0 = 0;                           // minuit local du premier 
 static int dayIndex(int64_t t) { return (int)((localDay(t) - localDay(g_day0))); }
 
 struct Perturb { int64_t cut = INT64_MAX; };        // historique tronqué après cut (contrôle de non-fuite)
-struct Levers { uint8_t rule = FC_RULE_V2, eta = FC_RULE_V1; bool dayClass = true; };
+struct Levers { uint8_t rule = FC_RULE_V2, eta = FC_RULE_V1; bool dayClass = true, station = true; };
 
 static void infoOf(const std::vector<StInfo> & L, std::vector<InfoRec> & ir) {
   ir.assign(L.size(), InfoRec());
@@ -394,6 +399,42 @@ static bool bProfileAt(const Model & m, int s, int64_t t, bool med, float & avg)
   return false;
 }
 static long g_bProfN = 0, g_bProfBad = 0;           // contrôle de la copie (med = false) contre Model::profileAt
+// Lissage plus large (candidats) : poids K + 1 − |o| sur ±K quarts d'heure ; comme smoothAt, la moitié du poids
+// central au moins (K = 1 : la règle du cœur, aux arrondis flottants près)
+static const int BK[2] = { 2, 4 };
+static bool bSmoothK(const ProfCell * p, int dow, int q, int K, float & v) {
+  float sv = 0, sw = 0;
+  for (int o = -K; o <= K; o++) {
+    int qq = q + o, d = dow;
+    while (qq < 0) { qq += BQ; d = (d + 6) % 7; }
+    while (qq >= BQ) { qq -= BQ; d = (d + 1) % 7; }
+    float cv, cn;
+    if (!bCell(p, d, qq, false, cv, cn)) continue;
+    const float w = (float)(K + 1 - abs(o));
+    sv += w * cv; sw += w;
+  }
+  if (sw < K + 1) return false;
+  v = sv / sw;
+  return true;
+}
+static bool bProfileAtK(const Model & m, int s, int64_t t, int K, float & avg) {
+  if (s < 0 || s >= m.n) return false;
+  struct tm lt;
+  plat::localTime(t, &lt);
+  int dow = lt.tm_wday, mod = lt.tm_hour * 60 + lt.tm_min;
+  if (g_pred.holidaySunday && isPublicHoliday(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday)) dow = 0;
+  const ProfCell * p = m.prof + (size_t)s * 7 * BQ;
+  int q = mod / 15;
+  float f = (mod % 15) / 15.f, v0, v1;
+  bool a = bSmoothK(p, dow, q, K, v0);
+  int q1 = q + 1, d1 = dow;
+  if (q1 >= BQ) { q1 = 0; d1 = (dow + 1) % 7; }
+  bool b = bSmoothK(p, d1, q1, K, v1);
+  if (a && b) { avg = v0 + (v1 - v0) * f; return true; }
+  if (a) { avg = v0; return true; }
+  if (b) { avg = v1; return true; }
+  return false;
+}
 
 // Brouillage déterministe d'un relevé futur (contrôle de non-fuite) : n'importe quelle valeur plausible
 static int scrambleB(int cap, int64_t t, int col) {
@@ -407,7 +448,7 @@ static int scrambleB(int cap, int64_t t, int col) {
 static void replay(const Hist & H, const std::map<int64_t, ProdTick> & ticks, const Levers & lv, const Perturb & pt, Run & R,
                    std::function<void(const Model &, int64_t)> hook = nullptr) {
   g_pred = PredictOpts();
-  g_pred.fcRule = lv.rule; g_pred.etaRule = lv.eta; g_pred.fcDayClass = lv.dayClass;
+  g_pred.fcRule = lv.rule; g_pred.etaRule = lv.eta; g_pred.fcDayClass = lv.dayClass; g_pred.fcStation = lv.station;
   Model * mp = new Model();                         // un modèle neuf par rejeu (jamais libéré : banc, ~1 Mo chacun)
   Model & m = *mp;
   if (!m.init()) { fprintf(stderr, "init du modèle impossible\n"); exit(1); }
@@ -415,6 +456,10 @@ static void replay(const Hist & H, const std::map<int64_t, ProdTick> & ticks, co
   std::vector<InfoRec> ir;
   std::vector<StatusRec> sr;
   int lastList = -1;
+  // candidat « intensité du jour » : activité de l'heure écoulée par (classe de jour, quart d'heure), moyenne des
+  // jours passés (7 au plus, puis glissante) ; mise à jour APRÈS usage : un jour ne se compare qu'aux précédents
+  std::vector<double> actA(FC_NC * 96, 0.0);
+  std::vector<int> actN(FC_NC * 96, 0);
   R = Run();
   for (size_t k = 0; k < H.slots.size(); k++) {
     const Slot & S = H.slots[k];
@@ -489,6 +534,30 @@ static void replay(const Hist & H, const std::map<int64_t, ProdTick> & ticks, co
       R.coef[S.t] = c;
     }
     const uint8_t * row = m.ring + (size_t)head * VN_MAX_ST;
+    float rn = 1.f;
+    {
+      double obs = 0;
+      int okSteps = 0;
+      for (int k = 0; k < 12; k++) {
+        const int i0 = m.ringIndex(k), i1 = m.ringIndex(k + 1);
+        if (i0 < 0 || i1 < 0 || m.ringT[i0] != S.t - (int64_t)k * 300 || m.ringT[i1] != S.t - (int64_t)(k + 1) * 300) continue;
+        const uint8_t * a = m.ring + (size_t)i0 * VN_MAX_ST, * b = m.ring + (size_t)i1 * VN_MAX_ST;
+        bool any = false;
+        for (int i = 0; i < m.n; i++) {
+          if (a[i] == 255 || b[i] == 255) continue;
+          const int d = abs((int)a[i] - (int)b[i]);
+          if (d < 5) obs += d;
+          any = true;
+        }
+        okSteps += any;
+      }
+      const int q = (lt.tm_hour * 60 + lt.tm_min) / 15, ix = m.fcClassAt(t) * 96 + q;
+      if (okSteps == 12) {
+        if (actN[ix]) rn = (float)((obs + 60.0) / (actA[ix] + 60.0));
+        actA[ix] = actN[ix] ? actA[ix] + (obs - actA[ix]) / std::min(actN[ix] + 1, 7) : obs;
+        actN[ix]++;
+      }
+    }
     static float tmp[NP], cf[NP];
     for (int i = 0; i < m.n; i++) {
       const Station & st = m.st[i];
@@ -528,7 +597,12 @@ static void replay(const Hist & H, const std::map<int64_t, ProdTick> & ticks, co
           const bool hc = m.profileAt(i, th, pc, nc), hb = bProfileAt(m, i, th, false, pb);
           g_bProfN++; g_bProfBad += hc != hb || (hc && memcmp(&pc, &pb, sizeof(float)));
         }
+        for (int k = 0; k < 2; k++) {
+          r.P0K[k] = bProfileAtK(m, i, t, BK[k], v) ? v : NAN;
+          for (int h = 0; h < NH; h++) r.PhK[k][h] = bProfileAtK(m, i, t + (int64_t)HK[h] * 300, BK[k], v) ? v : NAN;
+        }
       }
+      r.rn = rn;
       R.rows.push_back(r);
     }
   }
@@ -614,7 +688,8 @@ struct Truth {
 struct Feat { float x[3]; };
 struct Variant {
   std::string name, note;
-  int kind = 0;                                     // 0 = grille (a, b[, d]) ; 1 = moindres carrés ; 2 = règle fixe
+  int kind = 0;                                     // 0 = grille (a, b[, d]) ; 1 = moindres carrés ; 2 = règle fixe ;
+                                                    // 3 = grille de la classe × gain par station (gainK)
   std::function<Feat(const Row &, int)> feat;
   bool dayClass = true;                             // un jeu par classe de jour (ouvré | week-end et férié)
   int nsub = 1;                                     // sous-classes par classe de jour
@@ -624,6 +699,20 @@ struct Variant {
   // > 0 (grille seulement) : chaque sous-classe choisit son couple sur ses erreurs + κ prévisions fictives
   // de la classe de jour entière (erreur moyenne de la classe × κ) ; le seuil de lots est celui de la classe
   float kappa = 0;
+  // sous-grille (indices de la grille du cœur, vides = toute la grille) : chaque sous-classe ne choisit que parmi
+  // ces couples — l'état d'une station en serait réduit d'autant sur la carte
+  std::vector<int> subA, subB;
+  bool subOnlyStations = false;                     // la sous-grille ne s'applique qu'aux groupes de sous-classe ≠ 0
+  // rétrécissement : la sous-classe 0 choisit comme le cœur choisit le couple de la classe (erreur de la classe ÷ ses
+  // prévisions, sans κ) — la réplique du cœur au bit près (fcSelect / fcSelectStations)
+  bool classPlain = false;
+  // kind = 3 : la classe choisit (a, b) sur la grille du cœur ; chaque station multiplie le terme a·ΔP (gainOnA)
+  // et/ou b·(P0 − relevé) (gainOnB) par un gain choisi sur ses propres erreurs + gainKappa prévisions fictives de
+  // la classe, aux horizons d'index ≥ gainMinH ; gainK[0] = 1 (à égalité, le premier ; pénalité FC_PEN·|k − 1|)
+  std::vector<float> gainK;
+  bool gainOnA = true, gainOnB = true;
+  int gainMinH = 2;
+  float gainKappa = 200.f;
   std::function<float(const Row &, int)> fixed;
 };
 static const int GA = FC_NA, GB = FC_NB, GD = 16;  // d = (id − 5) / 10 : −0,5 … 1,0
@@ -638,12 +727,31 @@ static void runVariant(const Variant & V, const Run & R, VarOut & O) {
   O.f.assign(N, {});
   const int NCL = V.dayClass ? FC_NC : 1, G = NCL * V.nsub;
   const int ND = V.trend ? GD : 1, NGc = GA * GB * ND;
-  std::vector<std::vector<std::vector<float>>> err(NH, std::vector<std::vector<float>>(G, std::vector<float>(V.kind == 0 ? NGc : 0, 0)));
+  const bool grid = V.kind == 0 || V.kind == 3;
+  std::vector<std::vector<std::vector<float>>> err(NH, std::vector<std::vector<float>>(G, std::vector<float>(grid ? NGc : 0, 0)));
   std::vector<std::vector<float>> w(NH, std::vector<float>(G, 0)), lots(NH, std::vector<float>(G, 0));
   std::vector<std::vector<std::array<double, 9>>> Gm(NH, std::vector<std::array<double, 9>>(G, std::array<double, 9>{}));
   std::vector<std::vector<std::array<double, 3>>> rv(NH, std::vector<std::array<double, 3>>(G, std::array<double, 3>{}));
   std::vector<std::vector<std::array<float, 3>>> coef(NH, std::vector<std::array<float, 3>>(G, std::array<float, 3>{ 0, 0, 0 }));
-  struct Lot { int64_t t; size_t from, to; int cls; };
+  struct Lot { int64_t t; size_t from, to; int cls; std::vector<std::array<float, 2>> ce; };   // ce : (a, b) de la classe à l'émission [h·NCL + c]
+  // kind = 3 : erreurs par gain, par (horizon, classe·station) et pour la classe entière
+  const bool gainV = V.kind == 3;
+  const int NSG = (int)g_sid.size(), NK = gainV ? (int)V.gainK.size() : 0;
+  std::vector<std::vector<std::vector<float>>> errS(NH, std::vector<std::vector<float>>(gainV ? NCL * NSG : 0, std::vector<float>(NK, 0)));
+  std::vector<std::vector<float>> wS(NH, std::vector<float>(gainV ? NCL * NSG : 0, 0));
+  std::vector<std::vector<std::vector<float>>> errGc(NH, std::vector<std::vector<float>>(NCL, std::vector<float>(NK, 0)));
+  std::vector<std::vector<float>> wGc(NH, std::vector<float>(NCL, 0));
+  auto gainOf = [&](int h, int c, int s) {
+    if (!gainV || h < V.gainMinH || !(wGc[h][c] > 0)) return 1.f;
+    const std::vector<float> & e = errS[h][c * NSG + s];
+    const float inv = 1.f / (wS[h][c * NSG + s] + V.gainKappa), kc = V.gainKappa / wGc[h][c];
+    float best = 0; int bk = -1;
+    for (int k = 0; k < NK; k++) {
+      const float v = (e[k] + kc * errGc[h][c][k]) * inv + V.pen * fabsf(V.gainK[k] - 1.f);
+      if (bk < 0 || v < best) { best = v; bk = k; }
+    }
+    return V.gainK[bk];
+  };
   std::vector<Lot> pend;
   const float decay = powf(0.5f, 1.f / (V.halfLife * 64.f));
   auto groupOf = [&](const Row & r, int h) { return (V.dayClass ? r.cls : 0) * V.nsub + (V.sub ? V.sub(r, h) : 0); };
@@ -655,16 +763,20 @@ static void runVariant(const Variant & V, const Run & R, VarOut & O) {
     coef[h][g] = { 0, 0, 0 };
     const int c = g / V.nsub;
     if (shrink ? !(lotsC[h][c] >= V.minLots) || !(wC[h][c] > 0) : !(lots[h][g] >= V.minLots) || !(w[h][g] > 0)) return;
-    if (V.kind == 0) {
-      const float inv = shrink ? 1.f / (w[h][g] + V.kappa) : 1.f / w[h][g], kc = shrink ? V.kappa / wC[h][c] : 0.f;
+    const bool plainC = shrink && V.classPlain && g % V.nsub == 0;
+    if (grid) {
+      const float inv = plainC ? 1.f / wC[h][c] : shrink ? 1.f / (w[h][g] + V.kappa) : 1.f / w[h][g], kc = shrink && !plainC ? V.kappa / wC[h][c] : 0.f;
       float best = 0; int bj = -1;
       for (int ia = 0; ia < GA; ia++)
         for (int ib = 0; ib < GB; ib++)
           for (int od = 0; od < ND; od++) {
+            const bool useSub = !V.subOnlyStations || g % V.nsub != 0;
+            if (useSub && !V.subA.empty() && std::find(V.subA.begin(), V.subA.end(), ia) == V.subA.end()) continue;
+            if (useSub && !V.subB.empty() && std::find(V.subB.begin(), V.subB.end(), ib) == V.subB.end()) continue;
             const int id = V.trend ? GD_ORDER[od] : 0;
             const int j = (ia * GB + ib) * ND + id;
             const float d = V.trend ? (id - 5) / 10.f : 0.f;
-            const float e = shrink ? err[h][g][j] + kc * errC[h][c][j] : err[h][g][j];
+            const float e = plainC ? errC[h][c][j] : shrink ? err[h][g][j] + kc * errC[h][c][j] : err[h][g][j];
             const float v = e * inv + V.pen * (ia / 10.f + ib / 20.f + fabsf(d));
             if (bj < 0 || v < best) { best = v; bj = j; }
           }
@@ -683,7 +795,7 @@ static void runVariant(const Variant & V, const Run & R, VarOut & O) {
       for (int a = 0; a < K; a++) coef[h][g][a] = fabs(A[a][a]) > 1e-12 ? (float)(A[a][K] / A[a][a]) : 0.f;
     }
   };
-  std::vector<std::vector<uint32_t>> lotErr(G, std::vector<uint32_t>(V.kind == 0 ? NGc : 0));
+  std::vector<std::vector<uint32_t>> lotErr(G, std::vector<uint32_t>(grid ? NGc : 0));
   std::vector<uint32_t> cnt(G);
   size_t r0 = 0;
   for (size_t k = 0; k < R.slotT.size(); k++) {
@@ -694,7 +806,7 @@ static void runVariant(const Variant & V, const Run & R, VarOut & O) {
       const int64_t at = T - (int64_t)HK[h] * 300;
       for (const Lot & L : pend) {
         if (L.t != at) continue;
-        for (int g = 0; g < G; g++) { if (V.kind == 0) std::fill(lotErr[g].begin(), lotErr[g].end(), 0u); cnt[g] = 0; }
+        for (int g = 0; g < G; g++) { if (grid) std::fill(lotErr[g].begin(), lotErr[g].end(), 0u); cnt[g] = 0; }
         for (size_t i = L.from; i < L.to; i++) {
           const Row & r = R.rows[i];
           const int y = r.g < (int)ring.size() ? ring[r.g] : 255;
@@ -702,7 +814,19 @@ static void runVariant(const Variant & V, const Run & R, VarOut & O) {
           const int g = groupOf(r, h);
           const Feat F = V.feat(r, h);
           const int cur = std::min(r.cur, 254), cap = std::min(r.capE, 255);
-          if (V.kind == 0) {
+          if (gainV && h >= V.gainMinH) {           // gains de la station, avec le couple de la classe à l'émission
+            const int c = V.dayClass ? r.cls : 0;
+            const std::array<float, 2> & ab = L.ce[h * NCL + c];
+            const float t1 = ab[0] * q64i(F.x[0]) / FC_FIX, t2 = ab[1] * q64i(F.x[1]) / FC_FIX;
+            std::vector<float> & es = errS[h][c * NSG + r.g];
+            for (int k = 0; k < NK; k++) {
+              const float fv = fminf((float)cap, fmaxf(0.f, cur + (V.gainOnA ? V.gainK[k] : 1.f) * t1 + (V.gainOnB ? V.gainK[k] : 1.f) * t2));
+              const float e = fabsf(floorf(fv + 0.5f) - y);
+              es[k] += e; errGc[h][c][k] += e;
+            }
+            wS[h][c * NSG + r.g] += 1; wGc[h][c] += 1;
+          }
+          if (grid) {
             const int32_t x1 = q64i(F.x[0]), x2 = q64i(F.x[1]), x3 = V.trend ? q64i(F.x[2]) : 0, hi = cap * 1280;
             uint32_t * le = lotErr[g].data();
             for (int ia = 0; ia < GA; ia++)
@@ -723,17 +847,21 @@ static void runVariant(const Variant & V, const Run & R, VarOut & O) {
           cnt[g]++;
         }
         std::vector<char> touched(NCL, 0);
+        std::vector<std::vector<uint32_t>> lotC(shrink ? NCL : 0, std::vector<uint32_t>(NGc, 0));   // la classe : Σ en entiers
+        std::vector<uint32_t> cntC(NCL, 0);
         for (int g = 0; g < G; g++) {
           if (!cnt[g]) continue;
-          if (V.kind == 0) for (int j = 0; j < NGc; j++) err[h][g][j] += (float)lotErr[g][j];
+          if (grid) for (int j = 0; j < NGc; j++) err[h][g][j] += (float)lotErr[g][j];
           w[h][g] += (float)cnt[g]; lots[h][g] += 1;
           if (shrink) {
             const int c = g / V.nsub;
-            for (int j = 0; j < NGc; j++) errC[h][c][j] += (float)lotErr[g][j];
-            wC[h][c] += (float)cnt[g];
+            for (int j = 0; j < NGc; j++) lotC[c][j] += lotErr[g][j];
+            cntC[c] += cnt[g];
             touched[c] = 1;
           } else select(h, g);
         }
+        for (int c = 0; c < NCL && shrink; c++)
+          if (touched[c]) { for (int j = 0; j < NGc; j++) errC[h][c][j] += (float)lotC[c][j]; wC[h][c] += (float)cntC[c]; }
         // rétrécissement : le lot compte une fois pour la classe ; la classe ayant bougé, chacune de ses
         // sous-classes rechoisit son couple
         for (int c = 0; c < NCL && shrink; c++)
@@ -752,7 +880,8 @@ static void runVariant(const Variant & V, const Run & R, VarOut & O) {
           else if (informative(r, h)) {
             const Feat F = V.feat(r, h);
             const auto & c = coef[h][groupOf(r, h)];
-            f = r.cur + c[0] * F.x[0] + c[1] * F.x[1] + (V.trend ? c[2] * F.x[2] : 0.f);
+            const float k = gainOf(h, V.dayClass ? r.cls : 0, r.g);
+            f = r.cur + (V.gainOnA ? k : 1.f) * c[0] * F.x[0] + (V.gainOnB ? k : 1.f) * c[1] * F.x[1] + (V.trend ? c[2] * F.x[2] : 0.f);
           }
           O.f[i][h] = fminf((float)r.capE, fmaxf(0.f, f));
         }
@@ -770,8 +899,15 @@ static void runVariant(const Variant & V, const Run & R, VarOut & O) {
             for (auto & x : rv[h][g]) x *= decay;
           }
           if (shrink) { for (auto & e : errC[h][cl]) e *= decay; wC[h][cl] *= decay; lotsC[h][cl] *= decay; }
+          if (gainV) {
+            for (int s2 = 0; s2 < NSG; s2++) { for (auto & e : errS[h][cl * NSG + s2]) e *= decay; wS[h][cl * NSG + s2] *= decay; }
+            for (auto & e : errGc[h][cl]) e *= decay;
+            wGc[h][cl] *= decay;
+          }
         }
-        pend.push_back({ T, r0, r1, cl });
+        std::vector<std::array<float, 2>> ce(NH * NCL);
+        for (int h = 0; h < NH; h++) for (int c = 0; c < NCL; c++) ce[h * NCL + c] = { coef[h][c * V.nsub][0], coef[h][c * V.nsub][1] };
+        pend.push_back({ T, r0, r1, cl, ce });
         while (pend.size() > (size_t)FC_PEND) pend.erase(pend.begin());
       }
       r0 = r1;
@@ -968,8 +1104,9 @@ int main(int argc, char ** argv) {
   //   R1 : règle 1.3.0 rejouée au pas de 5 min (fidélité du rejeu : la tendance au pas de 1 min n'est pas rejouable)
   //   RG : modèle neuf sans classes de jour (une seule classe : la structure de la session précédente)
   //   RE : modèle neuf, échéances lues sur sa propre prévision (levier etaRule = 2)
+  //   RC : modèle 2 du commit 755d7c1, le couple de la classe pour toutes les stations (levier fcStation coupé)
   std::vector<ArchCmp> ac(arch.size());
-  Run R, R1, RG, RE;
+  Run R, R1, RG, RE, RC;
   int wxUseEnd = -1; float wxAlphaEnd = NAN;        // météo apprise à la fin de l'historique de production
   replay(H, ticks, Levers(), Perturb(), R, [&](const Model & m, int64_t slotT) {
     for (size_t k = 0; k < arch.size(); k++)
@@ -981,12 +1118,13 @@ int main(int argc, char ** argv) {
   { Levers l; l.rule = FC_RULE_V1; replay(H, ticks, l, Perturb(), R1); }
   { Levers l; l.dayClass = false; replay(H, ticks, l, Perturb(), RG); }
   { Levers l; l.eta = FC_RULE_V2; replay(H, ticks, l, Perturb(), RE); }
+  { Levers l; l.station = false; replay(H, ticks, l, Perturb(), RC); }
   auto sameRows = [](const Run & a, const Run & b) {
     if (a.rows.size() != b.rows.size()) return false;
     for (size_t i = 0; i < a.rows.size(); i++) if (a.rows[i].slot != b.rows[i].slot || a.rows[i].g != b.rows[i].g) return false;
     return true;
   };
-  if (!sameRows(R, R1) || !sameRows(R, RG) || !sameRows(R, RE)) { fprintf(stderr, "rejeux non alignés\n"); return 1; }
+  if (!sameRows(R, R1) || !sameRows(R, RG) || !sameRows(R, RE) || !sameRows(R, RC)) { fprintf(stderr, "rejeux non alignés\n"); return 1; }
 
   // ── Candidats (sur les rangées de R) ──
   auto dP = [](const Row & r, int h) { return r.Ph[h] - r.P0; };
@@ -997,8 +1135,16 @@ int main(int argc, char ** argv) {
     return slope * 25.f * (1 - expf(-hm / 25.f));
   };
   std::vector<Variant> V;
+  const int NSG0 = (int)g_sid.size();
   auto base = [&]() { Variant v; v.feat = [&](const Row & r, int h) { Feat f{}; f.x[0] = dP(r, h); f.x[1] = dA(r, h); return f; }; return v; };
-  { Variant v = base(); v.name = "réplique du cœur (contrôle)"; V.push_back(v); }
+  { Variant v = base(); v.name = "réplique du cœur (contrôle)";
+    v.nsub = NSG0 + 1; v.sub = [](const Row & r, int h) { return h >= FC_SH0 ? r.g + 1 : 0; }; v.kappa = FC_KAPPA;
+    v.subOnlyStations = true; v.classPlain = true;
+    for (int k = 0; k < FC_SNA; k++) v.subA.push_back(FC_SA[k]);
+    for (int k = 0; k < FC_SNB; k++) v.subB.push_back(FC_SB[k]);
+    V.push_back(v); }
+  { Variant v = base(); v.name = "modèle 2, couple de la classe (réplique, 755d7c1)";
+    v.note = "le modèle 2 du commit 755d7c1 : un couple par classe de jour et horizon pour toutes les stations"; V.push_back(v); }
   { Variant v = base(); v.name = "par bloc horaire"; v.note = "4 jeux par classe de jour : 6–10 h, 10–16 h, 16–20 h, 20–22 h"; v.nsub = 4;
     v.sub = [](const Row & r, int) { return r.hour < 10 ? 0 : r.hour < 16 ? 1 : r.hour < 20 ? 2 : 3; }; V.push_back(v); }
   { Variant v = base(); v.name = "par ampleur du mouvement"; v.note = "2 jeux par classe de jour et par horizon : |ΔP| < 2 vélos, ≥ 2"; v.nsub = 2;
@@ -1037,6 +1183,43 @@ int main(int argc, char ** argv) {
   { Variant v = base(); v.name = "oubli court : demi-vie 1 j"; V.push_back(v); V.back().halfLife = 1.f; }
   { Variant v = base(); v.name = "oubli court : demi-vie 0,25 j (seuil 16)"; v.halfLife = 0.25f; v.minLots = 16;
     v.note = "adaptation à la journée en cours : ≈ 4 h de mémoire"; V.push_back(v); }
+  // Pistes de la seconde session (docs/mesures-modele.md) : lissage plus large du profil, intensité du jour
+  auto kOr = [](float vk, float v0) { return std::isfinite(vk) ? vk : v0; };
+  for (int k = 0; k < 2; k++) {
+    Variant v = base(); char b[64]; snprintf(b, sizeof(b), "lissage ±%d min", BK[k] * 15); v.name = b;
+    if (k == 1) v.note = "profil relu avec un noyau triangulaire de ±30 min ou ±60 min (le cœur : ±15 min), pour ΔP et pour P0";
+    v.feat = [&, k](const Row & r, int h) {
+      Feat f{}; const float p0 = kOr(r.P0K[k], r.P0), ph = kOr(r.PhK[k][h], r.Ph[h]);
+      f.x[0] = ph - p0; f.x[1] = p0 - (float)std::min(r.cur, 254); return f; };
+    V.push_back(v);
+  }
+  { Variant v = base(); v.name = "lissage selon l'horizon"; v.note = "±15 min à +15 et +30 min, ±30 min à +60, ±60 min à +120 et +240";
+    v.feat = [&](const Row & r, int h) {
+      Feat f{}; const int k = h <= 1 ? -1 : h == 2 ? 0 : 1;
+      const float p0 = k < 0 ? r.P0 : kOr(r.P0K[k], r.P0), ph = k < 0 ? r.Ph[h] : kOr(r.PhK[k][h], r.Ph[h]);
+      f.x[0] = ph - p0; f.x[1] = p0 - (float)std::min(r.cur, 254); return f; };
+    V.push_back(v); }
+  auto rnc = [](const Row & r) { return fminf(1.5f, fmaxf(0.5f, r.rn)); };
+  { Variant v = base(); v.name = "intensité du jour (×ρ)";
+    v.note = "a·ρ·ΔP + b·(P0 − relevé) ; ρ = activité du parc sur l'heure écoulée ÷ la même au même quart d'heure des jours passés de même classe (+60 de part et d'autre), bornée à [0,5 ; 1,5]";
+    v.feat = [&](const Row & r, int h) { Feat f{}; f.x[0] = rnc(r) * dP(r, h); f.x[1] = dA(r, h); return f; }; V.push_back(v); }
+  { Variant v = base(); v.name = "par station, grille 6 × 5, +60 à +240, κ = 200";
+    v.note = "un couple par station, classe et horizon ≥ 60 min, choisi parmi a ∈ {0 ; 0,2 ; 0,5 ; 0,7 ; 1 ; 1,2} × b ∈ {0 ; 0,1 ; 0,2 ; 0,35 ; 0,5} sur ses erreurs + 200 prévisions fictives de la classe (720 octets par station)";
+    v.nsub = NSG; v.sub = [](const Row & r, int h) { return h >= 2 ? r.g : 0; }; v.kappa = 200.f;
+    v.subA = { 0, 2, 5, 7, 10, 12 }; v.subB = { 0, 2, 4, 7, 10 }; V.push_back(v); }
+  { Variant v = base(); v.name = "par station, grille 8 × 6, +60 à +240, κ = 200";
+    v.note = "a ∈ {0 ; 0,2 ; 0,3 ; 0,4 ; 0,5 ; 0,7 ; 1 ; 1,3} × b ∈ {0 ; 0,05 ; 0,1 ; 0,2 ; 0,35 ; 0,5}";
+    v.nsub = NSG + 1; v.sub = [](const Row & r, int h) { return h >= 2 ? r.g + 1 : 0; }; v.kappa = 200.f; v.subOnlyStations = true;
+    v.subA = { 0, 2, 3, 4, 5, 7, 10, 13 }; v.subB = { 0, 1, 2, 4, 7, 10 }; V.push_back(v); }
+  for (int which = 0; which < 3; which++) {
+    Variant v = base(); v.kind = 3; v.gainK = { 1.f, 0.75f, 1.25f, 0.5f, 1.5f, 0.25f, 2.f, 0.f };
+    v.gainOnA = which != 2; v.gainOnB = which != 1;
+    v.name = which == 0 ? "gain par station sur (a, b), +60 à +240" : which == 1 ? "gain par station sur a, +60 à +240" : "gain par station sur b, +60 à +240";
+    if (which == 0) v.note = "le couple de la classe, × un gain par station, classe et horizon ≥ 60 min, k ∈ {0 ; 0,25 ; … ; 1,5 ; 2}, choisi sur ses erreurs + 200 prévisions fictives de la classe (192 octets par station) ; variantes : gain sur a seul, sur b seul";
+    V.push_back(v);
+  }
+  { Variant v = base(); v.name = "intensité du jour (d appris)"; v.trend = true; v.note = "grille (a, b, d), d·(ρ − 1)·ΔP";
+    v.feat = [&](const Row & r, int h) { Feat f{}; f.x[0] = dP(r, h); f.x[1] = dA(r, h); f.x[2] = (rnc(r) - 1) * dP(r, h); return f; }; V.push_back(v); }
   std::vector<VarOut> VO(V.size());
   for (size_t v = 0; v < V.size(); v++) runVariant(V[v], R, VO[v]);
 
@@ -1102,8 +1285,9 @@ int main(int argc, char ** argv) {
   addCol("modèle actuel (1.3.0)", [&](size_t k, int h) { return S.pv[k]->v[1 + h]; });
   addCol("modèle neuf", [&](size_t k, int h) { return (int)roundf(R.rows[S.ri[k]].fc[h]); });
   const int CP = 0, CPR = 1, CM = 2, CN = 3, NBASE = 4;
+  addCol("modèle 2 sans couples par station (755d7c1)", [&](size_t k, int h) { return (int)roundf(RC.rows[S.ri[k]].fc[h]); });
+  const int CC = 4;
   addCol("sans classes de jour", [&](size_t k, int h) { return (int)roundf(RG.rows[S.ri[k]].fc[h]); });
-  const int CG = 4;
   const int CV0 = (int)C.size();
   for (size_t v = 1; v < V.size(); v++) addCol(V[v].name, [&, v](size_t k, int h) { return (int)roundf(VO[v].f[S.ri[k]][h]); });
 
@@ -1141,8 +1325,13 @@ int main(int argc, char ** argv) {
   fprintf(out, "\n- réplique de banc ≠ cœur : %ld prévisions sur %ld ; couples appliqués différents : %ld quarts d'heure sur %zu\n", repBad, repN, coefBad, R.coef.size());
   fprintf(out, "- échéances vide / pleine du modèle neuf identiques à celles de la règle 1.3.0 rejouée : %ld sur %ld\n", etaSameV1, etaN);
   fprintf(out, "- profil relu par le banc (copie de profileLocal, candidat « pool médian » sans médiane) différent du cœur : %ld lectures sur %ld\n", bProfBad, bProfN);
-  fprintf(out, "- `/vn_prof.bin` en fin de rejeu (%d stations) : %zu octets (v5) ; la même chose en v4 : %zu octets ; règle 1.3.0 rejouée : %zu octets\n\n",
-          (int)g_sid.size(), R.profBytes, R.profBytes - sizeof(FcLearn), R1.profBytes);
+  {
+    const size_t nst = g_sid.size(), v5 = R.profBytes - nst * sizeof(FcSt), v4 = v5 - sizeof(FcLearn);
+    fprintf(out, "- `/vn_prof.bin` en fin de rejeu (%zu stations) : %zu octets en v6 (livré) = v4 %zu + apprentissage de la classe %zu + %zu × %zu par station ; "
+                 "v5 (755d7c1) : %zu octets ; v4 (1.3.0) : %zu octets (%.1f octets par station en v4, %.1f en v6)\n\n",
+            nst, R.profBytes, v4, sizeof(FcLearn), nst, sizeof(FcSt), v5, v4, (double)(v4 - 40 - 672 - sizeof(WxClimate) - sizeof(WxStats)) / nst,
+            (double)(R.profBytes - 40 - 672 - sizeof(WxClimate) - sizeof(WxStats) - sizeof(FcLearn)) / nst);
+  }
   fprintf(out, "Profils du rejeu contre les profils archivés par la production (cellule = moyenne ×256, n, dispersion, compte de dispersion ; 672 par station) :\n\n");
   fprintf(out, "| archive | relevés appris (production / rejeu) | stations comparées | stations identiques | cellules identiques | moyenne et n identiques |\n|---|---|---|---|---|---|\n");
   for (auto & c : ac) {
@@ -1158,35 +1347,38 @@ int main(int argc, char ** argv) {
     std::vector<Tot> tt(NH);
     for (int h = 0; h < NH; h++) {
       std::vector<SlotAgg> ag; aggregate(S, R, C, h, keep, ag);
-      bo[h] = blockBoot(ag, NBASE + 1, Lh[h], B);     // les 4 colonnes et « sans classes de jour »
+      bo[h] = blockBoot(ag, NBASE + 1, Lh[h], B);     // les 4 colonnes et le modèle 2 du commit 755d7c1
       tt[h] = totalOf(ag, C.size());
     }
-    fprintf(out, "MAE (vélos) [IC 95 %%, blocs de quarts d'heure]\n\n| horizon | n | persistance | profil seul | modèle actuel (1.3.0) | modèle neuf |\n|---|---|---|---|---|---|\n");
+    static const int ORD[5] = { CP, CPR, CM, CC, CN };
+    const char * head = "| horizon | n | persistance | profil seul | modèle actuel (1.3.0) | modèle 2 sans couples par station (755d7c1) | modèle neuf |\n|---|---|---|---|---|---|---|\n";
+    fprintf(out, "MAE (vélos) [IC 95 %%, blocs de quarts d'heure]\n\n%s", head);
     for (int h = 0; h < NH; h++) {
       fprintf(out, "| %s min | %ld |", HL[h], tt[h].n);
-      for (int c = 0; c < NBASE; c++) fprintf(out, " %s [%s ; %s] |", fr(tt[h].mae(c)).c_str(), fr(bo[h].lo[c], 3).c_str(), fr(bo[h].hi[c], 3).c_str());
+      for (int c : ORD) fprintf(out, " %s [%s ; %s] |", fr(tt[h].mae(c)).c_str(), fr(bo[h].lo[c], 3).c_str(), fr(bo[h].hi[c], 3).c_str());
       fprintf(out, "\n");
     }
-    fprintf(out, "\nRMSE (vélos) [IC 95 %%]\n\n| horizon | n | persistance | profil seul | modèle actuel (1.3.0) | modèle neuf |\n|---|---|---|---|---|---|\n");
+    fprintf(out, "\nRMSE (vélos) [IC 95 %%]\n\n%s", head);
     for (int h = 0; h < NH; h++) {
       fprintf(out, "| %s min | %ld |", HL[h], tt[h].n);
-      for (int c = 0; c < NBASE; c++) fprintf(out, " %s [%s ; %s] |", fr(tt[h].rmse(c)).c_str(), fr(bo[h].rlo[c], 3).c_str(), fr(bo[h].rhi[c], 3).c_str());
+      for (int c : ORD) fprintf(out, " %s [%s ; %s] |", fr(tt[h].rmse(c)).c_str(), fr(bo[h].rlo[c], 3).c_str(), fr(bo[h].rhi[c], 3).c_str());
       fprintf(out, "\n");
     }
-    fprintf(out, "\nÉcart apparié de MAE, modèle neuf − référence [IC 95 %%] (négatif = le modèle neuf se trompe moins) :\n\n| horizon | − persistance | − profil seul | − modèle actuel |\n|---|---|---|---|\n");
+    const char * dhead = "| horizon | − persistance | − profil seul | − modèle actuel | − modèle 2 (755d7c1) |\n|---|---|---|---|---|\n";
+    fprintf(out, "\nÉcart apparié de MAE, modèle neuf − référence [IC 95 %%] (négatif = le modèle neuf se trompe moins) :\n\n%s", dhead);
     for (int h = 0; h < NH; h++) {
       fprintf(out, "| %s min |", HL[h]);
-      for (int ref : { CP, CPR, CM }) {
+      for (int ref : { CP, CPR, CM, CC }) {
         const double d = tt[h].mae(CN) - tt[h].mae(ref);
         fprintf(out, " %s [%s ; %s] (%s %%) %s |", frs(d).c_str(), frs(bo[h].dlo[CN][ref]).c_str(), frs(bo[h].dhi[CN][ref]).c_str(),
                 frs(100 * d / tt[h].mae(ref), 1).c_str(), verdictOf(bo[h].dlo[CN][ref], bo[h].dhi[CN][ref]).c_str());
       }
       fprintf(out, "\n");
     }
-    fprintf(out, "\nÉcart apparié de RMSE, modèle neuf − référence [IC 95 %%] :\n\n| horizon | − persistance | − profil seul | − modèle actuel |\n|---|---|---|---|\n");
+    fprintf(out, "\nÉcart apparié de RMSE, modèle neuf − référence [IC 95 %%] :\n\n%s", dhead);
     for (int h = 0; h < NH; h++) {
       fprintf(out, "| %s min |", HL[h]);
-      for (int ref : { CP, CPR, CM }) {
+      for (int ref : { CP, CPR, CM, CC }) {
         const double d = tt[h].rmse(CN) - tt[h].rmse(ref);
         fprintf(out, " %s [%s ; %s] (%s %%) %s |", frs(d).c_str(), frs(bo[h].drlo[CN][ref]).c_str(), frs(bo[h].drhi[CN][ref]).c_str(),
                 frs(100 * d / tt[h].rmse(ref), 1).c_str(), verdictOf(bo[h].drlo[CN][ref], bo[h].drhi[CN][ref]).c_str());
@@ -1215,7 +1407,7 @@ int main(int argc, char ** argv) {
   fprintf(out, "\n");
 
   // ── Par jour ──
-  fprintf(out, "## 5. Par jour — MAE persistance / profil seul / modèle actuel / **modèle neuf**\n\n| jour | n (+60) |");
+  fprintf(out, "## 5. Par jour — MAE persistance / profil seul / modèle actuel / modèle 2 (755d7c1) / **modèle neuf**\n\n| jour | n (+60) |");
   for (int h = 0; h < NH; h++) fprintf(out, " %s min |", HL[h]);
   fprintf(out, "\n|---|---|---|---|---|---|---|\n");
   int dmax = 0; for (auto & r : R.rows) dmax = std::max(dmax, r.day);
@@ -1228,7 +1420,7 @@ int main(int argc, char ** argv) {
       Tot t = totalOf(ag, C.size());
       if (h == 0) { std::vector<SlotAgg> a60; aggregate(S, R, C, 2, [&](const Row & r) { return r.day == d; }, a60); fprintf(out, " %ld |", totalOf(a60, C.size()).n); }
       if (!t.n) { fprintf(out, " — |"); continue; }
-      fprintf(out, " %s / %s / %s / **%s** |", fr(t.mae(CP), 3).c_str(), fr(t.mae(CPR), 3).c_str(), fr(t.mae(CM), 3).c_str(), fr(t.mae(CN), 3).c_str());
+      fprintf(out, " %s / %s / %s / %s / **%s** |", fr(t.mae(CP), 3).c_str(), fr(t.mae(CPR), 3).c_str(), fr(t.mae(CM), 3).c_str(), fr(t.mae(CC), 3).c_str(), fr(t.mae(CN), 3).c_str());
     }
     fprintf(out, "\n");
   }
@@ -1236,10 +1428,10 @@ int main(int argc, char ** argv) {
 
   // ── Par heure (test) ──
   for (int per = 0; per < (nBlind ? 2 : 1); per++)
-  for (int ref : { CP, CPR, CM }) {
+  for (int ref : { CP, CPR, CM, CC }) {
     std::function<bool(const Row &)> inPer = per ? std::function<bool(const Row &)>(inBlind) : std::function<bool(const Row &)>(inTest);
     fprintf(out, "## 6%s. Par heure de la journée (%s) — écart de MAE modèle neuf − %s [IC 95 %%, grappes = quarts d'heure]\n\n| heure | n (+60) |",
-            per ? (ref == CP ? "d" : ref == CPR ? "e" : "f") : (ref == CP ? "a" : ref == CPR ? "b" : "c"), per ? "aveugle" : "test", C[ref].name.c_str());
+            per ? (ref == CP ? "e" : ref == CPR ? "f" : ref == CM ? "g" : "h") : (ref == CP ? "a" : ref == CPR ? "b" : ref == CM ? "c" : "d"), per ? "aveugle" : "test", C[ref].name.c_str());
     for (int h = 0; h < NH; h++) fprintf(out, " %s min |", HL[h]);
     fprintf(out, "\n|---|---|---|---|---|---|---|\n");
     for (int hr = 6; hr < 22; hr++) {
@@ -1268,7 +1460,7 @@ int main(int argc, char ** argv) {
       std::vector<SlotAgg> ag; aggregate(S, R, C, h, keep, ag);
       tt[h] = totalOf(ag, C.size()); bo[h] = blockBoot(ag, (int)C.size(), Lh[h], B / 4);
     }
-    for (int c = CG; c < (int)C.size(); c++) {
+    for (int c = CC; c < (int)C.size(); c++) {
       fprintf(out, "| %s |", C[c].name.c_str());
       for (int h = 0; h < NH; h++)
         fprintf(out, " %s · %s [%s ; %s] |", fr(tt[h].mae(c)).c_str(), frs(tt[h].mae(c) - tt[h].mae(CN)).c_str(), frs(bo[h].dlo[c][CN]).c_str(), frs(bo[h].dhi[c][CN]).c_str());
@@ -1279,6 +1471,17 @@ int main(int argc, char ** argv) {
   candTable("7a. Candidats — mise au point", inDev);
   candTable("7b. Candidats — test", inTest);
   candTable("7c. Candidats — dimanche 01/11 (férié, 1er dimanche : profil du week-end tiré du seul samedi)", [&](const Row & r) { return r.day == 6; });
+  if (nBlind) candTable("7d. Candidats — période à l'aveugle", inBlind);
+  {
+    fprintf(out, "Intensité du jour ρ (candidat) : moyenne sur les prévisions notées, par jour :");
+    int dmx = 0; for (auto & r : R.rows) dmx = std::max(dmx, r.day);
+    for (int d = 0; d <= dmx; d++) {
+      double s = 0; long c = 0;
+      for (auto & r : R.rows) if (r.day == d) { s += r.rn; c++; }
+      if (c) fprintf(out, " %s %s ;", dayName(d).c_str(), fr(s / c, 2).c_str());
+    }
+    fprintf(out, "\n\n");
+  }
   fprintf(out, "Candidats : *sans classes de jour* = modèle neuf avec une seule classe (rejeu du cœur, levier `fcDayClass`).");
   for (size_t v = 1; v < V.size(); v++) if (!V[v].note.empty()) fprintf(out, " *%s* : %s.", V[v].name.c_str(), V[v].note.c_str());
   fprintf(out, "\n\n");
@@ -1348,7 +1551,7 @@ int main(int argc, char ** argv) {
     fprintf(out, "## 11. Contrôle de non-fuite temporelle\n\n");
     fprintf(out, "Chaque rejeu ci-dessous ne voit pas l'historique après l'instant de coupe T (tronqué), ou le voit **brouillé** "
                  "(chaque relevé postérieur à T remplacé par une valeur quelconque, chaque capacité du journal postérieure à T décalée). "
-                 "Toute prévision émise à t ≤ T doit être identique au bit près à celle du rejeu complet : modèle neuf, sans classes de jour, "
+                 "Toute prévision émise à t ≤ T doit être identique au bit près à celle du rejeu complet : modèle neuf, modèle 2 sans couples par station, sans classes de jour, "
                  "profil seul, échéances, et chaque candidat.\n\n"
                  "| coupe T | rejeu | prévisions émises à t ≤ T comparées | différentes | rangées manquantes |\n|---|---|---|---|---|\n");
     std::vector<std::string> cuts = { "2026-10-27 12:00", "2026-10-29 00:00", "2026-10-30 17:00", "2026-10-31 09:30", "2026-11-01 10:00" };
@@ -1379,10 +1582,11 @@ int main(int argc, char ** argv) {
           }
           for (auto & k : t2) if (k.first > cut) for (auto & c : k.second.capE) if (c >= 0) c = c + 3;
         }
-        Run R2, RG2;
+        Run R2, RG2, RC2;
         replay(H2, t2, Levers(), pt, R2);
         neighbourPass(R2, nbr);
         { Levers l; l.dayClass = false; replay(H2, t2, l, pt, RG2); }
+        { Levers l; l.station = false; replay(H2, t2, l, pt, RC2); }
         std::vector<VarOut> VO2(V.size());
         for (size_t v = 0; v < V.size(); v++) runVariant(V[v], R2, VO2[v]);
         std::map<std::pair<int64_t, int>, size_t> ix;
@@ -1397,7 +1601,8 @@ int main(int argc, char ** argv) {
           bool same = a.cur == b.cur && a.capE == b.capE && a.etaE == b.etaE && a.etaF == b.etaF;
           for (int h = 0; h < NH; h++) {
             same &= !memcmp(&a.fc[h], &b.fc[h], sizeof(float)) && !memcmp(&a.pr[h], &b.pr[h], sizeof(float))
-                    && !memcmp(&RG.rows[i].fc[h], &RG2.rows[it->second].fc[h], sizeof(float));
+                    && !memcmp(&RG.rows[i].fc[h], &RG2.rows[it->second].fc[h], sizeof(float))
+                    && !memcmp(&RC.rows[i].fc[h], &RC2.rows[it->second].fc[h], sizeof(float));
             for (size_t v = 0; v < V.size(); v++) same &= !memcmp(&VO[v].f[i][h], &VO2[v].f[it->second][h], sizeof(float));
           }
           cmp++; diff += !same;

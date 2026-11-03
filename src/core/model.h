@@ -58,6 +58,8 @@ struct PredictOpts {
   // dont la tendance porte les alertes (docs/mesures-modele.md) — FC_RULE_V2 = la prévision affichée (mesuré, non livré)
   uint8_t etaRule = FC_RULE_V1;
   bool  fcDayClass = true;     // modèle 2 : un jeu de coefficients par type de jour (ouvré | week-end et férié)
+  bool  fcStation = true;      // modèle 2 : couple propre à chaque station à +60, +120 et +240 min (FcSt, livré) ;
+                               // false = le couple de la classe pour toutes (commit 755d7c1), bancs seulement
   float fcHalfLifeDays = 7.f;  // modèle 2 : oubli de l'apprentissage (jours de quarts d'heure notés de la classe)
   // (étape 1 — tolérance météo — mesurée et non livrée : voir le commit 739b5cf)
   bool wxFlow = true;          // étape 3a : mouvement prévu du profil × (1 − α·(x − x̄ₕ)), α global appris
@@ -232,6 +234,13 @@ struct NetEvent { int16_t st; uint8_t type; };   // nouvelle rupture (toast UI)
 // a = b = 0 : la persistance (avec 8, la classe week-end quittait la persistance à +240 min sur 9 quarts d'heure
 // jugés, tous du samedi, et perdait 38 % contre elle le dimanche 01/11 : docs/mesures-modele.md). Une station
 // sans profil à t ou à t + h n'apprend rien et se prévoit par la persistance à cet horizon.
+// Couples par station (g_pred.fcStation, livré) : aux horizons de 60, 120 et 240 min, chaque station choisit
+// son couple parmi une sous-grille de 6 × 5 (FC_SA × FC_SB) sur SES erreurs (mêmes prévisions d'apprentissage,
+// même règle d'erreur, même oubli) plus FC_KAPPA prévisions fictives de sa classe (l'erreur moyenne de la classe à
+// ce couple) : une station peu observée garde le meilleur couple de la classe sur la sous-grille, une station
+// régulière ou bruitée s'en écarte. Choix refait quand un lot de sa classe est jugé à cet horizon, gardé dans
+// le fichier ; tant que la classe n'a pas FC_MIN_LOTS quarts d'heure jugés à cet horizon : la persistance.
+// +15 et +30 min gardent le couple de la classe (par station, la perte y était mesurée : docs/mesures-modele.md).
 // Seul le flux GBFS l'alimente : rien de ce que l'utilisateur règle ou saisit n'y entre.
 static const int FC_NC = 2;                         // classes de jour : 0 = ouvré, 1 = week-end et férié
 static const int FC_NH = 5;                         // horizons d'ancrage
@@ -242,11 +251,26 @@ extern const int16_t FC_HMIN[FC_NH];                // 15, 30, 60, 120, 240 (min
 static const float FC_MIN_LOTS = 64.f;              // quarts d'heure jugés (au moins une prévision) avant de quitter la persistance
 static const float FC_PEN = 0.005f;                 // vélo par unité de a + b
 static const float FC_FIX = 64.f;                   // écarts au profil, en 1/64 de vélo
-// Statistiques de l'apprentissage, sauvegardées dans /vn_prof.bin (version 5) : 13 520 octets
+// Statistiques de l'apprentissage, sauvegardées dans /vn_prof.bin (versions 5 et 6) : 13 520 octets
 struct FcLearn {
   float err[FC_NC][FC_NH][FC_NG];   // Σ |prévision arrondie − relevé| par couple (a, b), avec oubli
   float w[FC_NC][FC_NH];            // prévisions jugées, avec le même oubli
   float lots[FC_NC][FC_NH];         // quarts d'heure jugés (au moins une prévision), avec le même oubli
+};
+static const int FC_SH0 = 2;                        // premier horizon à couples par station (60 min)
+static const int FC_NSH = FC_NH - FC_SH0;           // 60, 120, 240 min
+static const int FC_SNA = 6, FC_SNB = 5;            // sous-grille des stations
+static const int FC_SNG = FC_SNA * FC_SNB;
+extern const uint8_t FC_SA[FC_SNA];                 // indices de a dans la grille : 0 ; 0,2 ; 0,5 ; 0,7 ; 1 ; 1,2
+extern const uint8_t FC_SB[FC_SNB];                 // indices de b : 0 ; 0,1 ; 0,2 ; 0,35 ; 0,5
+static const float FC_KAPPA = 200.f;                // prévisions fictives de la classe (rétrécissement)
+static const uint8_t FC_SEL_NONE = 255;             // pas de couple propre : celui de la classe
+// Apprentissage d'une station, sauvegardé dans /vn_prof.bin (version 6, une par station) : 752 octets
+struct FcSt {
+  float err[FC_NC][FC_NSH][FC_SNG];  // Σ |erreur| de ses prévisions d'apprentissage par couple de la sous-grille
+  float w[FC_NC][FC_NSH];            // ses prévisions jugées
+  uint8_t sel[FC_NC][FC_NSH];        // couple choisi (index de la sous-grille), FC_SEL_NONE = celui de la classe
+  uint8_t pad[2];
 };
 // Prévision d'apprentissage en attente de son échéance (PSRAM, non sauvegardée : un redémarrage perd au plus
 // les 4 dernières heures d'apprentissage)
@@ -302,6 +326,7 @@ struct Model {
   uint8_t   fcPendC[FC_PEND] = {};       // classe de jour de chaque lot
   int       fcPendHead = -1;             // dernier lot émis
   float     fcA[FC_NC][FC_NH] = {}, fcB[FC_NC][FC_NH] = {};
+  FcSt *    fcS = nullptr;               // [VN_MAX_ST], PSRAM : couples par station (sauvegardé, v6)
   Alert *   alerts = nullptr;            // [VN_MAX_ALERTS] — les plus graves, pas les premières
   int       nAlerts = 0;
   int       nAlertsTotal = 0;            // toutes, y compris celles écartées par le plafond
@@ -355,7 +380,9 @@ struct Model {
   // prévisions d'apprentissage arrivées à échéance, puis en émet si c'est un quart d'heure de 6 h à 22 h
   void  fcLearnSlot(int64_t slotT, int64_t now);
   void  fcSelect();                      // couples (a, b) appliqués, depuis fcL
-  void  fcCoefAt(int cls, float hMin, float & a, float & b) const;   // interpolés à l'horizon h (minutes)
+  void  fcSelectStations(int cls, int h); // couple de chaque station (horizon d'ancrage h ≥ FC_SH0), depuis fcS et fcL
+  // Couple interpolé à l'horizon hMin (minutes) : celui de la classe, ou de la station s (≥ 0) à partir de 60 min
+  void  fcCoefAt(int cls, float hMin, float & a, float & b, int s = -1) const;
   int   fcClassAt(int64_t t) const;      // classe de jour des coefficients (0 ouvré, 1 week-end et férié)
   float learnPct() const;                // 0…100
   int   ringIndex(int back) const;       // index du point « back » tranches en arrière (‑1)

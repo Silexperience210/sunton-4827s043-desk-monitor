@@ -2,6 +2,7 @@
 #include "settings.h"
 #include "calendar.h"
 #include "../platform/platform.h"
+#include <stddef.h>
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
@@ -109,8 +110,10 @@ bool Model::init() {
   fcL = (FcLearn *)plat::psAlloc(sizeof(FcLearn));
   fcPend = (FcIssue *)plat::psAlloc(sizeof(FcIssue) * FC_PEND * VN_MAX_ST);
   fcLotErr = (uint32_t *)plat::psAlloc(sizeof(uint32_t) * FC_NG);
-  if (!fcL || !fcPend || !fcLotErr) return false;
+  fcS = (FcSt *)plat::psAlloc(sizeof(FcSt) * VN_MAX_ST);
+  if (!fcL || !fcPend || !fcLotErr || !fcS) return false;
   memset(fcL, 0, sizeof(FcLearn));
+  for (int i = 0; i < VN_MAX_ST; i++) memset(fcS[i].sel, FC_SEL_NONE, sizeof(fcS[i].sel));
   memset(fcPend, 255, sizeof(FcIssue) * FC_PEND * VN_MAX_ST);
   memset(fcPendT, 0, sizeof(fcPendT));
   memset(fcPendC, 0, sizeof(fcPendC));
@@ -630,17 +633,17 @@ static void projectStepsV1(const ProfCell * p, const StepDM & dm, float cur, flo
 }
 
 // Modèle 2 (FC_RULE_V2) : mêmes entrées que la règle d'avant (profil, jours de profil des pas, part météo),
-// la tendance en moins ; a et b de la classe de jour de l'instant de départ, à l'horizon de chaque pas. Les
-// deux écarts au profil n'existent que si le profil est connu à t ET à t + h (sinon : la persistance à ce
-// pas), comme à l'apprentissage.
-static void projectStepsV2(const Model & m, int cls, const ProfCell * p, const StepDM & dm, float cur, float capE,
+// la tendance en moins ; a et b de la classe de jour de l'instant de départ, à l'horizon de chaque pas (ceux
+// de la station si à partir de 60 min). Les deux écarts au profil n'existent que si le profil est connu à t
+// ET à t + h (sinon : la persistance à ce pas), comme à l'apprentissage.
+static void projectStepsV2(const Model & m, int cls, int st, const ProfCell * p, const StepDM & dm, float cur, float capE,
                            int stepMin, int nSteps, float * out, float * conf, const float * wxF, float * wxPart) {
   float p0, n0;
   bool has0 = profileLocal(p, dm.dow[0], dm.mod[0], p0, n0);
   float prev = p0, M = 0;
   for (int k = 0; k < nSteps; k++) {
     float a, b;
-    m.fcCoefAt(cls, (float)(k * stepMin), a, b);
+    m.fcCoefAt(cls, (float)(k * stepMin), a, b, st);
     float dS = 0, dA = 0, cS = 0, ph, nh;
     if (has0 && profileLocal(p, dm.dow[k], dm.mod[k], ph, nh)) {
       dS = ph - p0;
@@ -720,7 +723,7 @@ static void forecastStation(Model & m, int i, const StepDM & dm, int64_t now) {
   if (g_pred.fcRule == FC_RULE_V1)
     projectStepsV1(p, dm, cur, capE, slope, 5, VN_FC_STEPS, s.fc, conf, wxOn ? wxF : nullptr, s.fcWx);
   else
-    projectStepsV2(m, m.fcClassAt(now), p, dm, cur, capE, 5, VN_FC_STEPS, s.fc, conf, wxOn ? wxF : nullptr, s.fcWx);
+    projectStepsV2(m, m.fcClassAt(now), i, p, dm, cur, capE, 5, VN_FC_STEPS, s.fc, conf, wxOn ? wxF : nullptr, s.fcWx);
   float conf60 = conf[12];
   s.conf = (uint8_t)lroundf(conf60 * 100);
 
@@ -752,7 +755,7 @@ bool Model::project(int i, int64_t now, int stepMin, int nSteps, float * out, fl
     projectStepsV1(prof + (size_t)i * PROF_STRIDE, dm, s.bikes, s.capEff(), slope, stepMin, nSteps, out, conf,
                    wxOn ? wxF : nullptr, wxPart);
   } else
-    projectStepsV2(*this, fcClassAt(now), prof + (size_t)i * PROF_STRIDE, dm, s.bikes, s.capEff(), stepMin, nSteps,
+    projectStepsV2(*this, fcClassAt(now), i, prof + (size_t)i * PROF_STRIDE, dm, s.bikes, s.capEff(), stepMin, nSteps,
                    out, conf, wxOn ? wxF : nullptr, wxPart);
   return true;
 }
@@ -765,6 +768,10 @@ const int16_t FC_HMIN[FC_NH] = { 15, 30, 60, 120, 240 };
 static const int32_t FC_UNIT = 1280;
 static inline float fcGridA(int ia) { return ia / 10.f; }
 static inline float fcGridB(int ib) { return ib / 20.f; }
+// Sous-grille des stations (indices de la grille ci-dessus) : a = 0 ; 0,2 ; 0,5 ; 0,7 ; 1 ; 1,2 · b = 0 ; 0,1 ; 0,2 ; 0,35 ; 0,5
+const uint8_t FC_SA[FC_SNA] = { 0, 2, 5, 7, 10, 12 };
+const uint8_t FC_SB[FC_SNB] = { 0, 2, 4, 7, 10 };
+static_assert(sizeof(FcSt) == 752, "format v6 de /vn_prof.bin");
 
 int Model::fcClassAt(int64_t t) const {
   if (!g_pred.fcDayClass) return 0;
@@ -774,10 +781,18 @@ int Model::fcClassAt(int64_t t) const {
   return g_pred.holidaySunday && isPublicHoliday(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday) ? 1 : 0;
 }
 
-void Model::fcCoefAt(int cls, float hMin, float & a, float & b) const {
+void Model::fcCoefAt(int cls, float hMin, float & a, float & b, int s) const {
   a = b = 0;
   if (cls < 0 || cls >= FC_NC || hMin <= 0) return;
-  const float * A = fcA[cls], * B = fcB[cls];
+  float A[FC_NH], B[FC_NH];
+  for (int k = 0; k < FC_NH; k++) {
+    A[k] = fcA[cls][k]; B[k] = fcB[cls][k];
+    if (k < FC_SH0 || !g_pred.fcStation || s < 0 || s >= n || !fcS || !fcL) continue;
+    const uint8_t j = fcS[s].sel[cls][k - FC_SH0];
+    // pas de couple propre, ou classe pas encore mûre à cet horizon (fichier d'une autre version) : celui de la classe
+    if (j >= FC_SNG || !(fcL->lots[cls][k] >= FC_MIN_LOTS)) continue;
+    A[k] = fcGridA(FC_SA[j / FC_SNB]); B[k] = fcGridB(FC_SB[j % FC_SNB]);
+  }
   if (hMin < FC_HMIN[0]) { const float f = hMin / FC_HMIN[0]; a = A[0] * f; b = B[0] * f; return; }
   for (int k = 0; k < FC_NH; k++) {
     if (hMin == FC_HMIN[k]) { a = A[k]; b = B[k]; return; }        // horizon d'ancrage : le couple appris tel quel
@@ -812,8 +827,37 @@ void Model::fcSelect() {
     }
 }
 
+// Couple de chaque station à l'horizon d'ancrage h (≥ FC_SH0) pour la classe cls : sur la sous-grille, erreur
+// moyenne de ses prévisions avec FC_KAPPA prévisions fictives de la classe (Σ err station + κ·err classe / w classe)
+// ÷ (w station + κ), + FC_PEN·(a + b) ; à égalité le premier (a, puis b croissants). Rien tant que la classe n'a
+// pas FC_MIN_LOTS quarts d'heure jugés à cet horizon (le couple de la classe, alors nul : la persistance).
+void Model::fcSelectStations(int cls, int h) {
+  if (!fcS || !fcL || cls < 0 || cls >= FC_NC || h < FC_SH0 || h >= FC_NH) return;
+  const int hh = h - FC_SH0;
+  const bool ripe = fcL->lots[cls][h] >= FC_MIN_LOTS && fcL->w[cls][h] > 0;
+  const float kc = ripe ? FC_KAPPA / fcL->w[cls][h] : 0.f;
+  const float * ec = fcL->err[cls][h];
+  for (int i = 0; i < VN_MAX_ST; i++) {
+    FcSt & S = fcS[i];
+    S.sel[cls][hh] = FC_SEL_NONE;
+    if (!ripe || i >= n) continue;
+    const float inv = 1.f / (S.w[cls][hh] + FC_KAPPA);
+    const float * es = S.err[cls][hh];
+    float best = 0;
+    int bj = -1;
+    for (int ja = 0; ja < FC_SNA; ja++)
+      for (int jb = 0; jb < FC_SNB; jb++) {
+        const int j = ja * FC_SNB + jb, ia = FC_SA[ja], ib = FC_SB[jb];
+        const float e = es[j] + kc * ec[ia * FC_NB + ib];
+        const float v = e * inv + FC_PEN * (fcGridA(ia) + fcGridB(ib));
+        if (bj < 0 || v < best) { best = v; bj = j; }
+      }
+    S.sel[cls][hh] = (uint8_t)bj;
+  }
+}
+
 void Model::fcLearnSlot(int64_t slotT, int64_t now) {
-  if (!fcL || !fcPend || !fcLotErr || head < 0 || ringT[head] != slotT) return;
+  if (!fcL || !fcPend || !fcLotErr || !fcS || head < 0 || ringT[head] != slotT) return;
   const uint8_t * row = ring + (size_t)head * VN_MAX_ST;   // relevés de la tranche slotT
   // 1. Échéances : lot émis à slotT − h, jugé contre le relevé de l'anneau à slotT (la règle de la notation)
   bool judged = false;
@@ -825,6 +869,7 @@ void Model::fcLearnSlot(int64_t slotT, int64_t now) {
     if (lb < 0) continue;
     memset(lotErr, 0, sizeof(uint32_t) * FC_NG);
     uint32_t cnt = 0;
+    const int c = fcPendC[lb];
     for (int i = 0; i < n; i++) {
       const FcIssue & e = fcPend[(size_t)lb * VN_MAX_ST + i];
       if (e.cur == 255 || !(e.use & (1u << h)) || row[i] == 255) continue;
@@ -839,14 +884,28 @@ void Model::fcLearnSlot(int64_t slotT, int64_t now) {
           er[ib] += (uint32_t)(d < 0 ? -d : d);
         }
       }
+      if (h >= FC_SH0) {                                   // la même erreur, pour la station seule, sur la sous-grille
+        FcSt & S = fcS[i];
+        float * es = S.err[c][h - FC_SH0];
+        for (int ja = 0; ja < FC_SNA; ja++) {
+          const int32_t base = (int32_t)e.cur * FC_UNIT + 2 * FC_SA[ja] * x1;
+          for (int jb = 0; jb < FC_SNB; jb++) {
+            int32_t v = base + FC_SB[jb] * x2;
+            v = v < 0 ? 0 : v > hi ? hi : v;
+            const int32_t d = (v + FC_UNIT / 2) / FC_UNIT - y;
+            es[ja * FC_SNB + jb] += (float)(uint32_t)(d < 0 ? -d : d);
+          }
+        }
+        S.w[c][h - FC_SH0] += 1.f;
+      }
       cnt++;
     }
     if (!cnt) continue;
-    const int c = fcPendC[lb];
     float * err = fcL->err[c][h];
     for (int j = 0; j < FC_NG; j++) err[j] += (float)lotErr[j];
     fcL->w[c][h] += (float)cnt;
     fcL->lots[c][h] += 1;
+    if (h >= FC_SH0) fcSelectStations(c, h);
     judged = true;
   }
   if (judged) fcSelect();
@@ -864,6 +923,12 @@ void Model::fcLearnSlot(int64_t slotT, int64_t now) {
     fcL->w[cls][h] *= decay;
     fcL->lots[cls][h] *= decay;
   }
+  for (int i = 0; i < n; i++)
+    for (int hh = 0; hh < FC_NSH; hh++) {
+      float * es = fcS[i].err[cls][hh];
+      for (int j = 0; j < FC_SNG; j++) es[j] *= decay;
+      fcS[i].w[cls][hh] *= decay;
+    }
   fcPendHead = (fcPendHead + 1) % FC_PEND;
   fcPendT[fcPendHead] = slotT;
   fcPendC[fcPendHead] = (uint8_t)cls;
@@ -1444,16 +1509,18 @@ static_assert(sizeof(NetSample) == 32, "format v2 de /vn_hist.bin");
 // /vn_prof.bin : ver 1 (≤ v1.0.8) = profils (cellule de 3 octets) ; ver 2 = + statistiques météo
 // (global, puis une par station dans l'ordre des sid) ; ver 3 = cellule de 4 octets (+ dispersion)
 // et, en fin de fichier, le premier relevé de dispersion de chaque station ; ver 4 (1.1.0) = ver 3
-// sans les statistiques par station (étape 3b, jamais appliquée : retirée) ; ver 5 (1.4.0, modèle 2) = ver 4
-// + l'apprentissage des coefficients de prévision en fin de fichier (FcLearn, 13 520 octets, indépendant du
-// nombre de stations).
+// sans les statistiques par station (étape 3b, jamais appliquée : retirée) ; ver 5 (modèle 2, commit 755d7c1,
+// jamais publiée) = ver 4 + l'apprentissage des coefficients de prévision en fin de fichier (FcLearn, 13 520
+// octets, indépendant du nombre de stations) ; ver 6 (1.4.0) = ver 5 + l'apprentissage de chaque station
+// (FcSt, 752 octets, dans l'ordre des sid).
 // Une version 1 ou 2 est relue cellule par cellule (moyenne et n intacts, dispersion inconnue :
 // l'écart habituel n'est plus affiché le temps de le réapprendre) ; une version 1 sans
 // apprentissage météo ; les statistiques par station d'une version 2 ou 3 sont sautées ; une version
-// 1 à 4 sans coefficients appris (la prévision reste la persistance le temps de les apprendre).
+// 1 à 4 sans coefficients appris (la prévision reste la persistance le temps de les apprendre) ; une version 5
+// sans couples par station (ceux de la classe le temps de les apprendre).
 // Version inconnue, taille fausse : fichier ignoré (profil à zéro), jamais de lecture hors du fichier.
 static const uint32_t PROF_MAGIC = 0x31504E56;   // "VNP1"
-static const uint16_t PROF_VER = 5;
+static const uint16_t PROF_VER = 6;
 static_assert(sizeof(FcLearn) == 13520, "format v5 de /vn_prof.bin");
 static const size_t PROF_CELL_V12 = 3;            // { uint16 a ; uint8 n } des versions 1 et 2
 static_assert(sizeof(WxStats) == 32 && sizeof(WxClimate) == 192, "format v2 de /vn_prof.bin");
@@ -1470,7 +1537,7 @@ bool Model::serialize(Blob & out) const {
   h.learnSince = learnSince; h.learnSamples = learnSamples; h.savedAt = lastUpdate;
   // Profils
   size_t sz = sizeof(h) + (size_t)n * 8 + (size_t)n * PROF_STRIDE * sizeof(ProfCell) + PROF_STRIDE
-              + sizeof(WxClimate) + sizeof(WxStats) + sizeof(int64_t) * (size_t)n + sizeof(FcLearn);
+              + sizeof(WxClimate) + sizeof(WxStats) + sizeof(int64_t) * (size_t)n + sizeof(FcLearn) + sizeof(FcSt) * (size_t)n;
   uint8_t * b = (uint8_t *)plat::psAlloc(sz);
   if (!b) return false;
   h.magic = PROF_MAGIC; h.ver = PROF_VER;
@@ -1484,6 +1551,10 @@ bool Model::serialize(Blob & out) const {
   memcpy(b + o, dispSince, sizeof(int64_t) * (size_t)n); o += sizeof(int64_t) * (size_t)n;
   if (fcL) memcpy(b + o, fcL, sizeof(FcLearn)); else memset(b + o, 0, sizeof(FcLearn));
   o += sizeof(FcLearn);
+  for (int i = 0; i < n; i++, o += sizeof(FcSt)) {
+    if (fcS) memcpy(b + o, &fcS[i], sizeof(FcSt));
+    else { memset(b + o, 0, sizeof(FcSt)); memset(b + o + offsetof(FcSt, sel), FC_SEL_NONE, sizeof(FcSt::sel)); }
+  }
   out.prof = b; out.profLen = o;
   // Historique 24 h
   sz = sizeof(h) + (size_t)n * 8 + VN_RING_SLOTS * (8 + sizeof(NetSample) + (size_t)n);
@@ -1532,6 +1603,7 @@ bool Model::profFileOk(const uint8_t * b, size_t len) {
   if (h.ver >= 2) need += sizeof(WxClimate) + sizeof(WxStats) * (1 + wxPerSt);
   if (h.ver >= 3) need += sizeof(int64_t) * (size_t)h.nSt;
   if (h.ver >= 5) need += sizeof(FcLearn);
+  if (h.ver >= 6) need += sizeof(FcSt) * (size_t)h.nSt;
   return h.magic == PROF_MAGIC && h.ver >= 1 && h.ver <= PROF_VER && h.nSt <= VN_MAX_ST && len == need;
 }
 
@@ -1602,6 +1674,8 @@ bool Model::load(int64_t now) {
         // permettent (254 vélos chacune) ; sinon, et pour les versions 1 à 4, l'apprentissage repart de zéro
         // (la persistance d'abord). Les profils, eux, sont gardés dans tous les cas.
         memset(fcL, 0, sizeof(FcLearn));
+        for (int i = 0; i < VN_MAX_ST; i++) { memset(&fcS[i], 0, sizeof(FcSt)); memset(fcS[i].sel, FC_SEL_NONE, sizeof(fcS[i].sel)); }
+        bool fcSane = false;
         if (h.ver >= 5) {
           memcpy(fcL, wp, sizeof(FcLearn));
           bool sane = true;
@@ -1615,8 +1689,27 @@ bool Model::load(int64_t now) {
               }
             }
           if (!sane) memset(fcL, 0, sizeof(FcLearn));
+          fcSane = sane;
+          wp += sizeof(FcLearn);
         }
+        // Couples par station (version 6) : même contrôle, station par station (une station abîmée repart de zéro,
+        // les autres sont gardées) ; rien si l'apprentissage de la classe a été refusé (le rétrécissement en dépend)
+        if (h.ver >= 6 && fcSane)
+          for (int j = 0; j < h.nSt; j++) {
+            if (map[j] < 0) continue;
+            FcSt S;
+            memcpy(&S, wp + (size_t)j * sizeof(FcSt), sizeof(FcSt));
+            bool ok = true;
+            for (int c = 0; c < FC_NC && ok; c++)
+              for (int k = 0; k < FC_NSH && ok; k++) {
+                const float w = S.w[c][k];
+                ok &= isfinite(w) && w >= 0 && w <= 1e7f && (S.sel[c][k] < FC_SNG || S.sel[c][k] == FC_SEL_NONE);
+                for (int q = 0; q < FC_SNG && ok; q++) ok &= isfinite(S.err[c][k][q]) && S.err[c][k][q] >= 0 && S.err[c][k][q] <= 254.f * w + 1.f;
+              }
+            if (ok) fcS[map[j]] = S;
+          }
         fcSelect();
+        // une version 5 (ou une station refusée) n'a pas de couple propre : il se choisit au prochain jugement
         learnSince = h.learnSince; learnSamples = h.learnSamples;
         any = true;
       }
@@ -1685,6 +1778,7 @@ void Model::resetHistory() {
   memset(dispSince, 0, sizeof(int64_t) * VN_MAX_ST);
   memset(dispPendCell, 0, sizeof(int16_t) * VN_MAX_ST);
   memset(fcL, 0, sizeof(FcLearn));
+  for (int i = 0; i < VN_MAX_ST; i++) { memset(&fcS[i], 0, sizeof(FcSt)); memset(fcS[i].sel, FC_SEL_NONE, sizeof(fcS[i].sel)); }
   memset(fcPend, 255, sizeof(FcIssue) * FC_PEND * VN_MAX_ST);
   memset(fcPendT, 0, sizeof(fcPendT));
   memset(fcPendC, 0, sizeof(fcPendC));
