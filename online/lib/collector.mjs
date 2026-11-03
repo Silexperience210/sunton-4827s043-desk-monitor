@@ -49,12 +49,40 @@ export class Collector {
     this.lastFetch = 0;                     // ms monotones du dernier cycle (0 = jamais)
     this.wxAt = 0;                          // epoch du dernier essai météo (s_wxAt)
     this.refreshReq = false;
+    this.forcedAt = 0;                      // ms monotones du dernier relevé forcé accepté (POST /api/refresh)
     this.running = false;
     this.busy = false;
     this.cycles = 0;
+    this.staleSince = 0;                    // flux périmé depuis (epoch), 0 = à jour
+  }
+
+  // ── Flux périmé : le fournisseur gèle en répondant 200 ──
+  // La carte applique le relevé quel que soit son last_updated (elle l'affiche seulement : « Relevé figé ») ;
+  // le serveur, lui, apprend 24 h/24 : un flux gelé ouvrirait des tranches de valeurs anciennes, apprises
+  // dans les profils, prises pour vérité par la notation des prévisions. Au-delà du seuil (même règle que le
+  // bandeau de la carte, ou VN_FEED_STALE_S), le relevé est un échec (ING.STALE) : rien n'est appliqué et
+  // /healthz passe en 503. last_updated absent ou illisible : appliqué (on ne sait pas). last_reported par
+  // station n'est pas un signal de vie (périmé de plus de 6 h pour 135 stations sur 148 qui louent).
+  staleS() { return this.cfg.feedStaleS || Math.max(180, 3 * this.cfg.refreshS); }
+  feedAge(body, now) {
+    let lu;
+    try { lu = JSON.parse(body).last_updated; } catch { return null; }
+    const t = typeof lu === 'number' ? lu : typeof lu === 'string' ? (/^\d+$/.test(lu) ? +lu : Date.parse(lu) / 1000) : NaN;
+    return Number.isFinite(t) && t > 0 ? { t: Math.floor(t), age: now - Math.floor(t) } : null;
   }
 
   clock() { this.e.clock(nowS(), this.mono()); }
+
+  // Relevé forcé (POST /api/refresh) : au plus un par refreshMinS, compté depuis le début du dernier cycle ou la
+  // dernière demande acceptée — l'API Vel'OH! est partagée. Renvoie 0 (accepté) ou les secondes à attendre.
+  forceRefresh() {
+    const t = this.mono(), last = Math.max(this.lastFetch || 0, this.forcedAt || 0);
+    const wait = last ? Math.ceil((last + this.cfg.refreshMinS * 1000 - t) / 1000) : 0;
+    if (wait > 0) return wait;
+    this.forcedAt = t;
+    this.refreshReq = true;
+    return 0;
+  }
 
   // Un évènement = un appel au moteur, rejouable tel quel par un jumeau
   call(ev) {
@@ -126,7 +154,19 @@ export class Collector {
     this.clock();
     if (this.e.infoAge() >= 0) {
       const r = await this.httpGet(`${this.cfg.gbfsBase}/station_status.json`);
-      const n = this.call({ k: 'ingest', feed: FEED.STATUS, got: r.got, code: r.code, body: r.got ? r.body.toString('utf8') : '', dur: r.ms, cyc: Date.now() - t0 });
+      const body = r.got ? r.body.toString('utf8') : '';
+      const fa = r.got ? this.feedAge(body, nowS()) : null;
+      const stale = fa && fa.age > this.staleS();
+      if (stale && !this.staleSince) {
+        this.staleSince = nowS();
+        this.log(`[net] station_status : last_updated ${new Date(fa.t * 1000).toISOString()}, vieux de ${fa.age >= 5400 ? `${Math.round(fa.age / 3600)} h` : `${Math.round(fa.age / 60)} min`} (seuil ${this.staleS()} s) : flux périmé, relevé non appliqué`);
+      } else if (!stale && r.got && this.staleSince) {
+        this.log(`[net] station_status : flux de nouveau à jour après ${Math.round((nowS() - this.staleSince) / 60)} min`);
+        this.staleSince = 0;
+      }
+      const n = stale
+        ? this.call({ k: 'ingest', feed: FEED.STATUS, got: false, code: ING.STALE, body: '', dur: r.ms, cyc: Date.now() - t0 })
+        : this.call({ k: 'ingest', feed: FEED.STATUS, got: r.got, code: r.code, body, dur: r.ms, cyc: Date.now() - t0 });
       if (!(n > 0)) ok = false;
     }
     if (!ok) this.call({ k: 'cycle', ok: false });

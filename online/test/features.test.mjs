@@ -8,9 +8,12 @@
 //  3. la note du jour : erreur de la persistance recalculée à la main, à l'identique ;
 //  4. notifications (horloge et transport simulés) : rupture qui dure, regroupement, rétablie, plafond
 //     horaire, heures calmes, flux muet, Sunton, résumé du matin ;
-//  5. banc de nuit (si sim/bench_prevision est compilé) : archive simulée importée, banc lancé, rapport lu.
+//  5. banc de nuit : archive simulée importée, banc lancé, rapport lu ;
+//  6. le vrai serveur : import automatique, API, jeton, notification de test, banc à la demande.
+// Exige sim/bench_prevision (et sim/sync_sim, comme toute la suite) : sans eux, le test échoue au lieu de
+// sauter les étapes 5 et 6 en se déclarant réussi.
 // node online/test/features.test.mjs
-import { readFileSync, mkdtempSync, existsSync, readdirSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -24,13 +27,17 @@ import { Notifier } from '../lib/notify.mjs';
 import { NightBench, parseBenchReport } from '../lib/bench.mjs';
 import { luxParts } from '../lib/store.mjs';
 import { packRecords, unpackRecords, aggregate } from '../public/vn-series.js';
+import { exigerBinaires, BINAIRES } from './binaires.mjs';
+import { site } from './harnais.mjs';
+
+exigerBinaires(['bench_prevision', 'sync_sim']);
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..', '..');
 const D = join(ROOT, 'docs', 'donnees');
 const PUB = join(HERE, '..', 'public');
 let fails = 0, checks = 0;
-const ok = (c, msg) => { checks++; if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } };
+const ok = (c, msg) => { checks++; site(); if (!c) { fails++; console.log(`  ÉCHEC : ${msg}`); } };
 const quiet = { onLog: () => {} };
 const tmp = mkdtempSync(join(tmpdir(), 'vn-features-'));
 
@@ -151,24 +158,32 @@ for (const p of p1) {
   p.st.forEach((v, i) => { if (!v) return; curN++; if (v[0] !== tr[p.sid[i]]) curBad++; });
 }
 ok(curN > 8000 && curBad === 0, `relevé de chaque prévision = la vérité (${curN} prévisions, ${curBad} écart(s))`);
-ok(p1.every((p) => p.st.every((v) => !v || (v.length === 14 && v.every(Number.isInteger)))), 'prévisions arrondies, 14 valeurs par station');
+ok(p1.every((p) => p.st.every((v) => !v || (v.length === 15 && v.every(Number.isInteger)))), 'prévisions arrondies, 15 valeurs par station (14 + « en service »)');
+// « en service » (loue et rend) d'après le flux envoyé, pas d'après le code testé
+const horsService = new Set(st0.data.stations.filter((s) => s.is_renting === false || s.is_returning === false).map((s) => s.station_id));
+let flagBad = 0, flagOff = 0;
+for (const p of p1) p.st.forEach((v, i) => { if (!v) return; if (v[14] !== (horsService.has(p.sid[i]) ? 0 : 1)) flagBad++; if (!v[14]) flagOff++; });
+ok(flagBad === 0 && flagOff > 0, `« en service » = le flux (${flagOff} prévisions de stations qui ne louent ou ne rendent plus, ${flagBad} écart(s))`);
 
 console.log('3. note de la journée contre un calcul à la main');
 const note = fl.score(day1);
 ok(note.complete, 'journée complète (l\'historique couvre jusqu\'à 2 h le lendemain)');
-// persistance à +60 min, recalculée depuis la vérité seule
-let hs = 0, hn = 0, ms15 = 0, mn15 = 0;
+// persistance à +60 min, recalculée depuis la vérité seule ; stations hors service écartées (m7). Aucune n'est
+// figée depuis 24 h : l'historique commence le jour même.
+let hs = 0, hn = 0, ms15 = 0, mn15 = 0, skipN = 0;
 for (const p of p1) {
   const later = truthBySlot.get(p.slot + 12 * 300), l15 = truthBySlot.get(p.slot + 3 * 300);
   p.st.forEach((v, i) => {
     if (!v) return;
     const sid = p.sid[i];
+    if (horsService.has(sid)) { skipN++; return; }
     if (later && later[sid] !== undefined) { hs += Math.abs(v[0] - later[sid]); hn++; }
     if (l15 && l15[sid] !== undefined) { ms15 += Math.abs(v[1] - l15[sid]); mn15++; }
   });
 }
 ok(note.per[2].n === hn && Math.abs(note.per[2].mae - hs / hn) < 1e-4, `persistance +60 : ${note.per[2].mae} contre ${(hs / hn).toFixed(4)} à la main (n ${note.per[2].n}/${hn})`);
 ok(note.model[0].n === mn15 && Math.abs(note.model[0].mae - ms15 / mn15) < 1e-4, `modèle +15 : ${note.model[0].mae} contre ${(ms15 / mn15).toFixed(4)} à la main`);
+ok(note.skipped?.notRenting === skipN && note.skipped?.frozen === 0, `prévisions écartées : hors service ${note.skipped?.notRenting} (${skipN} attendues), figées ${note.skipped?.frozen} (0)`);
 ok(note.model.every((a) => a.n > 0 && Number.isFinite(a.mae)) && note.prof.every((a) => a.n > 0), 'les cinq horizons sont notés, trois colonnes');
 ok(note.hours.length === 16 && note.stations.length > 100, 'erreur par heure et par station');
 ok(note.alerts.emptyPred >= note.alerts.emptyHit && note.alerts.emptyReal >= note.alerts.emptyCaught, 'fiabilité des alertes « dans l\'heure » cohérente');
@@ -251,9 +266,8 @@ const n2 = new Notifier({ dataDir: NDIR, fetchImpl: fakeFetch, now: () => now })
 ok(n2.enabled && n2.recent.length === 8 && !n2.digestDue(), 'réglages et journal relus au redémarrage');
 
 console.log('5. banc de nuit sur une archive simulée');
-const BIN = join(ROOT, 'sim', 'bench_prevision');
-if (!existsSync(BIN)) console.log('   (sim/bench_prevision absent : make -C sim bench_prevision — étape sautée)');
-else {
+const BIN = BINAIRES.bench_prevision;
+{
   const W = join(tmp, 'monde');
   execFileSync(BIN, ['--jours', '4', '--court', '--exporter', W], { cwd: join(ROOT, 'sim'), stdio: 'ignore' });
   const dirs = snapshotDirs(join(W, 'archive'));
@@ -295,7 +309,8 @@ else {
   cpSync(join(W, 'archive'), join(SD, 'archive'), { recursive: true });
   const port = 18790 + Math.floor(Math.random() * 1000);
   const srv = spawn(process.execPath, [join(HERE, '..', 'server.mjs')], { env: { ...process.env, VN_DATA: SD, VN_PORT: String(port), VN_HOST: '127.0.0.1', VN_TOKEN: 'jeton-test',
-    VN_GBFS_BASE: 'http://127.0.0.1:9/gbfs', VN_WX_URL: 'http://127.0.0.1:9/wx', VN_BENCH_BIN: BIN, VN_BENCH_CWD: join(ROOT, 'sim'), VN_NIGHT_AT: '23:59' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    VN_GBFS_BASE: 'http://127.0.0.1:9/gbfs', VN_WX_URL: 'http://127.0.0.1:9/wx', VN_BENCH_BIN: BIN, VN_BENCH_CWD: join(ROOT, 'sim'), VN_NIGHT_AT: '23:59',
+    VN_NOTIFY_LOCAL: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });        // faux ntfy en 127.0.0.1 : bouclage permis (lib/notify.mjs)
   let slog = '';
   srv.stdout.on('data', (d) => { slog += d; }); srv.stderr.on('data', (d) => { slog += d; });
   const base = `http://127.0.0.1:${port}`;

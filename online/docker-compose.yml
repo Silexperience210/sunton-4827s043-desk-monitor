@@ -1,5 +1,6 @@
 # VelohNav Ops en ligne — à lancer sur une machine allumée en permanence (Umbrel, Raspberry Pi, NAS, VPS)
 #   cd online && docker compose up -d        →  http://<machine>:8790
+# La page sur Internet par Cloudflare Tunnel : docker-compose.tunnel.yml (jeton obligatoire).
 services:
   velohnav-ops:
     build:
@@ -13,7 +14,11 @@ services:
       - ./data:/data                 # ce que le serveur apprend : vn_*.bin, archive/, historique/, prevision/, banc/
     environment:
       VN_NAME: "VelohNav Ops en ligne"
-      # VN_TOKEN: "un-jeton-long"    # à définir si le port est exposé hors du réseau local
+      # Jeton des écritures, des réglages et de la synchro des cartes : un long mot de passe, dans un fichier
+      # .env à côté de ce compose (VN_TOKEN=…) ou dans l'environnement. Sans jeton, les écritures sont
+      # fermées : la page et les cartes lisent, mais réglages, banc et envois des cartes sont refusés ;
+      # VN_OPEN: "1" les ouvre au réseau local (de confiance).
+      VN_TOKEN: ${VN_TOKEN:-}
       # VN_REFRESH_S: "60"           # période de station_status (30 s au moins), comme sur la carte
       # VN_ARCHIVE_HOURS: "6,18"     # instantanés pour le banc --reel (heure de Luxembourg) ; vide = aucun
       # VN_ARCHIVE_KEEP_DAYS: "0"    # 0 = tout garder
@@ -23,25 +28,3 @@ services:
       # VN_NTFY_TOKEN: ""            # serveur ntfy protégé
       # VN_PUBLIC_URL: "http://umbrel.local:8790"   # ouvert en touchant une notification
       # VN_NOTIFY_DIGEST: "07:30"    # résumé du matin ; vide = aucun
-
-  # ── Facultatif : la page sur Internet, sans ouvrir de port, par Cloudflare Tunnel ────────────────
-  # Toujours avec VN_TOKEN défini ci-dessus : la page demandera le jeton, les Sunton aussi (sync jeton …).
-  #   Essai, adresse au hasard en *.trycloudflare.com (change à chaque redémarrage, sans compte) :
-  #     docker compose --profile essai up -d   puis   docker compose logs tunnel-essai | grep trycloudflare
-  #   Adresse fixe (compte Cloudflare gratuit + un domaine chez Cloudflare) : Zero Trust → Networks → Tunnels →
-  #   Create tunnel → copier le jeton ; Public hostname → service http://velohnav-ops:8790 ; puis
-  #     TUNNEL_TOKEN=… docker compose --profile tunnel up -d
-  tunnel-essai:
-    image: cloudflare/cloudflared:latest
-    profiles: ["essai"]
-    restart: unless-stopped
-    command: tunnel --no-autoupdate --url http://velohnav-ops:8790
-    depends_on: [velohnav-ops]
-  tunnel:
-    image: cloudflare/cloudflared:latest
-    profiles: ["tunnel"]
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}     # jeton du tunnel (Zero Trust → Networks → Tunnels), ou dans un fichier .env
-    depends_on: [velohnav-ops]

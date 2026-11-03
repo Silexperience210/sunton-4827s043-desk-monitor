@@ -11,10 +11,10 @@
 // « st » ouvre chaque fichier et revient quand la liste des stations change dans la journée.
 //
 // Une tranche est écrite quand la suivante s'ouvre : elle est alors définitive (retraits et retours compris).
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, existsSync, statSync, rmSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, statSync, rmSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
-import { gzipSync, gunzipSync } from 'node:zlib';
-import { atomicWrite } from './store.mjs';
+import { gzipSync, gunzipSync, constants as zlibConst } from 'node:zlib';
+import { atomicWrite, appendLines, checkHist, crc32, hex8 } from './store.mjs';
 import { SLOT_S, dayOf, luxParts, aggregate, dailySummary } from '../public/vn-series.js';
 
 export { SLOT_S, dayOf };
@@ -51,11 +51,14 @@ export class History {
     this.dir = join(dataDir, 'historique');
     this.log = log;
     mkdirSync(this.dir, { recursive: true });
-    this.lastT = 0;            // dernière tranche écrite
+    this.lastT = 0;            // dernière tranche écrite par le relevé (une fusion ne la déplace pas)
     this.curDay = '';          // fichier du jour en cours d'écriture
     this.curKey = '';          // liste de stations de la dernière ligne « st » de ce fichier
+    this.tailT = 0;            // dernière tranche de ce fichier : une tranche antérieure n'y est pas ajoutée à la fin
+    this.gapCheck = true;      // premier relevé après le démarrage : l'anneau comble aussi les trous
     this.cache = new Map();    // jour fini → enregistrements (lecture)
     this.stCache = null;       // stations du moteur, mises en cache par clé
+    this.damaged = new Set();  // .gz illisibles (en tout ou partie) : mis de côté avant toute réécriture du jour
     this._scanTail();
   }
 
@@ -68,6 +71,8 @@ export class History {
     this._filesAt = now;
     return this._files;
   }
+  // Un jour = son .jsonl.gz, son .jsonl, ou les deux : coupure pendant la compression, ou tranche écrite après
+  // la compression du jour (redémarrage de nuit). Les deux sont alors lus ensemble (_read) : aucun ne masque l'autre.
   _listFiles() {
     let names = [];
     try { names = readdirSync(this.dir); } catch { return []; }
@@ -75,17 +80,46 @@ export class History {
     for (const n of names) {
       const m = n.match(DAY_RE);
       if (!m) continue;
-      const cur = by.get(m[1]);
-      // si les deux existent (coupure pendant la compression), le clair fait foi
-      if (!cur || !m[2]) by.set(m[1], { day: m[1], gz: !!m[2], path: join(this.dir, n), bytes: statSync(join(this.dir, n)).size });
+      const f = by.get(m[1]) || { day: m[1], gzPath: null, plainPath: null, bytes: 0 };
+      const p = join(this.dir, n);
+      if (m[2]) f.gzPath = p; else f.plainPath = p;
+      f.bytes += statSync(p).size;
+      by.set(m[1], f);
     }
+    for (const f of by.values()) { f.gz = !f.plainPath; f.path = f.plainPath || f.gzPath; }
     return [...by.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
   }
+  // Un .gz illisible n'est pas un jour vide : il est noté (damaged), et ce qui précède une coupure se relit encore
+  _readFile(path, gz) {
+    let b;
+    try { b = readFileSync(path); } catch (err) { this.log(`[historique] ${path} illisible : ${err.message}`); return []; }
+    if (!gz) return parseDay(b);
+    try { const recs = parseDay(gunzipSync(b)); this.damaged.delete(path); return recs; } catch (err) {
+      if (!this.damaged.has(path)) this.log(`[historique] ${path} illisible : ${err.message}`);
+      this.damaged.add(path);
+      try { return parseDay(gunzipSync(b, { finishFlush: zlibConst.Z_SYNC_FLUSH })); } catch { return []; }
+    }
+  }
+  // Avant de réécrire un jour : ses fichiers illisibles sont gardés sous <nom>.rejete-AAAAMMJJ-HHMMSS, jamais écrasés
+  _keepDamaged(f) {
+    for (const p of [f?.gzPath, f?.plainPath]) {
+      if (!p || !this.damaged.has(p)) continue;
+      const { stamp } = luxParts(Math.floor(Date.now() / 1000));
+      let to = `${p}.rejete-${stamp}`, k = 2;
+      while (existsSync(to)) to = `${p}.rejete-${stamp}-${k++}`;
+      renameSync(p, to);
+      this.damaged.delete(p);
+      this._files = null;
+      this.log(`[historique] ${p} illisible : gardé sous ${to}, ce qui s'en relit est repris`);
+    }
+  }
   _read(f) {
-    try {
-      const b = readFileSync(f.path);
-      return parseDay(f.gz ? gunzipSync(b) : b);
-    } catch (err) { this.log(`[historique] ${f.path} illisible : ${err.message}`); return []; }
+    if (!f.gzPath || !f.plainPath) return this._readFile(f.path, f.gz);
+    // les deux : réunion par tranche, le clair (écrit en dernier) l'emporte
+    const byT = new Map();
+    for (const r of this._readFile(f.gzPath, true)) byT.set(r.t, r);
+    for (const r of this._readFile(f.plainPath, false)) byT.set(r.t, r);
+    return [...byT.values()].sort((a, b) => a.t - b.t);
   }
   readDay(day) {
     const f = this.files().find((x) => x.day === day);
@@ -113,30 +147,41 @@ export class History {
     const st = engine.stations().map((s) => [s.sid, s.name, s.cap, s.lat, s.lon]);
     return st;
   }
-  // Ajoute des tranches (triées, toutes postérieures à lastT) au fichier de leur jour
+  // Ajoute des tranches (triées) au fichier de leur jour. Une tranche qui ne va pas à la fin de son fichier entre
+  // par merge(), à sa place et sans doublon : jour déjà compressé (redémarrage de nuit, premier relevé tardif),
+  // trou comblé par l'anneau, ou fichier déjà prolongé par la fusion d'un vidage plus récent.
   append(recs) {
+    const late = [];
     for (const r of recs) {
-      if (r.t <= this.lastT) continue;
       const day = dayOf(r.t);
+      const plain = join(this.dir, `${day}.jsonl`);
+      if (r.t <= this.lastT || (!existsSync(plain) && existsSync(`${plain}.gz`))) { late.push(r); continue; }
       if (day !== this.curDay) {
         this.curDay = day;
-        const p = join(this.dir, `${day}.jsonl`);
-        // fichier du jour déjà commencé (redémarrage) : reprendre sa dernière liste de stations
-        this.curKey = existsSync(p) ? (() => { const x = parseDay(readFileSync(p)); return x.length ? stKey(x.at(-1).st) : ''; })() : '';
+        // fichier du jour déjà commencé (redémarrage) : reprendre sa dernière liste de stations et sa fin
+        const x = existsSync(plain) ? parseDay(readFileSync(plain)) : [];
+        this.curKey = x.length ? stKey(x.at(-1).st) : '';
+        this.tailT = x.length ? x.at(-1).t : 0;
         this.compressDone(day);
       }
-      const p = join(this.dir, `${day}.jsonl`);
+      if (r.t <= this.tailT) { late.push(r); continue; }
+      const p = plain;
       const k = stKey(r.st);
       let s = '';
       if (k !== this.curKey) { s += JSON.stringify({ st: r.st }) + '\n'; this.curKey = k; }
       s += JSON.stringify({ t: r.t, n: r.n ?? null, w: r.w ?? null, b: r.b }) + '\n';
-      appendFileSync(p, s);
+      appendLines(p, s);
       this._files = null;
-      this.lastT = r.t;
+      this.lastT = this.tailT = r.t;
+    }
+    if (late.length) {
+      this.merge(late);
+      this.lastT = Math.max(this.lastT, ...late.map((r) => r.t));
     }
   }
   // Relève dans l'anneau du moteur les tranches finies pas encore écrites (appelé après chaque cycle,
-  // et au démarrage : l'anneau relu de /vn_hist.bin comble ce qui manque depuis la dernière écriture)
+  // et au démarrage : l'anneau relu de /vn_hist.bin comble ce qui manque depuis la dernière écriture, et
+  // toute tranche de l'anneau absente de l'historique — trou laissé par une fusion plus récente, une coupure)
   capture(engine) {
     const head = engine.ringHead();
     if (!head || head === this.lastHead) return 0;
@@ -144,10 +189,12 @@ export class History {
     const got = [];
     for (let back = 1; back < 400; back++) {
       const s = engine.slot(back);
-      if (!s || s.t <= this.lastT) break;
+      if (!s || (s.t <= this.lastT && !this.gapCheck)) break;
       if (s.n === null && !s.b.some((v) => v !== null)) continue;     // tranche vide (carte éteinte, trou)
+      if (s.t <= this.lastT && this.at(s.t)) continue;                  // déjà écrite
       got.push(s);
     }
+    this.gapCheck = false;
     if (!got.length) return 0;
     const st = this._stations(engine);
     got.reverse();
@@ -155,15 +202,18 @@ export class History {
     this.append(got);
     return got.length;
   }
-  // Les jours finis passent en .jsonl.gz (≈ 6 fois moins de place)
+  // Les jours finis passent en .jsonl.gz (≈ 6 fois moins de place). Si le .gz existe déjà, il reçoit la réunion
+  // des deux fichiers : un clair plus court ne le remplace jamais.
   compressDone(today = dayOf(Math.floor(Date.now() / 1000))) {
     for (const f of this.files()) {
-      if (f.gz || f.day >= today) continue;
+      if (!f.plainPath || f.day >= today) continue;
       try {
-        const raw = readFileSync(f.path);
-        atomicWrite(f.path + '.gz', gzipSync(raw, { level: 9 }));
-        rmSync(f.path);
+        const data = f.gzPath ? Buffer.from(serialize(this._read(f))) : readFileSync(f.plainPath);
+        this._keepDamaged(f);
+        atomicWrite(join(this.dir, `${f.day}.jsonl.gz`), gzipSync(data, { level: 9 }));
+        rmSync(f.plainPath);
         this._files = null;
+        this.cache.delete(f.day);
       } catch (err) { this.log(`[historique] compression de ${f.day} impossible : ${err.message}`); }
     }
   }
@@ -182,18 +232,19 @@ export class History {
       for (const r of fresh) seen.add(r.t);
       const all = [...have, ...fresh].sort((a, b) => a.t - b.t);
       const text = serialize(all);
+      this._keepDamaged(f);
       if (day < today) {
         atomicWrite(join(this.dir, `${day}.jsonl.gz`), gzipSync(text, { level: 9 }));
         try { rmSync(join(this.dir, `${day}.jsonl`)); } catch { /* absent */ }
       } else {
         atomicWrite(join(this.dir, `${day}.jsonl`), text);
-        if (day === this.curDay) this.curKey = all.length ? stKey(all.at(-1).st) : '';
+        if (day === this.curDay) { this.curKey = all.length ? stKey(all.at(-1).st) : ''; this.tailT = all.length ? all.at(-1).t : 0; }
       }
       this.cache.delete(day);
       this._files = null;
       added += fresh.length;
     }
-    if (recs.length) this.lastT = Math.max(this.lastT, ...recs.map((r) => r.t));
+    // lastT n'avance pas : des tranches plus récentes venues d'ailleurs ne doivent pas faire sauter celles du relevé local
     return added;
   }
 
@@ -269,6 +320,12 @@ export async function importArchive({ dirs, history, makeEngine, log = () => {} 
     const hb = readFileSync(hist);
     const t = man?.t_carte || (hb.length >= 40 ? Number(hb.readBigInt64LE(32)) : 0);
     if (!t) { refused++; continue; }
+    // fichiers différents de ce que le manifeste déclare : abîmés (même à taille égale, Model::load les relirait)
+    const broken = unlike(dir, man);
+    if (broken) { log(`[historique] import : ${dir} ignoré (${broken})`); refused++; continue; }
+    // une tranche datée après l'instantané entrerait dans l'historique à une date à venir (lib/store.mjs)
+    const future = checkHist(hb, t);
+    if (future) { log(`[historique] import : ${dir} ignoré (${future})`); refused++; continue; }
     e.clock(t, 1000);
     e.init();
     for (const f of ['vn_prof.bin', 'vn_hist.bin', 'vn_days.bin']) if (existsSync(join(dir, f))) e.putFile('/' + f, readFileSync(join(dir, f)));
@@ -294,6 +351,20 @@ export async function importArchive({ dirs, history, makeEngine, log = () => {} 
   }
   log(`[historique] import : ${snaps} instantané(s) lus, ${refused} sans anneau exploitable, ${added} tranche(s) ajoutée(s)`);
   return { snaps, added, refused };
+}
+
+// Premier fichier déclaré par le manifeste (store.archive, tools/carte_dump.py : taille et CRC32) qui n'y
+// correspond pas, ou absent ; null si tout correspond. Un vidage sans manifeste n'est pas vérifié.
+function unlike(dir, man) {
+  for (const [f, want] of Object.entries(man?.fichiers || {})) {
+    let b;
+    try { b = readFileSync(join(dir, f)); } catch { return `${f} déclaré par le manifeste mais absent`; }
+    const c = hex8(crc32(b));
+    if (b.length !== want?.taille || c !== String(want?.crc32).toUpperCase()) {
+      return `${f} : CRC32 ${c} (${b.length} octets) au lieu de ${want?.crc32} (${want?.taille} octets) déclarés par le manifeste`;
+    }
+  }
+  return null;
 }
 
 // vn_stations.csv (Model::stationsCsv) : « # vn_stations v1 t=… », puis sid;capacite;publiee;lat;lon;nom

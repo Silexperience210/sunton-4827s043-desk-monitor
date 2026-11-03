@@ -16,26 +16,43 @@ export function luxParts(epochS) {
 }
 export const dayOf = (t) => { const p = luxParts(t); return `${p.y}-${p.mo}-${p.d}`; };
 
-// Début du pas contenant t : multiples du pas en heure LOCALE (un pas de 1 jour commence à minuit à
-// Luxembourg, un pas de 3 h à 0 h, 3 h, 6 h…), pas en heure UTC
-function bucketOf(t, stepS) {
-  if (stepS <= 3600) return Math.floor(t / stepS) * stepS;
-  const p = luxParts(t);
-  const secs = p.h * 3600 + p.mi * 60 + +p.s;
-  const into = secs % stepS;
-  return t - into;
+// Heure « murale » de Luxembourg : secondes comme si l'heure locale était de l'UTC (minuit local = multiple de 86400)
+const wallOf = (t) => { const p = luxParts(t); return Date.UTC(+p.y, +p.mo - 1, +p.d, p.h, p.mi, +p.s) / 1000; };
+// Instant UTC où l'horloge de Luxembourg affiche `wall` : le plus tôt si elle l'affiche deux fois (octobre), le
+// premier instant après le saut si elle ne l'affiche jamais (mars). Décalages pris 12 h avant et après.
+function wallToUtc(wall) {
+  const offs = new Set([wall - 43200, wall + 43200].map((t) => wallOf(t) - t));
+  let best = null;
+  for (const o of offs) if (wallOf(wall - o) === wall && (best === null || wall - o < best)) best = wall - o;
+  return best ?? wall - Math.min(...offs);
 }
+// Seau contenant t : multiples du pas en heure LOCALE (un pas de 1 jour va de minuit à minuit à Luxembourg, un
+// pas de 3 h commence à 0 h, 3 h, 6 h…), pas en heure UTC. Un jour de changement d'heure dure 25 h (300 tranches)
+// ou 23 h (276) : { k : début (epoch UTC), len : tranches de 5 min que le seau contient vraiment }.
+function bucketOf(t, stepS, cache = null) {
+  if (stepS <= 3600) return { k: Math.floor(t / stepS) * stepS, len: stepS / SLOT_S };
+  const start = Math.floor(wallOf(t) / stepS) * stepS;
+  let b = cache?.get(start);
+  if (!b) {
+    const k = wallToUtc(start);
+    b = { k, len: Math.round((wallToUtc(start + stepS) - k) / SLOT_S) };
+    cache?.set(start, b);
+  }
+  return b;
+}
+// Tranches de 5 min du jour local contenant t : 288, ou 300 / 276 les jours de changement d'heure
+export function daySlots(t) { return bucketOf(t, 86400).len; }
 
 // recs : [{t, n, w, b, st}] triées ; step en minutes ; sid = une station (sinon le réseau)
 export function aggregate(recs, { from = null, to = null, step = 60, sid = null } = {}) {
   const stepS = Math.max(5, step) * 60;
-  const buckets = new Map();
+  const buckets = new Map(), starts = new Map();
   let meta = null;
   const colCache = new Map();
   for (const r of recs) {
-    const k = bucketOf(r.t, stepS);
+    const { k, len } = bucketOf(r.t, stepS, starts);
     let b = buckets.get(k);
-    if (!b) { b = { n: 0, avail: [0, 0], docks: [0, 0], dis: [0, 0], dep: 0, ret: 0, flow: 0, empty: [0, 0], full: [0, 0], temp: [0, 0], rain: [0, 0], bikes: [0, 0], cap: 0 }; buckets.set(k, b); }
+    if (!b) { b = { len, n: 0, avail: [0, 0], docks: [0, 0], dis: [0, 0], dep: 0, ret: 0, flow: 0, empty: [0, 0], full: [0, 0], temp: [0, 0], rain: [0, 0], bikes: [0, 0], cap: 0 }; buckets.set(k, b); }
     b.n++;
     if (r.n) {
       b.avail[0] += r.n[0]; b.avail[1]++;
@@ -61,14 +78,14 @@ export function aggregate(recs, { from = null, to = null, step = 60, sid = null 
   }
   const keys = [...buckets.keys()].sort((a, b) => a - b);
   const avg = (p, d = 1) => (p[1] ? +(p[0] / p[1]).toFixed(d) : null);
-  const per = stepS / SLOT_S;
   const out = { from, to, step: stepS / 60, t: [], cover: [], avail: [], docks: [], dis: [], dep: [], ret: [], empty: [], full: [], temp: [], rain: [] };
   if (sid) { out.station = meta; out.bikes = []; out.cap = []; }
   for (const k of keys) {
-    const b = buckets.get(k);
+    const b = buckets.get(k), per = b.len;
     out.t.push(k); out.cover.push(+(b.n / per).toFixed(2));
     out.avail.push(avg(b.avail, 0)); out.docks.push(avg(b.docks, 0)); out.dis.push(avg(b.dis, 0));
-    // retraits / retours ramenés au pas complet (une heure à moitié relevée ne compte pas pour moitié)
+    // retraits / retours ramenés au seau complet (une heure à moitié relevée ne compte pas pour moitié ; un jour
+    // de 25 h compte ses 25 h)
     out.dep.push(b.flow ? Math.round(b.dep * per / b.flow) : null);
     out.ret.push(b.flow ? Math.round(b.ret * per / b.flow) : null);
     out.empty.push(avg(b.empty, 1)); out.full.push(avg(b.full, 1));
@@ -95,7 +112,8 @@ export function dailySummary(recsByDay) {
       if (h >= 7 && h < 22) { svc++; emptyS += r.n[6]; fullS += r.n[7]; }
       if (r.w && r.w[1] > 0.1) rainS++;
     }
-    out.push({ day, slots: n, dep, ret, depFull: flow ? Math.round(dep * 288 / flow) : null,
+    const len = recs.length ? daySlots(recs[0].t) : 288;
+    out.push({ day, slots: n, dep, ret, depFull: flow ? Math.round(dep * len / flow) : null,
       availMean: avN ? Math.round(avS / avN) : null, availMin: avMin, availMax: avMax,
       emptyH: +(emptyS / 12).toFixed(1), fullH: +(fullS / 12).toFixed(1), svcSlots: svc, rainH: +(rainS / 12).toFixed(1) });
   }

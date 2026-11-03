@@ -5,8 +5,8 @@
 
 export const FEED = { STATUS: 0, INFO: 1, TYPES: 2, WEATHER: 3 };
 export const FEED_NAMES = ['station_status', 'station_information', 'vehicle_types', 'météo'];
-// Codes d'échec propres à VelohNav Ops (src/core/ops.h)
-export const ING = { PARSE: -100, EMPTY: -101, TRUNC: -102, BEGIN: -103 };
+// Codes d'échec propres à VelohNav Ops (src/core/ops.h) ; STALE : propre au serveur (flux périmé, lib/collector.mjs)
+export const ING = { PARSE: -100, EMPTY: -101, TRUNC: -102, BEGIN: -103, STALE: -104 };
 // État Wi-Fi de la carte (src/net/net.h)
 export const WIFI = { NONE: 0, CONNECTING: 1, CONNECTED: 2, FAILED: 3 };
 

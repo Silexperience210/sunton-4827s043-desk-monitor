@@ -362,11 +362,13 @@ struct DayM {
   int32_t day = 0; int64_t t0 = 0; bool hol = false; int dclass = 0;
   Acc fc[NH], per[NH], prof[NH];
   int falseU = 0, trueU = 0, slots = 0;
+  int evalSlots = 0;                               // M7 : tranches où au moins une station est évaluée (détecteur actif)
   float learn = NAN, conf = NAN, evalFrac = NAN;
 };
 struct RunOut {
   std::vector<DayM> days;
   std::vector<char> seen;                          // incident vu
+  std::vector<char> evalq;                         // M7 : station évaluée (normal/haut/bas) pendant la fenêtre de l'incident
   int unusualEp = 0;
   std::map<int, std::vector<std::pair<int64_t, float>>> capDev;   // station agrandie → (t, observé − profil)
   int firstK = 0;
@@ -429,6 +431,7 @@ static void replay(const Data & D, const Opts & o, const Truth & T, int firstK, 
   std::vector<int64_t> lastUnus(S, 0);
   std::vector<char> prevU(S, 0);
   R.seen.assign(T.inc.size(), 0);
+  R.evalq.assign(T.inc.size(), 0);
   R.firstK = firstK;
   std::map<int32_t, int> dayIx;
   // incidents par station (index), pour les consultations rapides
@@ -493,6 +496,19 @@ static void replay(const Data & D, const Opts & o, const Truth & T, int firstK, 
         for (int q : incOf[s]) if (t >= T.inc[q].t0 && t <= T.inc[q].t1 + 1800) R.seen[q] = 1;
       }
       prevU[s] = un[s];
+    }
+    // M7 : une alerte « inhabituel » n'est possible que si la station est évaluée ; rappel et bruit comptés là seulement
+    {
+      bool any = false;
+      for (int s = 0; s < S; s++) {
+        if (mi[s] < 0) continue;
+        const Station & st = m.st[mi[s]];
+        if (!st.live || st.status == ST_CLOSED) continue;
+        if (!(st.anom == AN_NORMAL || st.anom == AN_HIGH || st.anom == AN_LOW)) continue;
+        any = true;
+        for (int q : incOf[s]) if (t >= T.inc[q].t0 && t <= T.inc[q].t1 + 1800) R.evalq[q] = 1;
+      }
+      if (any) X.evalSlots++;
     }
     // station agrandie : écart du relevé au profil appris, après le changement
     for (auto & cc : capChange) {
@@ -883,21 +899,30 @@ int run(int argc, char ** argv) {
          T.inc.size(), T.rebal, 100.0 * T.refLoo / fmax(1, T.refLoo + T.refProf + T.refNone), 100.0 * T.refProf / fmax(1, T.refLoo + T.refProf + T.refNone),
          100.0 * T.refNone / fmax(1, T.refLoo + T.refProf + T.refNone));
   auto alerts = [&](const char * name, const RunOut & R) {
-    double f = 0, tr = 0; int nd = 0;
-    for (int d : all) { f += R.days[d].falseU; tr += R.days[d].trueU; nd++; }
-    int seen = 0, tot = 0;
-    for (size_t q = 0; q < T.inc.size(); q++) { if (T.inc[q].t0 < D.t[R.firstK]) continue; tot++; seen += R.seen[q]; }
-    printf("| %s | %.1f | %.1f | %s |\n", name, nd ? f / nd : NAN, nd ? tr / nd : NAN,
-           tot ? (std::to_string((int)lround(100.0 * seen / tot)) + " % (" + std::to_string(seen) + "/" + std::to_string(tot) + ")").c_str() : "—");
+    double f = 0, tr = 0, fa = 0, ta = 0; int nd = 0, na = 0;
+    for (int d : all) {
+      f += R.days[d].falseU; tr += R.days[d].trueU; nd++;
+      if (R.days[d].evalSlots > 0) { fa += R.days[d].falseU; ta += R.days[d].trueU; na++; }
+    }
+    int seen = 0, tot = 0, seenE = 0, totE = 0;
+    for (size_t q = 0; q < T.inc.size(); q++) {
+      if (T.inc[q].t0 < D.t[R.firstK]) continue;
+      tot++; seen += R.seen[q];
+      if (R.evalq[q]) { totE++; seenE += R.seen[q]; }
+    }
+    auto pct = [](int a, int b) { return b ? std::to_string((int)lround(100.0 * a / b)) + " % (" + std::to_string(a) + "/" + std::to_string(b) + ")" : std::string("—"); };
+    printf("| %s | %.1f | %.1f | %s | %d/%d | %.1f | %.1f | %s | %s |\n", name, nd ? f / nd : NAN, nd ? tr / nd : NAN, pct(seen, tot).c_str(),
+           na, nd, na ? fa / na : NAN, na ? ta / na : NAN, pct(seenE, totE).c_str(), pct((int)ta, (int)(ta + fa)).c_str());
   };
-  printf("| modèle | fausses / jour | vraies / jour | rappel des écarts francs |\n|---|---|---|---|\n");
+  printf("Les trois premières colonnes comptent tous les jours et tous les écarts, y compris ceux où aucune station n'est évaluée (profil trop jeune : alerte impossible) ; les suivantes ne comptent que les jours où au moins une station est évaluée, et les écarts dont la station l'a été pendant la fenêtre.\n\n");
+  printf("| modèle | fausses / jour | vraies / jour | rappel des écarts francs | jours où le détecteur évalue | fausses / jour évalué | vraies / jour évalué | rappel sur les écarts évaluables | précision (jours évalués) |\n|---|---|---|---|---|---|---|---|---|\n");
   alerts("référence", R0);
   if (hasVar) alerts(varName.c_str(), R1);
   if (nEval < 7) printf("\n%d jour(s) : trop peu pour juger le bruit de l'alerte (la simulation en voyait ≈ 159 par jour, à confirmer).\n", nEval);
 
-  printf("\n## 4. Maturation (à midi)\n\n| jour | couverture learnPct | confiance +1 h (parc) | stations évaluées « inhabituel » |\n|---|---|---|---|\n");
+  printf("\n## 4. Maturation (à midi)\n\n| jour | couverture (quarts d'heure vus au moins un jour) | confiance +1 h (même type de jour, parc) | stations évaluées « inhabituel » |\n|---|---|---|---|\n");
   for (size_t d = 0; d < R0.days.size(); d++) {
-    if (!(d < 3 || d == 4 || d == 6 || d == 9 || d == 13 || d == 20 || d == 27 || d == 41 || d == 55 || d == 83 || d + 1 == R0.days.size())) continue;
+    if (R0.days.size() > 14 && !(d < 3 || d == 4 || d == 6 || d == 9 || d == 13 || d == 20 || d == 27 || d == 41 || d == 55 || d == 83 || d + 1 == R0.days.size())) continue;
     if (isnan(R0.days[d].learn)) continue;
     printf("| %zu (%s) | %.0f %% | %.0f %% | %.0f %% |\n", d + 1, fmtDay(R0.days[d].t0).c_str(), R0.days[d].learn, R0.days[d].conf, R0.days[d].evalFrac);
   }

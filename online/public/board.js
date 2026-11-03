@@ -10,9 +10,19 @@ const store = {
   set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* navigation privée */ } },
 };
 const DEMO = typeof window !== 'undefined' && window.VN_DEMO && window.VN_DEMO.api;
+// Le jeton ne vient que de la carte « Jeton requis » (enregistré dans ce navigateur), jamais de l'URL : un ?token=
+// reste dans l'historique, les journaux du proxy et le Referer (le serveur le refuse d'ailleurs en paramètre).
+// Un ancien lien qui en porte un est effacé de la barre d'adresse, sans être lu.
+function dropUrlToken(loc, hist) {
+  if (!/[?&]token=/.test(loc.search)) return;
+  const u = new URL(loc.href);
+  u.searchParams.delete('token');
+  hist.replaceState(hist.state, '', `${u.pathname}${u.search}${u.hash}`);
+}
+if (!DEMO && typeof location !== 'undefined') try { dropUrlToken(location, history); } catch { /* page ouverte en fichier local */ }
 async function api(path, opts = {}) {
   if (DEMO) return window.VN_DEMO.api(path, opts);
-  const token = store.get('vn.token') || new URLSearchParams(location.search).get('token') || '';
+  const token = store.get('vn.token') || '';
   const r = await fetch(path, { ...opts, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(opts.headers || {}) } });
   if (r.status === 401) { const c = $('tokenCard'); if (c) c.hidden = false; throw new Error('jeton requis'); }
   const j = await r.json().catch(() => ({}));

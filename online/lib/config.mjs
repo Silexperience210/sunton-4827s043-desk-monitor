@@ -13,10 +13,14 @@ export const CONFIG = {
   port: int('VN_PORT', 8790),
   host: env('VN_HOST', '0.0.0.0'),
   dataDir: resolve(env('VN_DATA', './data')),
-  // Jeton facultatif : protège /sync et /api/twin (données publiques dérivées, mais un serveur
-  // exposé sur Internet n'a pas à servir ses profils à n'importe qui). Vide = ouvert (réseau local).
+  // Jeton des routes protégées (écritures, réglages, écrans, synchro des cartes : lib/acces.mjs).
+  // Vide : les écritures sont fermées, sauf en local (127.0.0.1) ou avec VN_OPEN=1.
   token: env('VN_TOKEN', ''),
+  // Sans jeton, ouvrir quand même les écritures au réseau (réseau local de confiance seulement)
+  open: env('VN_OPEN', '') === '1',
   name: env('VN_NAME', 'VelohNav Ops en ligne'),
+  // Adresse publique (tunnel) : X-Forwarded-Host / -Proto ne sont crus que s'ils la désignent (server.mjs, baseUrl)
+  publicUrl: env('VN_PUBLIC_URL', ''),
 
   // src/config.h
   gbfsBase: env('VN_GBFS_BASE', 'https://api.cyclocity.fr/contracts/luxembourg/gbfs/v3'),
@@ -26,6 +30,11 @@ export const CONFIG = {
     '&hourly=temperature_2m,precipitation_probability,precipitation,weather_code,wind_speed_10m' +
     '&forecast_hours=6&wind_speed_unit=kmh&timezone=Europe%2FLuxembourg'),
   refreshS: Math.max(30, int('VN_REFRESH_S', 60)),     // g_set.refreshSec (60 s par défaut, 30 s au moins)
+  // POST /api/refresh : un relevé forcé au plus toutes les N s (comptées depuis le dernier cycle), 5 s au moins
+  refreshMinS: Math.max(5, int('VN_REFRESH_MIN_S', 30)),
+  // station_status dont last_updated est plus vieux que ce délai : non appliqué (lib/collector.mjs). 0 = règle
+  // du bandeau « Relevé figé » de la carte (ops.cpp, staleThresholdS) : 3 périodes, 3 min au moins.
+  feedStaleS: Math.max(0, int('VN_FEED_STALE_S', 0)),
   infoRefreshS: 3600,                                    // VN_INFO_REFRESH_S
   typesRefreshS: 86400,                                  // VN_TYPES_REFRESH_S
   wxRefreshS: 900,                                       // VN_WX_REFRESH_S

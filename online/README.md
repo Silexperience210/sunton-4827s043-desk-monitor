@@ -60,8 +60,11 @@ node online/server.mjs --import /tmp/vidage                  # puis lancer le se
 |---|---|---|
 | `VN_PORT` / `VN_HOST` | `8790` / `0.0.0.0` | écoute |
 | `VN_DATA` | `./data` (`/data` en Docker) | état appris, registre des écrans, archive |
-| `VN_TOKEN` | — | jeton exigé par `/sync` et `/api` (Bearer). À définir dès que le port sort du réseau local |
+| `VN_TOKEN` | — | jeton des routes protégées (écritures, réglages, écrans, synchro des cartes), en `Authorization: Bearer` ou `X-VN-Token`, jamais dans l'URL. Vide : écritures fermées (403), sauf en local ou avec `VN_OPEN=1` |
+| `VN_OPEN` | — | `1` : sans jeton, écritures ouvertes au réseau local (de confiance seulement). Une page d'un autre site reste refusée (CSRF) |
 | `VN_REFRESH_S` | `60` | période de `station_status` (30 s au moins), comme Réglages → Rafraîchissement |
+| `VN_REFRESH_MIN_S` | `30` | `POST /api/refresh` : un relevé forcé au plus toutes les N s (5 s au moins), comptées depuis le dernier relevé ; sinon `429` et `Retry-After` |
+| `VN_FEED_STALE_S` | `0` | `station_status` dont `last_updated` est plus vieux : non appliqué (échec −104, `/healthz` en 503). `0` = règle du bandeau « Relevé figé » de la carte : 3 périodes, 3 min au moins |
 | `VN_SAVE_S` | `600` | sauvegarde sur disque (la carte : 30 min) ; aussi à l'arrêt (`docker stop`, Ctrl-C) |
 | `VN_ARCHIVE_HOURS` | `6,18` | instantanés pour le banc (heure de Luxembourg) ; vide = aucun |
 | `VN_ARCHIVE_KEEP_DAYS` | `0` | durée de l'archive (0 = tout garder, ~0,9 Mo par jour) |
@@ -69,12 +72,23 @@ node online/server.mjs --import /tmp/vidage                  # puis lancer le se
 | `VN_NIGHT_AT` | `03:30` | tâches de nuit (heure de Luxembourg) : jours finis compressés, prévisions de la veille notées, banc |
 | `VN_BENCH_BIN` | (image Docker : réglé) | exécutable `sim/bench_prevision` ; absent = pas de banc de nuit |
 | `VN_NTFY_URL` / `VN_NTFY_TOKEN` | — | sujet ntfy (`https://ntfy.sh/<sujet>`) et jeton d'un serveur ntfy protégé |
-| `VN_PUBLIC_URL` | — | adresse de la page, ouverte en touchant une notification |
+| `VN_NOTIFY_LOCAL` | — | `1` : ntfy ou webhook permis en 127.0.0.1 (même machine, sans Docker). Sinon le bouclage est refusé ; le lien local (169.254.x.x) l'est toujours. Seul le code HTTP de la réponse est gardé |
+| `VN_PUBLIC_URL` | — | adresse publique de la page (tunnel) : ouverte en touchant une notification, et donnée aux cartes qui synchronisent par cette adresse (https compris). `X-Forwarded-Host` / `-Proto` ne sont crus que s'ils la désignent |
 | `VN_NOTIFY_DIGEST` | `07:30` | heure du résumé du matin ; vide = aucun |
 | `VN_NOTIFY_MIN` / `VN_NOTIFY_HOURS` / `VN_NOTIFY_MAX_H` | `15` / `7-22` / `6` | rupture signalée après N min, dans ces heures, au plus N messages par heure |
 
 Les réglages des notifications se font aussi (et plus simplement) depuis la page, onglet **Notifications** ;
 ils sont gardés dans `data/notify.json` et priment sur les variables.
+
+Chaque sauvegarde garde la version remplacée de l'état (`vn_prof.bin.prev`…). Au démarrage, chaque fichier
+est relu seul : un fichier illisible est mis de côté sous `<nom>.rejete-AAAAMMJJ-HHMMSS` (jamais écrasé),
+la génération `.prev` le remplace si elle est lisible, et le journal nomme chaque fichier refusé. Un
+`vn_hist.bin` dont une tranche est datée après sa sauvegarde ou après l'heure du serveur (plus de 5 min) est
+refusé de même, à la reprise comme à l'import (`--import`, `--import-archive`) : il figerait l'anneau.
+Le CRC32 de chaque fichier écrit est noté dans `data/etat.crc32.json` : au démarrage, un fichier qui n'y
+correspond pas (abîmé sur le disque, même à taille égale) est refusé de même. Pour remplacer l'état par celui
+d'une carte, passer par `--import` (un fichier posé à la main serait refusé). À l'import de l'archive, un
+instantané dont un fichier ne correspond pas à son `manifeste.json` (taille, CRC32) est ignoré.
 
 ## Le jumeau de l'écran (`http://<machine>:8790`)
 
@@ -97,16 +111,18 @@ l'Umbrel, pas d'un hébergeur « serverless » comme Vercel (pas de processus pe
 ouvrir la page depuis le téléphone hors de chez soi, **Cloudflare Tunnel** la publie en https sans ouvrir
 de port sur la box :
 
-1. **Définir `VN_TOKEN`** dans `docker-compose.yml` (un long mot de passe) : la page le demandera une fois,
-   les Sunton aussi (`sync jeton …`). Indispensable dès que la page sort du réseau local.
-2. Essai sans compte : `docker compose --profile essai up -d`, puis
-   `docker compose logs tunnel-essai | grep trycloudflare` → une adresse `https://….trycloudflare.com`
-   (au hasard, change à chaque redémarrage).
+1. **Définir `VN_TOKEN`** (un long mot de passe) dans un fichier `.env` à côté du compose : la page le
+   demandera une fois, les Sunton aussi (`sync jeton …`). Les tunnels sont dans `docker-compose.tunnel.yml`,
+   qui refuse de démarrer sans lui.
+2. Essai sans compte : `docker compose -f docker-compose.yml -f docker-compose.tunnel.yml --profile essai up -d`,
+   puis `docker compose -f docker-compose.yml -f docker-compose.tunnel.yml logs tunnel-essai | grep trycloudflare`
+   → une adresse `https://….trycloudflare.com` (au hasard, change à chaque redémarrage).
 3. Adresse fixe : compte Cloudflare gratuit et un domaine géré par Cloudflare ; Zero Trust → Networks →
    Tunnels → *Create a tunnel* (cloudflared) → copier le jeton ; *Public hostname* → service
-   `http://velohnav-ops:8790`. Puis `TUNNEL_TOKEN=… docker compose --profile tunnel up -d` (ou le jeton dans
-   un fichier `.env` à côté du compose). Mettre cette adresse dans `VN_PUBLIC_URL` pour que les
-   notifications l'ouvrent.
+   `http://velohnav-ops:8790`. Puis `TUNNEL_TOKEN=… docker compose -f docker-compose.yml -f docker-compose.tunnel.yml
+   --profile tunnel up -d` (ou les jetons dans le fichier `.env`). Mettre cette adresse dans `VN_PUBLIC_URL`
+   pour que les notifications l'ouvrent, et qu'une carte qui synchronise par le tunnel reçoive l'adresse en
+   https (sans elle, le manifeste donne l'adresse en http tirée de l'en-tête Host).
 
 ## Historique long (onglet Historique)
 
@@ -135,7 +151,10 @@ et le **profil seul** — les trois colonnes de `sim/bench_reel.cpp`, avec la m�
 
 - par horizon, jour par jour, par heure de la journée et par station (les plus dures à prévoir) ;
 - fiabilité de l'alerte « vide / pleine dans l'heure » : part confirmée, part des ruptures annoncées ;
-- chaque nuit, la journée de la veille est notée et gardée (`data/prevision/note/AAAA-MM-JJ.json`).
+- chaque nuit, la journée de la veille est notée et gardée (`data/prevision/note/AAAA-MM-JJ.json`) ;
+- une station qui ne loue ou ne rend plus, ou dont la valeur n'a pas bougé depuis 24 h ou plus, n'est pas
+  notée (toute prévision y serait « juste ») ; le nombre de prévisions écartées est publié (`skipped`). Le
+  banc natif, lui, les compte encore : écart attendu de l'ordre du centième de vélo.
 
 **Banc de nuit** : l'image Docker compile `sim/bench_prevision` (le même cœur) et le lance chaque nuit
 sur l'archive, en partant du profil du plus ancien instantané (le banc écarte les tranches que ce profil
@@ -166,8 +185,9 @@ objet JSON (Home Assistant, n8n…).
 ## Brancher un Sunton (firmware 1.3.0)
 
 Réglages → **Synchro en ligne** → Serveur : saisir `http://<machine>:8790` (ou, en série,
-`sync url http://<machine>:8790`, puis `sync jeton …` si `VN_TOKEN` est défini). Au démarrage, avant de
-relire son historique, la carte :
+`sync url http://<machine>:8790`, puis `sync jeton …` si `VN_TOKEN` est défini). Sans `VN_TOKEN`, la carte
+reprend l'état du serveur mais ne peut pas lui envoyer le sien (écritures fermées) : définir le jeton, ou
+`VN_OPEN=1` sur un réseau local de confiance. Au démarrage, avant de relire son historique, la carte :
 
 1. lit `GET /sync/manifest` (relevés appris, date de l'historique, jours résumés, taille et CRC32 de chaque fichier) ;
 2. décide **fichier par fichier** :
@@ -189,26 +209,33 @@ Commandes série : `sync`, `sync etat`, `sync url …`, `sync jeton …`, `sync 
 
 ## API
 
-| Route | Jeton | Contenu |
+**public** : sans jeton. **protégé** (`lib/acces.mjs`) : avec `VN_TOKEN`, jeton exigé (`Authorization: Bearer` ou
+`X-VN-Token`, jamais dans l'URL), sinon `401` ; sans `VN_TOKEN`, lecture permise sauf depuis une page d'une autre
+origine (`403`), écriture refusée (`403`) sauf en local (127.0.0.1) ou avec `VN_OPEN=1`. Tout ce qui n'est pas
+`GET`/`HEAD` est protégé. Ce tableau est rejoué contre le serveur par `test/securite.test.mjs` (c1).
+
+| Route | Accès | Contenu |
 |---|---|---|
-| `GET /` | — | jumeau de l'écran + panneau serveur |
-| `GET /healthz` | — | `200 ok` si le dernier relevé a moins de 3 périodes, `503` sinon |
-| `GET /api/summary` | — | totaux, apprentissage, météo, compteurs d'ingestion (mêmes champs que la carte) |
-| `GET /api/ring` | — | historique 24 h du réseau, au pas de 5 min |
-| `GET /api/devices` | oui | écrans synchronisés |
-| `GET /api/archive` | oui | instantanés archivés |
-| `GET /api/export/vn_prof.bin` … `vn_stations.csv` | oui | fichiers de la carte, octets exacts |
-| `POST /api/refresh` | oui | relevé immédiat |
-| `GET /api/twin/snapshot`, `/api/twin/events?since=` | oui | réplication vers les jumeaux (attente longue 25 s) |
-| `GET /sync/manifest`, `/sync/<id>/vn_*.bin`, `POST /sync/<id>/upload/vn_*.bin` | oui | synchro des cartes |
-| `GET /api/history` | oui | jours gardés, taille sur disque |
-| `GET /api/history/series?days=7&step=60&sid=` | oui | série agrégée (pas 5, 15, 30, 60, 180 ou 1440 min) du réseau ou d'une station |
-| `GET /api/history/daily?days=28` | oui | résumé par jour (historique) + disponibilité (vue Service) |
-| `GET /api/history/export.csv?days=28[&stations=1]` | oui | tranches en CSV (réseau, ou station par station) |
-| `GET /api/stations` | oui | stations, relevé et dérivés (statut, échéances, besoin, risque) |
-| `GET /api/forecast?days=14` | oui | erreur des prévisions : par horizon, par jour, par heure, stations, alertes |
-| `GET /api/bench`, `/api/bench/report.md`, `POST /api/bench/run` | oui | banc de nuit : état, rapport, lancement |
-| `GET`/`POST /api/notify`, `POST /api/notify/test`, `POST /api/notify/digest[?send=1]` | oui | notifications : réglages, test, résumé du matin |
+| `GET /` | public | jumeau de l'écran + panneau serveur |
+| `GET /healthz` | public | `200 ok` si le dernier relevé a moins de 3 périodes, `503` sinon |
+| `GET /api/summary` | public | totaux, apprentissage, météo, compteurs d'ingestion (mêmes champs que la carte) |
+| `GET /api/ring` | public | historique 24 h du réseau, au pas de 5 min |
+| `GET /api/devices` | protégé | écrans synchronisés |
+| `GET /api/archive` | public | instantanés archivés (noms) |
+| `GET /api/export/vn_prof.bin` … `vn_stations.csv` | public | fichiers de la carte, octets exacts |
+| `POST /api/refresh` | protégé | relevé immédiat, au plus un toutes les 30 s (`VN_REFRESH_MIN_S`) : sinon `429` et `Retry-After` |
+| `GET /api/twin/snapshot`, `/api/twin/events?since=` | public | réplication vers les jumeaux (attente longue 25 s) |
+| `GET /sync/manifest`, `/sync/<id>/vn_*.bin`, `/sync/<id>/report` | protégé | synchro des cartes : manifeste, fichiers, compte rendu |
+| `POST /sync/<id>/upload/vn_prof.bin`, `POST /sync/<id>/upload/vn_days.bin` | protégé | envoi d'une carte (`application/octet-stream`, `X-VN-CRC32`) |
+| `GET /api/history` | public | jours gardés, taille sur disque |
+| `GET /api/history/series?days=7&step=60&sid=` | public | série agrégée (pas 5, 15, 30, 60, 180 ou 1440 min) du réseau ou d'une station |
+| `GET /api/history/daily?days=28` | public | résumé par jour (historique) + disponibilité (vue Service) |
+| `GET /api/history/export.csv?days=28[&stations=1]` | public | tranches en CSV (réseau, ou station par station) |
+| `GET /api/stations` | public | stations, relevé et dérivés (statut, échéances, besoin, risque) |
+| `GET /api/forecast?days=14` | public | erreur des prévisions : par horizon, par jour, par heure, stations, alertes |
+| `GET /api/bench`, `/api/bench/report.md` | public | banc de nuit : état, rapport |
+| `POST /api/bench/run` | protégé | banc de nuit : lancement |
+| `GET`/`POST /api/notify`, `POST /api/notify/test`, `POST /api/notify/digest[?send=1]` | protégé | notifications : réglages, test, résumé du matin |
 
 ## Affiner les prévisions avec l'archive
 

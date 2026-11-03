@@ -10,6 +10,10 @@
 // Réglages : variables VN_NTFY_* (valeurs de départ), puis la page (enregistrés dans <données>/notify.json).
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { lookup } from 'node:dns';
+import { BlockList, isIP } from 'node:net';
 import { atomicWrite, luxParts } from './store.mjs';
 
 const env = (k, d = '') => (process.env[k] === undefined ? d : process.env[k]);
@@ -41,11 +45,56 @@ const inHours = (spec, h) => {
   return a <= b ? h >= a && h < b : h >= a || h < b;
 };
 
+// ── Destinations refusées (SSRF) ──
+// Le serveur poste où la page le lui dit : sans garde, une page (ou un porteur du jeton) sonde les services
+// de la machine et de son réseau. Refusés : le bouclage (le serveur lui-même, ses voisins de conteneur), sauf
+// VN_NOTIFY_LOCAL=1 (ntfy sur la même machine, sans Docker) ; le lien local (169.254.0.0/16 : métadonnées
+// des hébergeurs) et les adresses « cette machine » (0.0.0.0/8, ::/96), toujours. Les adresses du réseau local
+// restent permises (ntfy auto-hébergé sur l'Umbrel).
+const LOOPBACK = new BlockList(), LINK = new BlockList(), ZERO = new BlockList();
+LOOPBACK.addSubnet('127.0.0.0', 8, 'ipv4'); LOOPBACK.addAddress('::1', 'ipv6');
+LINK.addSubnet('169.254.0.0', 16, 'ipv4'); LINK.addSubnet('fe80::', 10, 'ipv6');
+ZERO.addSubnet('0.0.0.0', 8, 'ipv4'); ZERO.addSubnet('::', 96, 'ipv6');
+export function refusedAddress(ip, allowLoopback = false) {
+  const t = isIP(ip) === 6 ? 'ipv6' : 'ipv4';
+  if (LOOPBACK.check(ip, t)) return allowLoopback ? null : 'bouclage';
+  if (LINK.check(ip, t)) return 'lien local';
+  if (ZERO.check(ip, t)) return 'adresse non routable';
+  return null;
+}
+const hostOf = (url) => new URL(url).hostname.replace(/^\[|\]$/g, '');
+
+// POST sans fetch : la résolution DNS passe par `lookup`, qui refuse une adresse interdite au moment même de la
+// connexion (un nom qui changerait d'adresse entre un contrôle et l'envoi ne passe pas) ; aucune redirection
+// suivie ; le corps de la réponse n'est jamais lu (lu, il revenait à la page : « HTTP 418 admin_password=… »).
+export function guardedPost(url, { headers = {}, body = '', signal, allowLoopback = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url), host = hostOf(url);
+    if (isIP(host) && refusedAddress(host, allowLoopback)) return reject(new Error(`adresse refusée : ${host} (${refusedAddress(host, allowLoopback)})`));
+    const guard = (h, opts, cb) => lookup(h, { ...opts, all: true }, (err, list) => {
+      if (err) return cb(err);
+      const bad = list.find((a) => refusedAddress(a.address, allowLoopback));
+      if (bad) return cb(new Error(`adresse refusée : ${h} → ${bad.address} (${refusedAddress(bad.address, allowLoopback)})`));
+      if (opts?.all) cb(null, list); else cb(null, list[0].address, list[0].family);
+    });
+    const rq = (u.protocol === 'https:' ? httpsRequest : httpRequest)(u, { method: 'POST', lookup: guard,
+      headers: { ...headers, 'Content-Length': Buffer.byteLength(body) } }, (res) => {
+      resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode });
+      res.destroy();
+    });
+    rq.on('error', reject);
+    if (signal) signal.addEventListener('abort', () => rq.destroy(new Error('délai dépassé')), { once: true });
+    rq.end(body);
+  });
+}
+
 export class Notifier {
-  constructor({ dataDir, log = () => {}, fetchImpl = fetch, now = () => Math.floor(Date.now() / 1000) }) {
+  constructor({ dataDir, log = () => {}, fetchImpl = null, now = () => Math.floor(Date.now() / 1000),
+    allowLoopback = env('VN_NOTIFY_LOCAL') === '1' }) {
     this.file = join(dataDir, 'notify.json');
     this.log = log;
-    this.fetch = fetchImpl;
+    this.allowLoopback = allowLoopback;
+    this.fetch = fetchImpl || ((url, opt) => guardedPost(url, { ...opt, allowLoopback: this.allowLoopback }));
     this.now = now;
     this.cfg = { ...DEFAULTS };
     this.recent = [];
@@ -85,6 +134,13 @@ export class Notifier {
     if (patch.maxPerHour !== undefined) c.maxPerHour = Math.min(60, Math.max(1, parseInt(patch.maxPerHour, 10) || 6));
     if (patch.stations !== undefined) c.stations = (Array.isArray(patch.stations) ? patch.stations : String(patch.stations).split(',')).map((s) => String(s).trim()).filter(Boolean).slice(0, 200);
     for (const k of ['url', 'webhook', 'link']) if (c[k] && !/^https?:\/\/[^\s]+$/i.test(c[k])) throw new Error(`adresse invalide (${k}) : http:// ou https:// attendu`);
+    for (const k of ['url', 'webhook']) {
+      if (!c[k]) continue;
+      let host;
+      try { host = hostOf(c[k]); } catch { throw new Error(`adresse invalide (${k})`); }
+      const why = isIP(host) && refusedAddress(host, this.allowLoopback);
+      if (why) throw new Error(`adresse refusée (${k}) : ${host}, ${why}${why === 'bouclage' ? ' (VN_NOTIFY_LOCAL=1 pour un ntfy sur la même machine)' : ''}`);
+    }
     if (c.digest && !/^([01]?\d|2[0-3]):[0-5]\d$/.test(c.digest)) throw new Error('heure du résumé invalide (HH:MM, ou vide)');
     if (c.hours && !/^\d{1,2}-\d{1,2}$/.test(c.hours)) throw new Error('heures invalides (par exemple 7-22)');
     this.cfg = c;
@@ -114,9 +170,8 @@ export class Notifier {
       const to = setTimeout(() => ac.abort(), 10000);
       try {
         const r = await this.fetch(url, { method: 'POST', signal: ac.signal, headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(json) });
-        const txt = await r.text().catch(() => '');
-        return r.ok ? { ok: true } : { ok: false, why: `HTTP ${r.status}${txt ? ' ' + txt.slice(0, 120) : ''}` };
-      } catch (err) { return { ok: false, why: ac.signal.aborted ? 'délai dépassé' : String(err.cause?.code || err.message || err) }; }
+        return r.ok ? { ok: true } : { ok: false, why: `HTTP ${r.status}` };      // le code seul : jamais le corps
+      } catch (err) { return { ok: false, why: ac.signal.aborted ? 'délai dépassé' : String(err.cause?.code || err.code || err.message || err) }; }
       finally { clearTimeout(to); }
     };
     if (this.cfg.url) {

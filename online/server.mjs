@@ -10,7 +10,6 @@
 // Variables : voir online/lib/config.mjs et online/README.md. Aucune dépendance (Node ≥ 18).
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { timingSafeEqual } from 'node:crypto';
 import { join, extname, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
@@ -18,12 +17,13 @@ import { performance } from 'node:perf_hooks';
 import { CONFIG } from './lib/config.mjs';
 import { loadEngine } from './public/vn-engine.js';
 import { Collector, EventLog } from './lib/collector.mjs';
-import { Store, STATE_FILES, CARD_FILES, luxParts } from './lib/store.mjs';
-import { SyncHub, profHeader, daysHeader } from './lib/sync.mjs';
+import { Store, STATE_FILES, CARD_FILES, luxParts, removeOrphans, checkHist } from './lib/store.mjs';
+import { SyncHub, profHeader, daysHeader, profImplausible, daysImplausible } from './lib/sync.mjs';
 import { History, importArchive, snapshotDirs, dayOf } from './lib/history.mjs';
 import { ForecastLog } from './lib/forecast.mjs';
 import { Notifier } from './lib/notify.mjs';
 import { NightBench } from './lib/bench.mjs';
+import { checkAccess } from './lib/acces.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, 'public');
@@ -41,6 +41,7 @@ engine.settings({ refreshSec: CONFIG.refreshS });
 const flushEngineLog = () => { const l = engine.logs(); if (l) for (const line of l.trim().split('\n')) log(line); };
 
 const store = new Store(CONFIG.dataDir, log);
+{ const n = removeOrphans(CONFIG.dataDir); if (n) log(`[fs] ${n} fichier(s) temporaire(s) orphelin(s) d'un arrêt brutal supprimé(s)`); }
 const events = new EventLog(CONFIG.eventsKept);
 const history = new History(CONFIG.dataDir, log);
 const forecasts = new ForecastLog(CONFIG.dataDir, history, log);
@@ -61,7 +62,11 @@ if (imp >= 0) {
   let n = 0;
   for (const f of CARD_FILES) {
     const p = join(dir, f);
-    if (existsSync(p)) { engine.putFile('/' + f, readFileSync(p)); n++; }
+    if (!existsSync(p)) continue;
+    const b = readFileSync(p);
+    const future = f === 'vn_hist.bin' ? checkHist(b, nowS()) : null;     // anneau figé sinon (lib/store.mjs)
+    if (future) { log(`--import : ${f} ignoré (${future})`); continue; }
+    engine.putFile('/' + f, b); n++;
   }
   engine.clock(nowS(), mono());
   const r = engine.load(false);
@@ -86,14 +91,18 @@ if (ia >= 0) {
 }
 
 // ── Reprise de l'état sur disque ─────────────────────────────────────
+// Fichier par fichier (lib/store.mjs) : un fichier refusé est mis de côté et nommé, jamais écrasé en silence.
 {
-  const names = store.restoreInto(engine);
+  const got = await store.restore(engine, { makeEngine: scratchEngine, now: nowS() });
   engine.clock(nowS(), mono());
   const r = engine.load(true);
   flushEngineLog();
   const s = engine.summary();
-  if (names.length) log(`[fs] état relu (${names.join(', ')}) : profils ${r & 1 ? 'oui' : 'non'}, état vivant ${r & 2 ? 'oui' : 'non'} · ${s.stations} stations · ${s.learnSamples} relevés appris · ${s.daysKept} jour(s) résumés`);
-  else log(`[fs] aucun état dans ${store.dir} : apprentissage depuis zéro`);
+  const said = (n, ok = true) => ({ oui: ok ? 'oui' : 'non', prev: ok ? 'oui (génération précédente)' : 'non', non: 'non', absent: 'absent' })[got[n].state];
+  if (Object.values(got).some((x) => x.state !== 'absent')) {
+    log(`[fs] état relu : profils ${said('vn_prof.bin')}, historique 24 h ${said('vn_hist.bin')}, résumés par jour ${said('vn_days.bin')}, ` +
+      `état vivant ${said('vn_live.bin', !!(r & 2))} · ${s.stations} stations · ${s.learnSamples} relevés appris · ${s.daysKept} jour(s) résumés`);
+  } else log(`[fs] aucun état dans ${store.dir} : apprentissage depuis zéro`);
   // l'anneau relu comble l'historique long depuis sa dernière tranche écrite
   const n = history.capture(engine);
   if (n) log(`[historique] ${n} tranche(s) reprises de l'anneau relu`);
@@ -177,9 +186,11 @@ setInterval(() => {
 setTimeout(() => { try { forecasts.scorePending(); history.compressDone(); forecasts.compressDone(); } catch (err) { log(`[prévision] ${err.message}`); } }, 5000).unref();
 
 // ── Fichiers envoyés par une carte ───────────────────────────────────
-// Contrôlés par le chemin de la carte (Model::load dans un moteur à part), puis adoptés seulement s'ils
-// valent mieux que ceux du serveur : profils plus appris, ou plus de jours résumés. L'adoption recharge
-// l'état du serveur (Model::load, comme un redémarrage) et demande aux jumeaux de le reprendre.
+// Contrôlés par le chemin de la carte (Model::load dans un moteur à part) et par leur plausibilité
+// (lib/sync.mjs : un compteur forgé bloquerait toutes les cartes), puis adoptés seulement s'ils valent
+// mieux que ceux du serveur : profils plus appris, ou plus de jours résumés. L'adoption garde le fichier
+// remplacé (<nom>.avant-adoption), recharge l'état du serveur (Model::load, comme un redémarrage) et
+// demande aux jumeaux de le reprendre.
 async function adoptUpload(name, body, crcHdr) {
   const crc = engine.crc32(body);
   if (crcHdr && parseInt(String(crcHdr), 16) >>> 0 !== crc) return { adopted: false, error: true, why: 'CRC32 faux' };
@@ -189,6 +200,8 @@ async function adoptUpload(name, body, crcHdr) {
   scratch.init();
   scratch.putFile('/' + name, body);
   if (!(scratch.load(false) & 1)) return { adopted: false, error: true, why: 'fichier illisible par Model::load' };
+  const implausible = name === 'vn_prof.bin' ? profImplausible(body, nowS()) : daysImplausible(body, nowS());
+  if (implausible) return { adopted: false, error: true, why: `fichier invraisemblable : ${implausible}` };
   engine.clock(nowS(), mono());
   const cur = engine.summary();
   if (name === 'vn_prof.bin') {
@@ -199,6 +212,8 @@ async function adoptUpload(name, body, crcHdr) {
     if (!(h.nDays > cur.daysKept)) return { adopted: false, why: `serveur aussi complet (${cur.daysKept} jours contre ${h.nDays})` };
   }
   if (!engine.save()) return { adopted: false, error: true, why: 'état du serveur vide' };
+  const before = engine.getFile('/' + name);
+  if (before) store.write(`${name}.avant-adoption`, before);
   engine.putFile('/' + name, body);
   engine.load(true);
   flushEngineLog();
@@ -236,35 +251,14 @@ function send(req, res, code, body, type, extra = {}) {
 }
 const sendJson = (req, res, obj, code = 200) => send(req, res, code, JSON.stringify(obj));
 
-// Comparaison en temps constant : une comparaison par === laisse fuir la longueur du préfixe correct.
-function sameSecret(a, b) {
-  const A = Buffer.from(String(a || '')), B = Buffer.from(String(b || ''));
-  if (A.length !== B.length) return false;
-  return timingSafeEqual(A, B);
-}
-
-// Le jeton ne circule QUE dans un en-tête : accepté en ?token=, il fuit dans les journaux du proxy,
-// l'historique du navigateur et les en-têtes Referer.
-function authorized(req) {
-  if (!CONFIG.token) return true;
-  const h = req.headers.authorization || '';
-  const bearer = h.startsWith('Bearer ') ? h.slice(7) : '';
-  if (bearer && sameSecret(bearer, CONFIG.token)) return true;
-  const alt = req.headers['x-vn-token'];
-  return !!(alt && sameSecret(alt, CONFIG.token));
-}
-
-// Politique d'accès : la page et les lectures sont publiques ; tout ce qui écrit, et tout ce qui
-// expose des réglages ou des cartes du réseau local, exige le jeton.
-function protectedRoute(p, method) {
-  if (p.startsWith('/sync/')) return true;              // écrit l'état appris
-  if (p.startsWith('/api/notify')) return true;         // réglages de notification (ntfy)
-  if (p === '/api/bench/run') return true;              // lance un binaire
-  if (p === '/api/devices') return true;                // écrans du réseau local
-  if (method !== 'GET' && method !== 'HEAD') return true;  // toute écriture
-  return false;
-}
-
+// La page : scripts du serveur seulement (WebAssembly compris : 'wasm-unsafe-eval'), styles du serveur, en ligne
+// (plein.js en pose) et Google Fonts, aucune requête hors du serveur, aucun cadre (détournement de clic).
+const PAGE_HEADERS = {
+  'Content-Security-Policy': ["default-src 'self'", "script-src 'self' 'wasm-unsafe-eval'", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data:", "connect-src 'self'", "object-src 'none'", "base-uri 'none'",
+    "form-action 'self'", "frame-ancestors 'none'"].join('; '),
+  'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
+};
 function serveStatic(req, res, path) {
   const rel = path === '/' ? 'index.html' : path.replace(/^\/+/, '');
   if (rel.includes('..')) return send(req, res, 400, 'chemin refusé', 'text/plain');
@@ -283,13 +277,24 @@ function serveStatic(req, res, path) {
     body = gzCache.get(key); enc = 'gzip';
   }
   res.writeHead(200, { 'Content-Type': type, 'Content-Length': body.length, 'Cache-Control': rel === 'index.html' ? 'no-cache' : 'max-age=300',
-    ...(enc ? { 'Content-Encoding': enc } : {}) });
+    ...(enc ? { 'Content-Encoding': enc } : {}), ...(/^text\/html/.test(type) ? PAGE_HEADERS : {}) });
   res.end(req.method === 'HEAD' ? undefined : body);
 }
 
+// Adresse publiée dans le manifeste : la carte y lit les fichiers et y envoie les siens, avec son jeton.
+// X-Forwarded-Host / -Proto viennent du client tant qu'aucun proxy ne les réécrit : jamais crus tels quels.
+// Requête adressée à l'adresse publique déclarée (VN_PUBLIC_URL : Host ou X-Forwarded-Host — cloudflared garde
+// le Host d'origine) : cette adresse, https compris. Sinon l'en-tête Host, celui que la carte a elle-même
+// utilisé — un nom d'hôte et un port, rien d'autre. null = Host malformé.
+const PUBLIC_URL = (() => { try { return CONFIG.publicUrl ? new URL(CONFIG.publicUrl) : null; } catch { return null; } })();
+const HOST_RE = /^([a-z0-9.-]+|\[[0-9a-f:.]+\])(:\d{1,5})?$/i;
 function baseUrl(req) {
-  const proto = req.headers['x-forwarded-proto'] || 'http';
-  return `${proto}://${req.headers['x-forwarded-host'] || req.headers.host}`;
+  const host = String(req.headers.host || '');
+  if (PUBLIC_URL) {
+    const fwd = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+    if ([fwd, host].some((h) => h && h.toLowerCase() === PUBLIC_URL.host.toLowerCase())) return `${PUBLIC_URL.protocol}//${PUBLIC_URL.host}`;
+  }
+  return HOST_RE.test(host) ? `http://${host}` : null;
 }
 
 // ?from=AAAA-MM-JJ&to=AAAA-MM-JJ ou ?days=N (défaut : les 7 derniers jours de l'historique)
@@ -304,10 +309,11 @@ function dayRange(url) {
   return { from, to };
 }
 
+// Lecture publique : rien qui décrive la machine (le chemin du dossier de données reste au journal du démarrage)
 function serverInfo() {
   return {
     name: CONFIG.name, uptimeS: Math.floor((Date.now() - started) / 1000), seq: events.seq, cycles: collector.cycles,
-    refreshS: CONFIG.refreshS, lastSaveAt: lastSaveOk, archives: store.archives().length, dataDir: CONFIG.dataDir,
+    refreshS: CONFIG.refreshS, lastSaveAt: lastSaveOk, archives: store.archives().length,
     tokenRequired: !!CONFIG.token, devices: Object.keys(hub.devices).length,
     history: history.range(), forecastsLogged: forecasts.lastSlot, notify: notifier.enabled, bench: bench.available,
   };
@@ -327,14 +333,17 @@ const server = createServer(async (req, res) => {
     if (p === '/api/summary') { engine.clock(nowS(), mono()); return sendJson(req, res, { ...engine.summary(), server: serverInfo() }); }
     if (p === '/api/ring') return sendJson(req, res, engine.ring());
 
-    // ── À partir d'ici : jeton si VN_TOKEN est défini ──
-    if ((p.startsWith('/api/') || p.startsWith('/sync/')) && protectedRoute(p, req.method) && !authorized(req)) {
-      return sendJson(req, res, { error: 'jeton requis' }, 401);
-    }
+    // ── À partir d'ici : routes protégées (lib/acces.mjs) — jeton, ou écritures fermées sans jeton, CSRF, types de corps ──
+    const denied = checkAccess(req, p, CONFIG);
+    if (denied) return sendJson(req, res, { error: denied.error }, denied.code);
 
     if (p === '/api/devices') return sendJson(req, res, Object.values(hub.devices).sort((a, b) => b.last - a.last));
     if (p === '/api/archive') return sendJson(req, res, store.archives());
-    if (p === '/api/refresh' && req.method === 'POST') { collector.refreshReq = true; return sendJson(req, res, { ok: true }); }
+    if (p === '/api/refresh' && req.method === 'POST') {
+      const waitS = collector.forceRefresh();
+      if (waitS) return send(req, res, 429, JSON.stringify({ ok: false, why: `un relevé forcé au plus toutes les ${CONFIG.refreshMinS} s`, retryS: waitS }), null, { 'Retry-After': String(waitS) });
+      return sendJson(req, res, { ok: true });
+    }
 
     // ── Historique long (lib/history.mjs) ──
     if (p === '/api/history') return sendJson(req, res, { ...history.range(), list: history.list() });
@@ -419,7 +428,9 @@ const server = createServer(async (req, res) => {
     if (p === '/sync/manifest') {
       const s = hub.snapshot(60);
       if (!s) return sendJson(req, res, { error: 'aucun relevé pour l\'instant' }, 503);
-      const m = hub.manifest(s, baseUrl(req));
+      const base = baseUrl(req);
+      if (!base) return sendJson(req, res, { error: 'en-tête Host invalide' }, 400);
+      const m = hub.manifest(s, base);
       hub.seen(req, { lastManifest: nowS(), snapshot: s.id });
       return sendJson(req, res, m);
     }
@@ -429,7 +440,8 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req, 4 << 20);
       const r = await adoptUpload(up[2], body, req.headers['x-vn-crc32']);
       const d = hub.seen(req, { lastUpload: nowS(), uploaded: `${up[2]} : ${r.adopted ? 'adopté' : 'gardé celui du serveur'}` });
-      log(`[sync] ${d.id} envoie ${up[2]} (${(body.length / 1024).toFixed(0)} Ko) : ${r.adopted ? 'ADOPTÉ' : 'refusé'} — ${r.why}`);
+      const fwd = req.headers['x-forwarded-for'] ? ` (X-Forwarded-For ${String(req.headers['x-forwarded-for']).slice(0, 80)})` : '';
+      log(`[sync] ${d.id} envoie ${up[2]} (${(body.length / 1024).toFixed(0)} Ko) depuis ${req.socket.remoteAddress}${fwd} : ${r.adopted ? 'ADOPTÉ' : 'refusé'} — ${r.why}`);
       return sendJson(req, res, r, r.error ? 400 : 200);
     }
     const mf = p.match(/^\/sync\/([a-z0-9]+)\/(vn_prof\.bin|vn_hist\.bin|vn_days\.bin|report)$/);
@@ -467,8 +479,8 @@ server.requestTimeout = 60000;
 server.headersTimeout = 30000;
 
 server.listen(CONFIG.port, CONFIG.host, () => {
-  log(`VelohNav Ops en ligne ${engine.version()} · http://${CONFIG.host}:${CONFIG.port} · données ${CONFIG.dataDir}` +
-      `${CONFIG.token ? ' · jeton requis pour /sync et /api' : ''}`);
+  log(`VelohNav Ops en ligne ${engine.version()} · http://${CONFIG.host}:${CONFIG.port} · données ${CONFIG.dataDir} · ` +
+      (CONFIG.token ? 'jeton requis pour les routes protégées' : CONFIG.open ? 'VN_OPEN=1 : écritures ouvertes sans jeton' : 'sans VN_TOKEN : écritures fermées (sauf en local)'));
   collector.start();
   // premier démarrage avec une archive d'instantanés mais sans historique long : l'archive le remplit
   if (!history.files().length && store.archives().length) {
@@ -484,6 +496,7 @@ function shutdown(sig) {
   log(`${sig} : sauvegarde avant arrêt`);
   collector.stop();
   try { saveNow('arrêt'); } catch (err) { log(`[fs] échec à l'arrêt : ${err.message}`); }
+  hub.flushDevices();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();
 }

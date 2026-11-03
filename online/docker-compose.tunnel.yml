@@ -1,0 +1,28 @@
+# Facultatif : la page sur Internet, sans ouvrir de port, par Cloudflare Tunnel — TOUJOURS avec un jeton.
+# S'ajoute à docker-compose.yml ; VN_TOKEN y est obligatoire (fichier .env à côté du compose, ou environnement) :
+# sans lui, docker compose refuse de démarrer au lieu de publier un serveur sans jeton. La page demandera le
+# jeton, les Sunton aussi (sync jeton …).
+#   Essai, adresse au hasard en *.trycloudflare.com (change à chaque redémarrage, sans compte) :
+#     docker compose -f docker-compose.yml -f docker-compose.tunnel.yml --profile essai up -d
+#     docker compose -f docker-compose.yml -f docker-compose.tunnel.yml logs tunnel-essai | grep trycloudflare
+#   Adresse fixe (compte Cloudflare gratuit + un domaine chez Cloudflare) : Zero Trust → Networks → Tunnels →
+#   Create tunnel → copier le jeton ; Public hostname → service http://velohnav-ops:8790 ; puis
+#     TUNNEL_TOKEN=… docker compose -f docker-compose.yml -f docker-compose.tunnel.yml --profile tunnel up -d
+services:
+  velohnav-ops:
+    environment:
+      VN_TOKEN: "${VN_TOKEN:?VN_TOKEN obligatoire avec un tunnel (fichier .env ou environnement)}"
+  tunnel-essai:
+    image: cloudflare/cloudflared:latest
+    profiles: ["essai"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://velohnav-ops:8790
+    depends_on: [velohnav-ops]
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}     # jeton du tunnel (Zero Trust → Networks → Tunnels), ou dans un fichier .env
+    depends_on: [velohnav-ops]
