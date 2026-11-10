@@ -27,7 +27,8 @@ const run = (T, file, args = []) => {
 
 try {
   console.log('binaire natif absent : échec explicite, rien de déclaré réussi');
-  for (const [file, sans] of [['features.test.mjs', ['bench_prevision']], ['features.test.mjs', ['sync_sim']], ['sync.e2e.mjs', ['sync_sim']], ['tous.mjs', ['bench_prevision', 'sync_sim']]]) {
+  for (const [file, sans] of [['features.test.mjs', ['bench_prevision']], ['features.test.mjs', ['sync_sim']], ['sync.e2e.mjs', ['sync_sim']], ['reg.e2e.mjs', ['reg_sim']],
+    ['tous.mjs', ['bench_prevision', 'sync_sim', 'reg_sim']]]) {
     const r = run(copieOnline(join(work, `c${++n}`), { sans }), file);
     const named = sans.every((b) => r.out.includes(`sim/${b}`));
     ok(r.code === 2 && /ÉCHEC/.test(r.out) && named && !/vérifications réussies|vérifications, 0 échec/.test(r.out),

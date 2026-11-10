@@ -23,8 +23,11 @@ struct ScreenDef {
 };
 
 extern const ScreenDef SCR_DASH, SCR_MAP, SCR_LIST, SCR_ALERTS, SCR_SERVICE, SCR_SETTINGS;
+// Rôle « régulateur » (Réglages → Rôle) : l'écran « Tournée » remplace le tableau de bord en premier onglet
+extern const ScreenDef SCR_TOUR;
+void tourTick();                               // état de la tournée changé sans relevé (appelé par la coquille)
 
-enum Tab { TAB_DASH, TAB_MAP, TAB_LIST, TAB_ALERTS, TAB_SERVICE, TAB_SETTINGS, TAB_COUNT };
+enum Tab { TAB_DASH, TAB_MAP, TAB_LIST, TAB_ALERTS, TAB_SERVICE, TAB_SETTINGS, TAB_COUNT };   // TAB_DASH : Réseau, ou Tournée
 
 void showTab(int tab);
 void openStation(int st);                      // fiche station (bottom sheet)

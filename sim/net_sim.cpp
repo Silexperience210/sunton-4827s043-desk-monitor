@@ -12,6 +12,7 @@ int g_wifiState = -1; bool g_timeOk = true; const char * g_stage = nullptr; int 
 // des fichiers, durée d'analyse) — le simulateur ne fait aucune requête réseau
 vn::FeedStat g_feed[vn::FEED_COUNT]; int64_t g_timeSyncAt = 0;
 vn::SyncStatus g_syncStat = {}; int g_syncReqs = 0;   // synchro en ligne : état affiché, demandes reçues
+int g_regReqs = 0;                                    // rôle régulateur : échanges demandés par l'écran
 }
 
 namespace net {
@@ -39,6 +40,8 @@ Status status() {
 
 void requestRefresh() {}
 void requestSync() { sim::g_syncReqs++; }
+void requestReg() { sim::g_regReqs++; }
+const char * deviceId() { return "sunton-sim01"; }
 void requestScan() { s_scanReq = true; s_scanAt = sim::g_ms; }
 // Bornes brutes factices, passées par la même construction que sur l'appareil :
 // VELOH-OPS vu par deux bornes (maillage), une borne masquée.

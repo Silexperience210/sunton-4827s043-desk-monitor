@@ -152,6 +152,7 @@ html.vn-max, html.vn-max body { overflow: hidden; }
 .kpi--bad .kpi__value { color: var(--bad); }
 .vcard { margin: 0; gap: 8px; }
 .vcard__title { font: 600 13px/1.3 var(--sans); color: var(--text); }
+.vcard__note { font-weight: 400; color: var(--text3); font-size: 12px; }
 .vbox { min-height: 120px; min-width: 0; }
 .vchart { display: block; width: 100%; height: auto; overflow: visible; }
 .vgrid line, .vgridline { stroke: var(--grid); stroke-width: 1; }
@@ -313,3 +314,21 @@ html.vn-full-open, html.vn-full-open body { overflow: hidden; }
   padding: 10px 22px; font: 600 clamp(11px, .85vw, 14px)/1 var(--sans); cursor: pointer; min-height: 44px;
 }
 .vnfull__quit:hover, .vnfull__quit:focus-visible { color: var(--text); border-color: var(--text3); background: var(--s3); }
+
+/* ── Régulation ── */
+.tours { display: flex; flex-direction: column; gap: 10px; }
+.tour { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; background: var(--bg); }
+.tour__top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.tour__top b { font-weight: 600; flex: 1; min-width: 0; }
+.tour__load { font: 600 13px var(--mono); color: var(--accent); }
+.tour__meta { color: var(--text3); font-size: 12px; }
+.tour ol { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text2); }
+.tour ol b { color: var(--text); font-weight: 600; }
+.rows { display: flex; flex-direction: column; gap: 6px; }
+.rows .r { display: grid; grid-template-columns: minmax(0, 1fr) 84px 36px; gap: 6px; }
+.rows .r.p { grid-template-columns: minmax(0, 1fr) 36px; }
+.rows input { background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 10px; font: 13px var(--sans); min-width: 0; width: 100%; }
+.rows button { border: 1px solid var(--border-strong); background: var(--s2); color: var(--text2); border-radius: 8px; cursor: pointer; font: 600 15px var(--sans); }
+.v-ok { color: var(--good); }
+.v-ecart { color: var(--warn); }
+.v-dim { color: var(--text3); }

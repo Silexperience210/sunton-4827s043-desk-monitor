@@ -219,6 +219,19 @@ Garde-fous : au démarrage, les ruptures déjà en cours ne sont pas annoncées 
 (les suivants attendent et partent groupés) ; filtre de stations. Un **webhook** générique reçoit le même
 objet JSON (Home Assistant, n8n…).
 
+## Régulation (onglet Régulation, `/regulateur.html`, Sunton du camion)
+
+Le registre des **interventions déclarées** et le **plan des tournées** : mode d'emploi, captures, règles et API
+dans [`docs/regulation.md`](../docs/regulation.md). En bref :
+
+- onglet **Régulation** : camions et capacités, régulateurs, point exact de l'atelier (coordonnées ou lien
+  collé, jamais géocodé), stock déclaré ; tournées en cours et leur plan (**estimé**) ; déclarations et leur
+  recoupement avec le flux (déclaré et observé côte à côte) ; indicateurs, chacun avec sa classe ;
+- **Sunton du camion** : Réglages → Rôle → Régulateur ; l'onglet « Tournée » montre le prochain arrêt et fait
+  valider ce qui a vraiment été fait ; tout attend en flash quand le partage de connexion coupe ;
+- **téléphone** : `http://<machine>:8790/regulateur.html`, même API, même file hors connexion, peut rejoindre la
+  tournée du camion.
+
 ## Brancher un Sunton (firmware 1.3.0 et suivants)
 
 Réglages → **Synchro en ligne** → Serveur : saisir `http://<machine>:8790` (ou, en série,
@@ -273,6 +286,9 @@ origine (`403`), écriture refusée (`403`) sauf en local (127.0.0.1) ou avec `V
 | `GET /api/bench`, `/api/bench/report.md` | public | banc de nuit : état, rapport |
 | `POST /api/bench/run` | protégé | banc de nuit : lancement |
 | `GET`/`POST /api/notify`, `POST /api/notify/test`, `POST /api/notify/digest[?send=1]` | protégé | notifications : réglages, test, résumé du matin |
+| `GET`/`POST /reg/config`, `GET /reg/tour`, `POST /reg/tour/start`, `/reg/event`, `/reg/tour/end` | protégé | régulation : réglages, tournée de l'appareil (`X-VN-Device`), déclarations — détail dans [`docs/regulation.md`](../docs/regulation.md) |
+| `GET /reg/plan[?force=1]`, `GET /reg/state?days=7` | protégé | plans des tournées ouvertes ; tournées, déclarations et indicateurs |
+| `GET /regulateur.html` | public | page du régulateur (téléphone) |
 
 ## Affiner les prévisions avec l'archive
 
@@ -291,11 +307,15 @@ online/engine/build.sh            # reconstruit public/vn-core.wasm et public/vn
 node online/test/replication.test.mjs   # serveur ⇄ jumeau : mêmes octets, 3 jours simulés
 cd sim && make sync_sim && cd .. && node online/test/sync.e2e.mjs   # carte simulée ⇄ vrai serveur
 make -C sim bench_prevision && node online/test/features.test.mjs  # historique, prévisions, notifications, banc
+node online/test/regulation.test.mjs                               # registre, recoupement, plan, HTTP
+make -C sim reg_sim && node online/test/reg.e2e.mjs                # Sunton du camion simulé ⇄ vrai serveur
 docker build -f online/Dockerfile -t velohnav-ops-online .          # image (depuis la racine du dépôt)
 ```
 
 Fichiers : `server.mjs` (HTTP, sauvegarde, archive, import, tâches de nuit), `lib/collector.mjs` (la tâche
 réseau de la carte), `lib/sync.mjs` (instantanés, manifeste, registre), `lib/history.mjs` (historique long,
 import d'archive), `lib/forecast.mjs` (journal et note des prévisions), `lib/bench.mjs` (banc de nuit),
-`lib/notify.mjs` (ntfy, webhook, résumé du matin), `engine/` (API C du moteur, plateforme WebAssembly,
-jumeau LVGL), `public/` (page, tableau de bord `board.js`, séries `vn-series.js`, moteurs, enveloppe JS).
+`lib/notify.mjs` (ntfy, webhook, résumé du matin), `lib/regulation.mjs` (registre, recoupement, indicateurs),
+`lib/planner.mjs` (plan des tournées, estimé), `engine/` (API C du moteur, plateforme WebAssembly,
+jumeau LVGL), `public/` (page, tableau de bord `board.js`, séries `vn-series.js`, page du régulateur `regulateur.html`,
+moteurs, enveloppe JS).
