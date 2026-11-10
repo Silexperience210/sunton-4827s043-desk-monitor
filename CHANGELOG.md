@@ -4,6 +4,41 @@ Les notes de chaque version, de la plus récente à la plus ancienne. La procéd
 (sauvegarde de la partition de fichiers, flash sans effacement, retour arrière) est dans le
 [README](README.md#mise-à-jour-dune-carte-déjà-en-service).
 
+## 1.5.0 — la prévision dit son erreur, et quatre vérifications tournent sur le vrai parc
+
+> **1.4.1 → 1.5.0 : aucune migration.** Aucun format de fichier ne change, ni sur la carte ni sur le serveur.
+> Les notes de prévision du serveur sont recalculées une fois au démarrage, à partir du journal déjà gardé.
+
+Règle suivie (feuille de route) : une estimation se montre avec son erreur mesurée, et rien de nouveau ne décide de
+quoi que ce soit avant d'avoir fait ses preuves sur le parc réel. Une seule chose change donc sur les écrans — une
+ligne de plus dans la fiche. Tout le reste se mesure à côté, dans l'onglet Prévisions du serveur.
+
+- **Fiche d'une station : « Erreur mesurée : ± 1,2 vélo à +1 h · ± 1,9 à +2 h (sur 412 prévisions jugées de la
+  station) ».** C'est l'erreur absolue moyenne du réglage appliqué, sur les prévisions déjà jugées de la station
+  (`Model::fcErrAt`). Station trop peu jugée : l'erreur du parc, dite « sur le parc ». Rien de jugé : « pas encore
+  mesurée ». Le « CONFIANCE % » voisin reste ce qu'il est : la maturité du profil, pas une précision.
+- **Cette annonce est elle-même vérifiée.** Le serveur compare l'erreur annoncée par chaque fiche à l'erreur
+  réellement faite une heure plus tard : « fidèle », « trop optimiste » ou « trop prudente », après 7 journées.
+- **Risque de rupture dans l'heure, en probabilité** (chantier 7). Pas une formule : la part des situations
+  passées semblables (même relevé, même prévision, même alerte) qui ont fini vides, ou pleines, dans l'heure.
+  Chaque journée est annoncée avec les seules journées qui la précèdent, puis comparée à ce qui s'est passé, par
+  tranche de probabilité. **La liste en direct n'apparaît que si « les 70 % annoncés se réalisent 70 fois sur
+  100 »** ; sinon elle reste masquée et la page dit où en est la vérification. Comme le journal existant contient
+  déjà ce qu'il faut, les journées notées depuis la mise en service comptent tout de suite.
+- **Selon le type de jour** (chantier 6, premier pas). Avant de créer un type « vacances scolaires » ou
+  « événement » : le modèle s'y trompe-t-il plus ? Erreur à +1 h du modèle et de la persistance par type de jour.
+  Vacances : calendrier officiel du ministère (2026/2027 et 2027/2028). Événements : déclarés à la main dans
+  `calendrier.json`. Aucun nouveau type de jour n'est ajouté au modèle tant que ce tableau ne le justifie pas.
+- **Besoin conseillé : deux règles comparées.** Les écrans conseillent de viser 50 % à +1 h. Le serveur note à côté
+  « autant de marge avant le vide qu'avant le plein sur les 4 h prévues », et rejoue les deux sur ce qui s'est
+  réellement passé ensuite. C'est une **estimation**, présentée comme telle (on ne voit jamais ce qui se serait
+  passé avec le camion). La règle affichée ne change pas.
+- **Non fait, et pourquoi : écarter les passages du camion de l'apprentissage.** Il faut les interventions
+  **déclarées** (les déduire du flux est interdit par la feuille de route), et ce registre n'est pas dans `main` :
+  les chantiers 1 et 2 (registre, tournées, rôle « régulateur ») sont restés sur la branche `dashboard-online`,
+  11 commits et près de 5 000 lignes écrits avant la revue de sécurité et le modèle 2. Les fusionner est un
+  chantier à part ; cette amélioration vient juste après.
+
 ## 1.4.1 — ce qui restait de travers en 1.4.0, et la preuve des couples par station
 
 > **1.4.0 → 1.4.1 : aucune migration.** Mêmes fichiers sur la carte (`/vn_prof.bin` v6, `/vn_hist.bin` v2,

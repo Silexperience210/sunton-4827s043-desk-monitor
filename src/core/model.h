@@ -272,6 +272,8 @@ struct FcSt {
   uint8_t sel[FC_NC][FC_NSH];        // couple choisi (index de la sous-grille), FC_SEL_NONE = celui de la classe
   uint8_t pad[2];
 };
+static const float FC_ERR_MIN = 64.f;               // prévisions jugées avant de publier l'erreur d'une station (un jour)
+struct FcErr { float mae; float n; bool own; };     // erreur absolue moyenne (vélos), prévisions jugées (avec oubli)
 // Prévision d'apprentissage en attente de son échéance (PSRAM, non sauvegardée : un redémarrage perd au plus
 // les 4 dernières heures d'apprentissage)
 struct FcIssue {
@@ -384,6 +386,14 @@ struct Model {
   // Couple interpolé à l'horizon hMin (minutes) : celui de la classe, ou de la station s (≥ 0) à partir de 60 min
   void  fcCoefAt(int cls, float hMin, float & a, float & b, int s = -1) const;
   int   fcClassAt(int64_t t) const;      // classe de jour des coefficients (0 ouvré, 1 week-end et férié)
+  // Erreur MESURÉE du réglage appliqué à l'horizon d'ancrage h (index de FC_HMIN) pour la classe cls : erreur
+  // absolue moyenne, sur les prévisions d'apprentissage jugées (avec le même oubli), du couple que la prévision
+  // de la station i applique aujourd'hui. « own » : mesurée sur les prévisions de la station elle-même (≥ +60 min,
+  // au moins FC_ERR_MIN jugées) ; sinon sur celles de toute sa classe — l'erreur moyenne du parc, dite comme telle.
+  // false : rien de mesuré (classe sans prévision jugée, ou station sans profil — elle se prévoit alors par la
+  // persistance, dont l'erreur n'est pas celle de la classe). C'est l'erreur qu'aurait faite le réglage actuel sur
+  // ces prévisions passées ; l'erreur réellement constatée est notée par le serveur (lib/forecast.mjs).
+  bool  fcErrAt(int i, int cls, int h, int64_t now, FcErr & e) const;
   float learnPct() const;                // 0…100
   int   ringIndex(int back) const;       // index du point « back » tranches en arrière (‑1)
 

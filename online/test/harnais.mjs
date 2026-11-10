@@ -21,8 +21,8 @@ export function decompte(out) {
 // vérifications ; à baisser seulement en le disant (vérification retirée exprès). Un fichier sans plancher
 // échoue aussi : un nouveau test s'inscrit ici.
 export const PLANCHER = {
-  'banc.test.mjs': 14, 'features.test.mjs': 91, 'flux.test.mjs': 9, 'harnais.test.mjs': 16, 'integrite.test.mjs': 80,
-  'mutations.test.mjs': 24, 'prevision.test.mjs': 27, 'replication.test.mjs': 84, 'securite.test.mjs': 91,
+  'banc.test.mjs': 14, 'features.test.mjs': 93, 'flux.test.mjs': 9, 'harnais.test.mjs': 16, 'integrite.test.mjs': 80,
+  'mutations.test.mjs': 30, 'prevision.test.mjs': 65, 'replication.test.mjs': 84, 'securite.test.mjs': 91,
   'series.test.mjs': 18, 'sync.e2e.mjs': 10,
 };
 // Raison de l'échec si le fichier a compté moins que son plancher (ou n'en a pas) ; null sinon

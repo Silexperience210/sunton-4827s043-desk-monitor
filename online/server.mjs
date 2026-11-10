@@ -20,7 +20,8 @@ import { Collector, EventLog } from './lib/collector.mjs';
 import { Store, STATE_FILES, CARD_FILES, luxParts, removeOrphans, checkHist } from './lib/store.mjs';
 import { SyncHub, profHeader, daysHeader, profImplausible, daysImplausible } from './lib/sync.mjs';
 import { History, importArchive, snapshotDirs, dayOf } from './lib/history.mjs';
-import { ForecastLog } from './lib/forecast.mjs';
+import { ForecastLog, riskNow } from './lib/forecast.mjs';
+import { loadCalendar, dayType, SCHOOL_KNOWN_TO } from './lib/calendrier.mjs';
 import { Notifier } from './lib/notify.mjs';
 import { NightBench } from './lib/bench.mjs';
 import { checkAccess } from './lib/acces.mjs';
@@ -45,6 +46,10 @@ const store = new Store(CONFIG.dataDir, log);
 const events = new EventLog(CONFIG.eventsKept);
 const history = new History(CONFIG.dataDir, log);
 const forecasts = new ForecastLog(CONFIG.dataDir, history, log);
+// Type de chaque journée pour le diagnostic par type de jour : événements déclarés (<données>/calendrier.json, relu
+// à chaque rapport — on le modifie sans redémarrer), classe du modèle (week-end, férié), vacances scolaires officielles
+let calendar = loadCalendar(CONFIG.dataDir);
+forecasts.dayType = (day) => dayType(calendar, day, engine.dayClass(Date.parse(`${day}T11:00:00Z`) / 1000));
 const scratchEngine = async () => loadEngine(CORE_WASM, { onLog: () => {} });
 const notifier = new Notifier({ dataDir: CONFIG.dataDir, log });
 const bench = new NightBench({ dataDir: CONFIG.dataDir, archiveDir: store.archiveDir, log });
@@ -366,9 +371,17 @@ const server = createServer(async (req, res) => {
     // ── Erreur des prévisions (lib/forecast.mjs) et banc de nuit (lib/bench.mjs) ──
     if (p === '/api/forecast') {
       const days = Math.min(90, Math.max(1, parseInt(url.searchParams.get('days') || '14', 10) || 14));
+      calendar = loadCalendar(CONFIG.dataDir);
       const r = forecasts.report(days);
-      const names = Object.fromEntries(engine.stations().map((x) => [x.sid, x.name]));
+      const stNow = engine.stations();
+      const names = Object.fromEntries(stNow.map((x) => [x.sid, x.name]));
       for (const x of [...r.hardest, ...r.easiest]) x.name = names[x.sid] || x.sid;
+      r.calendar = { schoolKnownTo: SCHOOL_KNOWN_TO, events: calendar.events.length, errors: calendar.errors };
+      // Risque en direct : seulement le côté (vide, plein) dont la probabilité est vérifiée sur le parc — sinon null
+      engine.clock(nowS(), mono());
+      const live = riskNow(r.risk, engine.forecast().st);
+      const named = (l) => l && l.map((x) => ({ sid: stNow[x.i]?.sid, name: stNow[x.i]?.name || '', bikes: stNow[x.i]?.bikes, p: x.p }));
+      r.riskNow = { empty: named(live.empty), full: named(live.full) };
       return sendJson(req, res, r);
     }
     if (p === '/api/bench') {

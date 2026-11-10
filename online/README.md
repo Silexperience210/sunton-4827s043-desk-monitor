@@ -174,6 +174,30 @@ jour ne sont pas indépendants) ; intervalle de Student ; **aucun verdict avant 
 cours »), puis « gagne », « perd » ou « non concluant ». Si le verdict est « perd » ou reste « non concluant »,
 le levier se coupe dans le code (`g_pred.fcStation`, `src/core/model.h`) : le témoin devient alors la prévision.
 
+### Quatre vérifications de plus (1.5.0)
+
+Toutes dans `GET /api/forecast` et dans l'onglet Prévisions ; aucune ne change ce que les écrans affichent, sauf la
+liste du risque, qui n'apparaît qu'une fois vérifiée. Verdicts par journées (une journée = une grappe), jamais
+avant 7 journées complètes. Code : `online/lib/forecast.mjs`.
+
+| clé | question | réponse |
+|---|---|---|
+| `errCheck` | L'erreur que la fiche annonce (« ± 1,2 vélo à +1 h ») est-elle celle qu'on fait ? | erreur constatée ÷ annoncée ; « fidèle » si l'intervalle tient entre 0,85 et 1,15 |
+| `risk`, `riskNow` | Peut-on annoncer un risque de rupture dans l'heure en pourcentage ? | fréquence des situations passées semblables, annoncée avec les seules journées précédentes, puis comparée au constaté par tranche ; `riskNow` (liste en direct) reste `null` tant que ce n'est pas « vérifiée » |
+| `dayTypes` | Le modèle se trompe-t-il plus pendant les vacances scolaires ou un événement ? | MAE à +1 h du modèle et de la persistance par type de jour |
+| `target` | Viser 50 % à +1 h, ou garder autant de marge des deux côtés sur 4 h ? | tranches vides ou pleines sur les 4 h suivantes si le déplacement avait été fait — une **estimation** (flux supposés inchangés) |
+
+**Événements et vacances** : le calendrier officiel des vacances scolaires est dans `online/lib/calendrier.mjs`
+(2026/2027 et 2027/2028). Les événements se **déclarent** dans `<données>/calendrier.json`, relu à chaque
+rapport :
+
+```json
+{ "evenements": [ { "du": "2027-06-12", "au": "2027-06-13", "nom": "exemple : un événement saisi à la main" } ],
+  "vacances":   [ { "du": "2028-07-14", "au": "2028-09-14", "nom": "été" } ] }
+```
+
+Une entrée mal formée est ignorée et nommée sur la page ; rien n'est corrigé en silence.
+
 ## Notifications (onglet Notifications)
 
 Sur le téléphone, via **ntfy** (application libre, iPhone et Android ; serveur public ntfy.sh ou privé,

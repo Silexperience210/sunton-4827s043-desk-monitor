@@ -109,7 +109,10 @@ faisait moins bien que la simple persistance de +15 à +60 min sur les données 
   serveur en ligne le mesure en continu contre le couple de la classe seule, hors échantillon, et dit s'il
   gagne (onglet Prévisions, verdict après 7 jours).
 - **c** : maturité du profil (0 → 1) selon le nombre d'observations ; c'est le « CONFIANCE » des fiches. Ce
-  n'est pas une précision : l'erreur mesurée des prévisions est dans l'onglet Prévisions du serveur.
+  n'est pas une précision.
+- **erreur mesurée** (1.5.0) : la fiche dit « Erreur mesurée : ± 1,2 vélo à +1 h · ± 1,9 à +2 h » — l'erreur
+  absolue moyenne du réglage appliqué sur les prévisions déjà jugées de la station (à défaut, celle du parc, dite
+  comme telle). Le serveur vérifie cette annonce contre l'erreur réellement faite (onglet Prévisions).
 - **échéances** « vide / pleine dans X min » : lues sur une trajectoire à part, profil + tendance des 30 dernières
   minutes (amortie, τ = 25 min) — c'est la tendance qui porte ces alertes, pas la prévision la plus juste
   (mesuré : `docs/mesures-modele.md`).
@@ -138,8 +141,8 @@ jour après jour (progression visible dans **Réglages → Prédiction**).
 
 | Version | Tactile | Environnement PlatformIO | Binaire |
 |---|---|---|---|
-| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.4.1.bin` |
-| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.4.1.bin` |
+| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.5.0.bin` |
+| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.5.0.bin` |
 | C monté tête en bas | capacitif, rotation 180° | `esp32-4827s043c-180` | — |
 
 Brochage (dans `src/hal/board.h`), recoupé avec deux références indépendantes
@@ -179,8 +182,8 @@ L'étalonnage détecte seul un axe inversé ou des axes échangés et s'enregist
 ### A. Binaire prêt à flasher (le plus simple)
 
 Télécharger le binaire de sa version de carte :
-[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.4.1.bin) ·
-[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.4.1.bin)
+[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.5.0.bin) ·
+[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.5.0.bin)
 
 **Sans rien installer (Chrome ou Edge)** :
 
@@ -196,7 +199,7 @@ En ligne de commande :
 ```bash
 pip install esptool
 esptool.py --chip esp32s3 --baud 460800 erase_flash
-esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.4.1.bin
+esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.5.0.bin
 ```
 
 ### Mise à jour d'une carte déjà en service

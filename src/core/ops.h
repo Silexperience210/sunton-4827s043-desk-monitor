@@ -120,6 +120,11 @@ void wxOriginText(const Model & m, char * out, size_t n);
 // part issue de la météo ANNONCÉE (au-delà de 2 h) plutôt qu'actuelle. Sans part notable
 // (< 0,5 vélo), dit pourquoi (temps normal, coefficient nul, météo indisponible…).
 void wxPartText(const Model & m, float part, bool forecast, int64_t at, char * out, size_t n);
+// Erreur mesurée de la prévision d'une station à +1 h et +2 h (Model::fcErrAt), en une phrase :
+// « Erreur mesurée : ± 1,2 vélo à +1 h · ± 1,9 à +2 h (sur 412 prévisions jugées de la station) »,
+// « Erreur mesurée sur le parc : … (station pas encore assez jugée) », ou « pas encore mesurée ».
+// Renvoie false quand rien n'est mesuré (la phrase le dit).
+bool fcErrText(const Model & m, int st, int64_t now, char * out, size_t n);
 
 // ── Écart au profil (« inhabituel ») ─────────────────────────────────
 // Ligne de la fiche station : état, attendu, tolérance (formule fixe), confiance du profil et, pour

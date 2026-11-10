@@ -516,6 +516,10 @@ function renderForecast(f, b) {
   table($('prevHard'), ['Station', 'Erreur +1 h', 'Persistance', 'n'], f.hardest.map((s) => [s.name, fmtNum(s.model, 2), fmtNum(s.per, 2), fmtNum(s.n)]));
   table($('prevTable'), ['Horizon', 'Prévision', 'Persistance', 'Profil seul', 'n'], f.horizons.map((h, i) => [h, fmtNum(f.total.model[i].mae, 3), fmtNum(f.total.per[i].mae, 3), fmtNum(f.total.prof[i].mae, 3), fmtNum(f.total.model[i].n)]));
   renderShadow(f.shadow);
+  renderRisk(f.risk, f.riskNow);
+  renderErrCheck(f.errCheck);
+  renderDayTypes(f.dayTypes, f.calendar);
+  renderTarget(f.target);
   // banc de nuit
   renderBench(b);
 }
@@ -536,6 +540,78 @@ function renderShadow(sh) {
   table(host, ['Horizon', 'Par station', 'Classe seule', 'Écart', 'Intervalle à 95 %', 'Verdict', 'n'], sh.horizons.map((r) => [
     r.h, fmtNum(r.model, 3), fmtNum(r.cls, 3), r.diff === null ? '—' : `${signed(r.diff, 4)}${r.pct === null ? '' : ` (${signed(r.pct, 1)} %)`}`,
     r.lo === null ? '—' : `${signed(r.lo, 4)} ; ${signed(r.hi, 4)}`, r.verdict, fmtNum(r.n)]));
+}
+const pctTxt = (v, d = 0) => (v === null || v === undefined ? '—' : `${fmtNum(100 * v, d)} %`);
+const sgn = (v, d) => (v === null || v === undefined ? '—' : `${v > 0 ? '+' : v < 0 ? '−' : ''}${fmtNum(Math.abs(v), d)}`);
+const plural = (n, w) => `${fmtNum(n)} ${w}${n > 1 ? 's' : ''}`;
+
+// Risque de rupture dans l'heure : la probabilité est une fréquence observée, annoncée avec les seules journées
+// passées puis comparée à ce qui s'est produit. La liste en direct n'existe que si la vérification est acquise.
+function renderRisk(r, now) {
+  const meta = $('riskMeta'), tb = $('riskTable'), live = $('riskNow');
+  if (!meta || !tb || !live) return;
+  tb.replaceChildren(); live.replaceChildren();
+  if (!r) { meta.textContent = 'Indisponible.'; return; }
+  const e = r.empty, f = r.full;
+  if (!e.judgedDays) {
+    meta.textContent = `Pour chaque station, la part des situations passées semblables (même nombre de vélos, même prévision, même alerte) qui ont fini vides dans l'heure. Il faut ${r.trainDays} journées notées pour commencer à annoncer, puis ${r.minDays} journées annoncées pour vérifier (${e.trainDays} notée${e.trainDays > 1 ? 's' : ''}).`;
+    return;
+  }
+  const word = { 'vérifiée': 'vérifiée : affichée', 'fausse': 'fausse : non affichée', 'en cours': 'en cours de vérification : non affichée' };
+  meta.textContent = `Annoncée avec les seules journées passées, puis comparée à ce qui s'est produit (${plural(e.judgedDays, 'journée')}, ${fmtNum(e.n)} situations). `
+    + `Station vide dans l'heure : ${word[e.verdict]}. Station pleine dans l'heure : ${word[f.verdict]}. `
+    + `Une tranche est vérifiée quand constaté et annoncé s'accordent à ± ${fmtNum(100 * r.tol)} points, intervalle à 95 % compris.`
+    + (e.skillVsAlert !== null ? ` Contre l'alerte « vide dans l'heure » seule : ${sgn(100 * e.skillVsAlert, 1)} % sur le score de Brier.` : '');
+  const rows = [];
+  for (const [name, side] of [['Vide', e], ['Pleine', f]])
+    for (const b of side.bins) if (b.n) rows.push([name, `${fmtNum(100 * b.from)} – ${fmtNum(100 * b.to)} %`, pctTxt(b.announced, 1), pctTxt(b.observed, 1),
+      b.lo === null ? '—' : `${sgn(100 * b.lo, 1)} ; ${sgn(100 * b.hi, 1)}`, b.verdict, fmtNum(b.n)]);
+  table(tb, ['Rupture', 'Tranche annoncée', 'Annoncé', 'Constaté', 'Écart (95 %), points', 'Verdict', 'Situations'], rows);
+  const list = [];
+  for (const [name, l] of [['vide', now?.empty], ['pleine', now?.full]]) for (const x of l || []) if (x.p >= 0.15) list.push([x.name || x.sid, name, pctTxt(x.p), fmtNum(x.bikes)]);
+  if (list.length) table(live, ['Station', 'Risque d\'être', 'Dans l\'heure', 'Vélos'], list.sort((a, b) => parseFloat(b[2]) - parseFloat(a[2])));
+}
+
+// La fiche d'une station annonce « ± x vélo à +1 h » : ici, ce que valait cette annonce
+function renderErrCheck(c) {
+  const meta = $('errMeta'), tb = $('errTable');
+  if (!meta || !tb) return;
+  tb.replaceChildren();
+  if (!c || !c.n) { meta.textContent = 'La fiche de chaque station annonce l\'erreur de sa prévision à +1 h. Le serveur compare cette annonce à l\'erreur réellement faite une heure plus tard ; premier résultat après une journée complète.'; return; }
+  const left = Math.max(0, c.minDays - c.days);
+  meta.textContent = `Somme des erreurs réellement faites ÷ somme des erreurs annoncées, sur ${fmtNum(c.n)} prévisions à +1 h (${plural(c.days, 'journée')}). 1 = l'annonce dit vrai ; au-dessus, on se trompe plus qu'annoncé. `
+    + (left ? `Verdict dans ${left} jour${left > 1 ? 's' : ''}.` : `« fidèle » si tout l'intervalle tient entre ${fmtNum(1 - c.tol, 2)} et ${fmtNum(1 + c.tol, 2)}.`);
+  table(tb, ['Annoncée (moyenne)', 'Constatée (moyenne)', 'Constatée ÷ annoncée', 'Intervalle à 95 %', 'Verdict'],
+    [[`${fmtNum(c.announced, 2)} vélo`, `${fmtNum(c.observed, 2)} vélo`, fmtNum(c.ratio, 3), c.lo === null ? '—' : `${fmtNum(c.lo, 3)} ; ${fmtNum(c.hi, 3)}`, c.verdict]]);
+}
+
+// Le modèle a deux types de jour (ouvré, week-end et férié). Avant d'en ajouter : se trompe-t-il plus ailleurs ?
+function renderDayTypes(list, cal) {
+  const meta = $('dayTypeMeta'), tb = $('dayTypeTable');
+  if (!meta || !tb) return;
+  tb.replaceChildren();
+  if (!list || !list.length) { meta.textContent = 'Erreur à +1 h par type de jour (ouvré, week-end et fériés, vacances scolaires, événements déclarés) : après la première journée complète.'; return; }
+  meta.textContent = 'Erreur à +1 h du modèle et de la persistance, par type de jour. Un type où le modèle « perd » ou gagne nettement moins qu\'ailleurs mérite son propre réglage ; sinon, inutile d\'en ajouter. '
+    + `Vacances scolaires : calendrier officiel renseigné jusqu'au ${cal?.schoolKnownTo ? dayLabel(cal.schoolKnownTo) : '—'}. Événements : ${cal?.events ? plural(cal.events, 'déclaré') : 'aucun déclaré'} (fichier calendrier.json du dossier de données).`
+    + (cal?.errors?.length ? ` À corriger : ${cal.errors.join(' ; ')}.` : '');
+  table(tb, ['Type de jour', 'Journées', 'Modèle', 'Persistance', 'Gain', 'Écart (95 %)', 'Verdict', 'n'], list.map((r) => [
+    r.names?.length ? `${r.label} (${r.names.join(', ')})` : r.label, fmtNum(r.days), fmtNum(r.model, 3), fmtNum(r.per, 3), r.gainPct === null ? '—' : `${sgn(r.gainPct, 1)} %`,
+    r.lo === null ? '—' : `${sgn(r.lo, 3)} ; ${sgn(r.hi, 3)}`, r.verdict, fmtNum(r.n)]));
+}
+
+// « Viser 50 % à +1 h » (affiché par les écrans) contre « autant de marge avant le vide qu'avant le plein sur 4 h »
+function renderTarget(t) {
+  const meta = $('targetMeta'), tb = $('targetTable');
+  if (!meta || !tb) return;
+  tb.replaceChildren();
+  if (!t || !t.cases) { meta.textContent = 'Quand une station est en tension, les écrans conseillent de viser 50 % de remplissage à +1 h. Le serveur note à côté une autre règle (autant de marge avant le vide qu\'avant le plein sur la trajectoire prévue de +1 h à +4 h) ; premier résultat après une journée complète.'; return; }
+  const left = Math.max(0, t.minDays - t.days);
+  meta.textContent = `Une estimation, pas une mesure : la suite réellement relevée (4 h) est rejouée avec le déplacement conseillé, comme si les usagers avaient fait exactement la même chose — ce qui flatte les deux règles. Elles se comparent donc entre elles, sur les mêmes ${fmtNum(t.cases)} conseils (${plural(t.days, 'journée')}). `
+    + (left ? `Verdict dans ${left} jour${left > 1 ? 's' : ''}.` : `Écart demande à venir − 50 % : ${sgn(t.diff, 2)} point [${sgn(t.lo, 2)} ; ${sgn(t.hi, 2)}] : ${t.verdict}.`);
+  table(tb, ['Règle', 'Tranches vides ou pleines sur 4 h', 'Vélos déplacés par conseil'], [
+    ['Ne rien faire (relevé)', `${fmtNum(t.none, 2)} %`, '0'],
+    ['Viser 50 % à +1 h (affichée)', `${fmtNum(t.half, 2)} %`, fmtNum(t.movedHalf, 1)],
+    ['Demande à venir (témoin)', `${fmtNum(t.ahead, 2)} %`, fmtNum(t.movedAhead, 1)]]);
 }
 function renderBench(b) {
   const box = $('benchBody');

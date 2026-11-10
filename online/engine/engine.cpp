@@ -584,13 +584,14 @@ EXPORT(vn_forecast_json) size_t vn_forecast_json() {
   // à +60, +120 et +240 min — les seuls horizons où ils existent. Le serveur note les deux sur les mêmes relevés
   // (lib/forecast.mjs) : c'est la mesure hors échantillon que docs/mesures-modele.md dit manquer. Rien n'est
   // affiché ni appris avec ce témoin : il se calcule à côté, le levier est remis aussitôt.
-  std::string cl;
+  std::string cl, er, nd;
   const bool witness = g_pred.fcRule == FC_RULE_V2 && g_pred.fcStation;
+  const int cls = g_model.fcClassAt(t);
   const uint8_t * row = head < 0 ? nullptr : g_model.ring + (size_t)head * VN_MAX_ST;
   for (int i = 0; i < g_model.n; i++) {
-    if (i) { s_out += ","; cl += ","; }
+    if (i) { s_out += ","; cl += ","; er += ","; nd += ","; }
     const Station & st = g_model.st[i];
-    if (!row || row[i] == 255 || !st.live || st.status == ST_CLOSED) { s_out += "null"; cl += "null"; continue; }
+    if (!row || row[i] == 255 || !st.live || st.status == ST_CLOSED) { s_out += "null"; cl += "null"; er += "null"; nd += "null"; continue; }
     g_model.project(i, t, 5, 49, tmp, cf);
     if (witness) { g_pred.fcStation = false; g_model.project(i, t, 5, 49, tcl, nullptr); g_pred.fcStation = true; }
     float p0, n0, ph, nh;
@@ -619,9 +620,33 @@ EXPORT(vn_forecast_json) size_t vn_forecast_json() {
       cl += b;
     }
     cl += "]";
+    // Erreur annoncée à +60 min (Model::fcErrAt, la ligne « Erreur mesurée » de la fiche), en centièmes de vélo,
+    // seulement quand elle est mesurée sur la station elle-même : le serveur la compare à l'erreur constatée.
+    {
+      FcErr fe;
+      if (g_model.fcErrAt(i, cls, 2, t, fe) && fe.own) { snprintf(b, sizeof(b), "%d", (int)lroundf(fe.mae * 100.f)); er += b; }
+      else er += "null";
+    }
+    // Besoin conseillé : la règle livrée (viser 50 % à +1 h, st.need) et le témoin « demande à venir » — le
+    // déplacement qui laisse autant de marge avant le vide qu'avant le plein sur la trajectoire prévue de +1 h à
+    // +4 h : d = (capacité − max − min) / 2. Même déclencheur (station en tension, besoin livré ≥ 2), mêmes bornes.
+    {
+      int alt = 0;
+      if (st.need) {
+        float lo = tmp[12], hi = tmp[12];
+        for (int q = 13; q <= 48; q++) { if (tmp[q] < lo) lo = tmp[q]; if (tmp[q] > hi) hi = tmp[q]; }
+        alt = (int)lroundf(((float)st.capEff() - hi - lo) * 0.5f);
+        if (alt > 60) alt = 60;
+        if (alt < -60) alt = -60;
+        if (abs(alt) < 2) alt = 0;
+      }
+      snprintf(b, sizeof(b), "[%d,%d]", (int)st.need, alt);
+      nd += b;
+    }
   }
   s_out += "]";
   if (witness) { s_out += ",\"cl\":["; s_out += cl; s_out += "]"; }
+  s_out += ",\"er\":["; s_out += er; s_out += "],\"nd\":["; s_out += nd; s_out += "]";
   s_out += "}";
   return s_out.size();
 }
@@ -749,3 +774,5 @@ EXPORT(vn_digest_json) size_t vn_digest_json(int day) {
 }
 
 EXPORT(vn_local_day) int vn_local_day(double t) { return localDay((int64_t)t); }
+// Classe de jour du modèle à l'instant t : 0 = ouvré, 1 = week-end ou jour férié légal (Model::fcClassAt)
+EXPORT(vn_day_class) int vn_day_class(double t) { return g_model.fcClassAt((int64_t)t); }

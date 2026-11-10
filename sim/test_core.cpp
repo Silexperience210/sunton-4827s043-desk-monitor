@@ -2980,6 +2980,104 @@ static void m2Run(Model & m, int64_t t0, int days, M2World & w, InfoRec * ir) {
   }
 }
 
+// ── Erreur mesurée affichée (Model::fcErrAt, fcErrText) ──────────────
+// Le chiffre « ± x vélo à +1 h » de la fiche : (1) c'est bien l'erreur moyenne du couple appliqué, relue des
+// champs bruts ; (2) il annonce l'erreur réellement faite ensuite — trois semaines apprises, puis une semaine
+// de prévisions affichées comparées au relevé une heure plus tard, station par station ; (3) à défaut de mesure
+// propre à la station, c'est celle du parc, dite comme telle ; (4) sans profil ni apprentissage : rien, dit aussi.
+static void testErreurMesuree() {
+  settingsDefaults(g_set);
+  g_pred = PredictOpts();
+  const int64_t T0 = 1791842400 - 86400 * 8;                // lundi 05/10/2026 0 h
+  InfoRec ir[6] = { mkInfo("1", 49.60f, 6.13f, 20), mkInfo("2", 49.61f, 6.14f, 20), mkInfo("3", 49.62f, 6.15f, 20),
+                    mkInfo("4", 49.63f, 6.16f, 40), mkInfo("5", 49.64f, 6.17f, 40), mkInfo("6", 49.65f, 6.18f, 40) };
+  static Model m;
+  CHECK(m.init(), "erreur mesurée : init");
+  m.applyInfo(ir, 6, T0);
+  M2World w;
+  char txt[200];
+  FcErr e;
+  m2Run(m, T0, 1, w, ir);
+  CHECK(!m.fcErrAt(0, 0, 2, T0 + 86400 - 300, e) && !fcErrText(m, 0, T0 + 86400 - 300, txt, sizeof(txt)) && strstr(txt, "pas encore mesur"),
+        "erreur mesurée : rien appris → rien d'annoncé (« %s »)", txt);
+  m2Run(m, T0 + 86400, 20, w, ir);                          // jusqu'au dimanche 25/10 inclus
+  const int64_t T1 = T0 + 21 * 86400;                       // lundi 26/10 0 h (heure d'hiver depuis la veille)
+  // (1) lundi 8 h : l'erreur annoncée = Σ erreurs du couple appliqué ÷ prévisions jugées, relue des champs bruts
+  float ann[6]; bool own[6]; int nOwn = 0, exact = 0;
+  {
+    StatusRec sr[6];
+    for (int64_t t = T1; t <= T1 + 8 * 3600; t += 300) { w.step(t); for (int q = 0; q < 6; q++) sr[q] = mkStat(ir[q].sid, w.at(q, t), q >= 3 ? 40 : 20); m.applyStatus(sr, 6, t); }
+  }
+  const int64_t tA = T1 + 8 * 3600;
+  for (int i = 0; i < 6; i++) {
+    const bool got = m.fcErrAt(i, 0, 2, tA, e);
+    ann[i] = got ? e.mae : -1; own[i] = got && e.own;
+    if (!own[i]) continue;
+    nOwn++;
+    const uint8_t j = m.fcS[i].sel[0][0];
+    const float raw = j < FC_SNG ? m.fcS[i].err[0][0][j] / m.fcS[i].w[0][0] : -1;
+    float a, b; m.fcCoefAt(0, 60, a, b, i);
+    if (j < FC_SNG && e.mae == raw && e.n == m.fcS[i].w[0][0] && e.n >= FC_ERR_MIN
+        && fabsf(a - FC_SA[j / FC_SNB] / 10.f) < 1e-6f && fabsf(b - FC_SB[j % FC_SNB] / 20.f) < 1e-6f) exact++;
+  }
+  CHECK(nOwn == 6 && exact == 6, "erreur mesurée : 6 stations jugées sur leurs propres prévisions, chiffre = champs bruts du couple appliqué (%d propres, %d exactes)", nOwn, exact);
+  // (2) le reste de la semaine (lundi 8 h → vendredi 22 h) : ce que l'écran prévoit à +1 h contre le relevé 1 h après
+  double sumReal[6] = {}, sumAnn = 0, sumRealAll = 0; int nReal[6] = {};
+  {
+    static int pend[5 * 288][6];                              // prévision arrondie émise à la tranche k, −1 = aucune
+    StatusRec sr[6];
+    int k = 0;
+    for (int64_t t = tA + 300; t < T1 + 5 * 86400; t += 300, k++) {
+      w.step(t);
+      for (int q = 0; q < 6; q++) sr[q] = mkStat(ir[q].sid, w.at(q, t), q >= 3 ? 40 : 20);
+      m.applyStatus(sr, 6, t);
+      if (k >= 12) for (int q = 0; q < 6; q++) if (pend[k - 12][q] >= 0) { sumReal[q] += abs(pend[k - 12][q] - (int)m.st[q].bikes); nReal[q]++; }
+      struct tm lt; plat::localTime(t, &lt);
+      const bool emit = lt.tm_min % 15 == 0 && lt.tm_hour >= 6 && lt.tm_hour < 22;
+      for (int q = 0; q < 6; q++) pend[k][q] = emit ? (int)lroundf(m.st[q].fc[12]) : -1;
+    }
+  }
+  printf("  erreur à +1 h, annoncée lundi 8 h puis constatée sur la semaine :");
+  for (int i = 0; i < 6; i++) {
+    const double real = nReal[i] ? sumReal[i] / nReal[i] : -1;
+    printf(" st%d %.2f → %.2f", i, ann[i], real);
+    sumAnn += ann[i]; sumRealAll += real;
+  }
+  printf("\n");
+  CHECK(nReal[0] > 250 && fabs(sumRealAll - sumAnn) / sumAnn < 0.25,
+        "erreur mesurée : l'erreur annoncée annonce l'erreur constatée ensuite (somme des 6 stations : %.2f annoncée, %.2f constatée, %d prévisions par station)",
+        sumAnn, sumRealAll, nReal[0]);
+  CHECK(ann[2] < 0.05f && sumReal[2] == 0, "erreur mesurée : station immobile → ± 0 annoncé, 0 constaté (%.2f)", ann[2]);
+  // phrase : la station, ses prévisions jugées, virgule décimale
+  const int64_t tB = T1 + 4 * 86400 + 10 * 3600;            // vendredi 10 h
+  CHECK(fcErrText(m, 3, tB, txt, sizeof(txt)) && strstr(txt, "Erreur mesur\xC3\xA9" "e : \xC2\xB1 ") && strstr(txt, "+1 h") && strstr(txt, "+2 h")
+        && strstr(txt, "de la station") && !strchr(txt, '.'), "erreur mesurée : phrase de la fiche (« %s »)", txt);
+  // (3) station trop peu jugée : l'erreur de sa classe, dite « sur le parc »
+  {
+    const float keep1 = m.fcS[3].w[0][0], keep2 = m.fcS[3].w[0][1];
+    m.fcS[3].w[0][0] = m.fcS[3].w[0][1] = FC_ERR_MIN - 1;
+    FcErr c;
+    const bool got = m.fcErrAt(3, 0, 2, tB, c);
+    float a, b; m.fcCoefAt(0, 60, a, b, 3);
+    const int ia = (int)lroundf(a * 10), ib = (int)lroundf(b * 20);
+    CHECK(got && !c.own && c.mae == m.fcL->err[0][2][ia * FC_NB + ib] / m.fcL->w[0][2] && c.n == m.fcL->w[0][2],
+          "erreur mesurée : %d prévisions jugées seulement → l'erreur de la classe pour le couple appliqué (%.2f)", (int)(FC_ERR_MIN - 1), c.mae);
+    CHECK(fcErrText(m, 3, tB, txt, sizeof(txt)) && strstr(txt, "sur le parc") && strstr(txt, "pas encore assez jug"), "erreur mesurée : phrase « sur le parc » (« %s »)", txt);
+    m.fcS[3].w[0][0] = keep1; m.fcS[3].w[0][1] = keep2;
+  }
+  // (4) station nouvelle, sans profil : elle se prévoit par la persistance — l'erreur de la classe n'est pas la sienne
+  {
+    InfoRec ir7[7];
+    for (int i = 0; i < 6; i++) ir7[i] = ir[i];
+    ir7[6] = mkInfo("7", 49.66f, 6.19f, 20);
+    m.applyInfo(ir7, 7, tB);
+    const int j = m.find("7");
+    CHECK(j >= 0 && !m.fcErrAt(j, 0, 2, tB, e) && !fcErrText(m, j, tB, txt, sizeof(txt)) && strstr(txt, "pas encore mesur"),
+          "erreur mesurée : station sans profil → rien d'annoncé");
+  }
+  CHECK(!m.fcErrAt(-1, 0, 2, tB, e) && !m.fcErrAt(0, 2, 2, tB, e) && !m.fcErrAt(0, 0, 5, tB, e), "erreur mesurée : index hors bornes refusés");
+}
+
 static void testModele2() {
   settingsDefaults(g_set);
   g_pred = PredictOpts();
@@ -3489,6 +3587,7 @@ int main(int argc, char ** argv) {
   testDump();
   testHorsLigne(argc > 1 ? argv[1] : "");
   testModele2();
+  testErreurMesuree();
   testVersion();
   testClosedNotLearned();
   testDaysBadTimes();

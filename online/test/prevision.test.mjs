@@ -13,7 +13,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { History } from '../lib/history.mjs';
-import { ForecastLog, shadowVerdict, SHADOW_MIN_DAYS } from '../lib/forecast.mjs';
+import { ForecastLog, shadowVerdict, SHADOW_MIN_DAYS, errCheckVerdict, riskEval, riskNow, riskKey, targetVerdict, dayTypeReport,
+  RISK_K, RISK_TRAIN_DAYS, RISK_MIN_CASES } from '../lib/forecast.mjs';
+import { loadCalendar, dayType, SCHOOL_HOLIDAYS } from '../lib/calendrier.mjs';
 import { loadEngine, FEED } from '../public/vn-engine.js';
 import { site } from './harnais.mjs';
 
@@ -42,7 +44,11 @@ const renting = { A: 1, B: 1, C: 0, E: 1 };
 // Témoin « couple de la classe » : à +60, +120 et +240 min, une prévision propre (relevé + 2, + 6, + 5) — le modèle
 // y vaut relevé + 3, + 4, + 5 : meilleur, moins bon, égal selon l'horizon, et un index décalé change la note.
 const CL_OFF = [2, 6, 5];
-function writeDay(D, { withFlag = true, withCl = false } = {}) {
+// 1.5.0 : erreur annoncée (centièmes), besoin livré et témoin, échéance « vide dans 30 min » quand il reste ≤ 2 vélos
+const ER = { A: 150, B: 80, C: 60, E: null };
+// E, immobile à 3 vélos le matin : retirer 2 (livré) ou 7 (témoin) — elle n'en a que 3 à donner, le témoin est borné à −3
+const ND = (sid, cur) => (sid === 'A' && cur <= 4 ? [6, 3] : sid === 'E' && cur === 3 ? [-2, -7] : [0, 0]);
+function writeDay(D, { withFlag = true, withCl = false, with15 = false } = {}) {
   const h = new History(D);
   h.append(Array.from({ length: N }, (_, k) => ({ t: T0 + k * 300, n: null, w: null, b: ST.map((s) => VAL[s[0]](k)), st: ST })));
   mkdirSync(join(D, 'prevision'), { recursive: true });
@@ -50,11 +56,12 @@ function writeDay(D, { withFlag = true, withCl = false } = {}) {
   for (const k of PRED_K) {
     const st = ST.map(([sid, , cap]) => {
       const cur = VAL[sid](k);
-      const row = [cur, ...HK.map((_, h) => cur + h + 1), ...HK.map((_, h) => Math.max(0, cur - h - 1)), -1, -1, cap];
+      const row = [cur, ...HK.map((_, h) => cur + h + 1), ...HK.map((_, h) => Math.max(0, cur - h - 1)), with15 && cur > 0 && cur <= 2 ? 30 : -1, -1, cap];
       return withFlag ? [...row, renting[sid]] : row;
     });
     const cl = withCl ? { cl: ST.map(([sid]) => CL_OFF.map((o) => VAL[sid](k) + o)) } : {};
-    s += JSON.stringify({ slot: T0 + k * 300, t: T0 + k * 300 + 20, net60: 0, bikes: 0, st, ...cl }) + '\n';
+    const more = with15 ? { er: ST.map(([sid]) => ER[sid]), nd: ST.map(([sid]) => ND(sid, VAL[sid](k))) } : {};
+    s += JSON.stringify({ slot: T0 + k * 300, t: T0 + k * 300 + 20, net60: 0, bikes: 0, st, ...cl, ...more }) + '\n';
   }
   writeFileSync(join(D, 'prevision', `${DAY}.jsonl`), s);
   return new ForecastLog(D, new History(D));
@@ -168,9 +175,164 @@ try {
     const rows = f1.st.map((v, i) => [v, f1.cl?.[i]]).filter(([v]) => v);
     const differ = rows.filter(([v, c]) => c[0] !== v[3] || c[1] !== v[4] || c[2] !== v[5]).length;
     ok(rows.length > 100 && differ >= 10 && differ < rows.length, `le témoin diffère du chiffre affiché sur ${differ} stations (de ${rows.length}), pas sur toutes`);
+    const nErr = f1.er.filter((x) => x !== null).length;
+    ok(Array.isArray(f1.er) && f1.er.length === f1.st.length && f1.st.every((v, i) => v !== null || f1.er[i] === null) && nErr >= 50
+      && f1.er.every((x) => x === null || (Number.isInteger(x) && x >= 0 && x < 2000)), `erreur annoncée à +60 min : ${nErr} stations jugées sur elles-mêmes (centièmes de vélo), null ailleurs`);
+    const needs = f1.nd.filter((x) => x && x[0] !== 0);
+    ok(f1.nd.length === f1.st.length && f1.st.every((v, i) => (v === null) === (f1.nd[i] === null)) && needs.length >= 5
+      && f1.nd.every((x) => x === null || (x.length === 2 && x.every(Number.isInteger) && (x[0] !== 0 || x[1] === 0) && Math.abs(x[1]) <= 60 && Math.abs(x[1]) !== 1)),
+      `besoin : ${needs.length} stations en tension avec les deux règles ; témoin nul là où la règle livrée ne demande rien, jamais ± 1`);
+    ok(needs.some((x) => x[0] !== x[1]), 'les deux règles ne conseillent pas toujours le même déplacement');
     ok(JSON.stringify(f1) === JSON.stringify(f2), 'deux lectures de suite : mêmes chiffres (le levier des couples par station est bien remis)');
     e.clock(tLast, ms); e.save();
     ok(before.equals(Buffer.from(e.getFile('/vn_prof.bin'))), 'calculer le témoin ne change pas un octet de ce qui est appris (/vn_prof.bin)');
+  }
+  console.log('1.5.0 : erreur annoncée, cases du risque de rupture, besoin témoin — notés contre un calcul indépendant');
+  {
+    const s = writeDay(fresh(), { with15: true }).score(DAY);
+    const CAP = { A: 20, E: 25 };
+    // erreur annoncée contre constatée : A seule en annonce une (E : null), 64 prévisions à +60 min
+    let ann = 0, real = 0, n = 0;
+    for (const k of PRED_K) { ann += 1.5; real += Math.abs(VAL.A(k) + 3 - VAL.A(k + 12)); n++; }
+    ok(s.errCheck.n === n && same(s.errCheck.ann, ann) && same(s.errCheck.real, real), `erreur annoncée ${s.errCheck.ann} / constatée ${s.errCheck.real} sur ${s.errCheck.n} prévisions (attendu ${ann} / ${real} sur ${n})`);
+    // cases du risque : (relevé, prévision à +60, alerte) → [prévisions, ruptures vues dans l'heure]
+    const want = { e: {}, f: {} };
+    const add = (t, key, hit) => { const c = (t[key] ||= [0, 0]); c[0]++; if (hit) c[1]++; };
+    for (const k of PRED_K) for (const sid of ['A', 'E']) {
+      const cur = VAL[sid](k), cap = CAP[sid], fut = Array.from({ length: 12 }, (_, j) => VAL[sid](k + j + 1));
+      if (cur > 0) add(want.e, riskKey(cur, cur + 3, cur <= 2), fut.includes(0));
+      if (cur < cap) add(want.f, riskKey(cap - cur, cap - cur - 3, false), fut.some((x) => x >= cap));
+    }
+    ok(JSON.stringify(s.risk.e) === JSON.stringify(want.e) && Object.keys(want.e).length > 5, `risque « vide » : ${Object.keys(s.risk.e).length} cases, identiques au calcul indépendant`);
+    ok(JSON.stringify(s.risk.f) === JSON.stringify(want.f) && Object.values(s.risk.f).every((c) => c[1] === 0), 'risque « pleine » : cases identiques, aucune saturation dans ce jour');
+    ok(Object.entries(s.risk.e).some(([k, c]) => (+k & 1) === 1 && c[0] > 0) && Object.entries(s.risk.e).some(([k]) => (+k & 1) === 0), 'l\'alerte « vide dans l\'heure » fait partie de la case');
+    // besoin : trajectoire relevée sur 4 h décalée du déplacement, borné par ce que la station peut donner ou recevoir
+    const t = { n: 0, slots: 0, bad0: 0, bad50: 0, badP: 0, mv50: 0, mvP: 0 };
+    let asked = 0;
+    for (const k of PRED_K) for (const sid of ['A', 'E']) {
+      const cur = VAL[sid](k), cap = CAP[sid], nd = ND(sid, cur);
+      if (!nd[0]) continue;
+      const cl = (d) => Math.max(-cur, Math.min(cap - cur, d)), d50 = cl(nd[0]), dP = cl(nd[1]);
+      const bad = (y) => y <= 0 || y >= cap;
+      t.n++; t.mv50 += Math.abs(d50); t.mvP += Math.abs(dP); asked += Math.abs(nd[1]);
+      for (let j = 1; j <= 48; j++) { const x = VAL[sid](k + j); t.slots++; if (bad(x)) t.bad0++; if (bad(x + d50)) t.bad50++; if (bad(x + dP)) t.badP++; }
+    }
+    ok(JSON.stringify(s.target) === JSON.stringify(t) && t.n > 20 && t.mvP < asked, `besoin (témoin borné : ${t.mvP} vélos déplacés pour ${asked} demandés) : ${s.target.n} cas, tranches en rupture ${s.target.bad0} / ${s.target.bad50} / ${s.target.badP} (sans rien / 50 % / demande à venir), comme le calcul indépendant`);
+    const s0 = writeDay(fresh()).score(DAY);
+    ok(s0.errCheck.n === 0 && s0.target.n === 0 && Object.keys(s0.risk.e).length > 5, 'journal d\'avant la 1.5.0 : ni erreur annoncée ni besoin témoin ; le risque se note quand même (relevé, prévision et alerte y sont)');
+  }
+  console.log('erreur annoncée : fidèle, trop optimiste, trop prudente, en cours');
+  {
+    const D = (k) => `2026-11-${String(k).padStart(2, '0')}`;
+    const mk = (ratios) => ratios.map((r, k) => ({ day: D(k + 1), complete: true, errCheck: { ann: 1000, real: 1000 * r, n: 900 } }));
+    const fid = errCheckVerdict(mk([1.02, 0.97, 1.05, 0.99, 1.03, 0.96, 1.01, 1.04]));
+    ok(fid.verdict === 'fidèle' && same(fid.ratio, 1.0088) && fid.lo > 0.85 && fid.hi < 1.15 && fid.n === 7200 && same(fid.announced, +(1000 / 900).toFixed(4)), `8 journées autour de 1 : « fidèle » (${fid.ratio} [${fid.lo} ; ${fid.hi}])`);
+    ok(errCheckVerdict(mk([1.4, 1.5, 1.35, 1.45, 1.5, 1.4, 1.38])).verdict === 'trop optimiste', 'on se trompe 40 % de plus qu\'annoncé : « trop optimiste »');
+    ok(errCheckVerdict(mk([0.6, 0.65, 0.7, 0.62, 0.66, 0.64, 0.61])).verdict === 'trop prudente', 'on se trompe moins qu\'annoncé : « trop prudente »');
+    ok(errCheckVerdict(mk([0.7, 1.4, 0.8, 1.3, 0.75, 1.35, 1.0])).verdict === 'non concluant', 'journées qui se contredisent : « non concluant »');
+    const few = errCheckVerdict(mk([1.0, 1.01, 0.99, 1.0, 1.02, 0.98]));
+    ok(few.verdict === 'en cours' && few.days === 6, '6 journées : « en cours »');
+    ok(errCheckVerdict([]).ratio === null, 'aucune journée : rien d\'affirmé');
+  }
+  console.log('risque de rupture : annoncé avec les seules journées passées, vérifié par tranche, masqué tant qu\'il ne l\'est pas');
+  {
+    const D = (k) => `2026-11-${String(k).padStart(2, '0')}`;
+    // Monde fabriqué : quatre cases dont la vraie fréquence de rupture est connue (2 %, 20 %, 40 %, 85 %)
+    const K = [riskKey(9, 9, false), riskKey(3, 2, false), riskKey(2, 1, false), riskKey(1, 0, true)], F = [0.02, 0.20, 0.40, 0.85], N = [3000, 800, 500, 300];
+    const dayCells = (freq, wob) => Object.fromEntries(K.map((k, q) => [k, [N[q], Math.round(N[q] * Math.min(1, Math.max(0, freq[q] + wob * (q % 2 ? 0.01 : -0.01))))]]));
+    const stable = Array.from({ length: 12 }, (_, d) => ({ day: D(d + 1), complete: true, risk: { e: dayCells(F, (d % 3) - 1), f: {} } }));
+    const ev = riskEval(stable);
+    const e = ev.empty;
+    ok(e.trainDays === 12 && e.judgedDays === 12 - RISK_TRAIN_DAYS && e.verdict === 'vérifiée', `12 journées stables : ${e.judgedDays} annoncées après ${RISK_TRAIN_DAYS} d'apprentissage, « ${e.verdict} »`);
+    const used = e.bins.filter((b) => b.n >= RISK_MIN_CASES);
+    ok(used.length === 4 && used.every((b) => b.verdict === 'vérifiée' && Math.abs(b.observed - b.announced) < 0.03), `quatre tranches peuplées, annoncé ≈ constaté (${used.map((b) => `${b.announced}/${b.observed}`).join(' · ')})`);
+    ok(e.brier < e.brierBase && e.brier < e.brierAlert && e.skillVsBase > 0.2, `score de Brier ${e.brier} : mieux que la part du parc (${e.brierBase}) et que l'alerte seule (${e.brierAlert})`);
+    // calcul indépendant de la première journée annoncée (la 4ᵉ) : table des 3 premières, rétrécissement à deux niveaux
+    {
+      const tr = stable.slice(0, RISK_TRAIN_DAYS), cell = {}, lvl = {};
+      let tn = 0, th = 0;
+      for (const d of tr) for (const [k, [n, h]] of Object.entries(d.risk.e)) { const c = (cell[k] ||= [0, 0]); c[0] += n; c[1] += h; const l = (lvl[Math.floor(k / 26)] ||= [0, 0]); l[0] += n; l[1] += h; tn += n; th += h; }
+      const base = (th + 1) / (tn + 2);
+      const p = (k) => { const l = lvl[Math.floor(k / 26)], c = cell[k]; return (c[1] + RISK_K * ((l[1] + RISK_K * base) / (l[0] + RISK_K))) / (c[0] + RISK_K); };
+      let b = 0, n = 0;
+      for (const [k, [cn, ch]] of Object.entries(stable[RISK_TRAIN_DAYS].risk.e)) { b += ch * (1 - p(k)) ** 2 + (cn - ch) * p(k) ** 2; n += cn; }
+      const one = riskEval(stable.slice(0, RISK_TRAIN_DAYS + 1)).empty;
+      ok(one.judgedDays === 1 && one.n === n && same(one.brier, +(b / n).toFixed(4)) && one.verdict === 'en cours', `une journée annoncée : Brier ${one.brier} = calcul indépendant ${(b / n).toFixed(4)}, « en cours »`);
+    }
+    // pas de fuite : une journée très différente de son passé (80 % de ruptures après trois journées à 20 %) est
+    // annoncée à ~20 %, la fréquence de SON PASSÉ — pas à une valeur déjà tirée vers ce qu'elle va montrer
+    {
+      const k1 = riskKey(3, 2, false), past = Array.from({ length: RISK_TRAIN_DAYS }, (_, d) => ({ day: D(d + 1), complete: true, risk: { e: { [k1]: [500, 100] }, f: {} } }));
+      const hn = 100 * RISK_TRAIN_DAYS, nn = 500 * RISK_TRAIN_DAYS, base = (hn + 1) / (nn + 2), pl = (hn + RISK_K * base) / (nn + RISK_K), pc = (hn + RISK_K * pl) / (nn + RISK_K);
+      const r = riskEval([...past, { day: D(RISK_TRAIN_DAYS + 1), complete: true, risk: { e: { [k1]: [500, 400] }, f: {} } }]).empty;
+      const b = r.bins.find((x) => x.n);
+      ok(r.judgedDays === 1 && b.n === 500 && same(b.announced, +pc.toFixed(4)) && same(b.observed, 0.8) && b.from === 0.15,
+        `journée à 80 % après un passé à 20 % : annoncée ${b.announced} (son passé seul : ${pc.toFixed(4)}), constatée ${b.observed}`);
+    }
+    ok(riskEval(stable.slice(0, RISK_TRAIN_DAYS)).empty.judgedDays === 0 && riskEval(stable.slice(0, RISK_TRAIN_DAYS)).empty.n === 0, `${RISK_TRAIN_DAYS} journées : apprentissage seulement, rien d'annoncé`);
+    // Le monde change après un long passé (la case à 20 % passe à 60 %) : la table, lourde de son passé, continue
+    // d'annoncer ~25 % — la tranche est « fausse », l'ensemble aussi, et c'est dit.
+    const heavy = (d) => Object.fromEntries(Object.entries(d).map(([k, [n, h]]) => [k, [n * 40, h * 40]]));
+    const drift = stable.map((d, q) => (q < RISK_TRAIN_DAYS ? { ...d, risk: { e: heavy(d.risk.e), f: {} } } : { ...d, risk: { e: dayCells([0.02, 0.60, 0.40, 0.85], 0), f: {} } }));
+    const dv = riskEval(drift).empty;
+    ok(dv.verdict === 'fausse' && dv.bins.some((b) => b.verdict === 'fausse' && b.observed > b.announced + 0.1), `fréquence réelle qui change : « ${dv.verdict} » (${dv.bins.filter((b) => b.verdict === 'fausse').map((b) => `${b.announced} annoncé, ${b.observed} constaté`).join(' ; ')})`);
+    // Le même changement sur un passé court : la table suit, les tranches bougent — pas « fausse », mais plus « vérifiée »
+    const soft = stable.map((d, q) => (q < 4 ? d : { ...d, risk: { e: dayCells([0.02, 0.60, 0.40, 0.85], 0), f: {} } }));
+    const sv = riskEval(soft);
+    ok(sv.empty.verdict !== 'vérifiée' && riskNow(sv, [[3, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, -1, -1, 20]]).empty === null, `changement récent : « ${sv.empty.verdict} », donc rien en direct`);
+    // en direct : rien tant que ce n'est pas vérifié ; ensuite la liste triée, stations vides écartées (déjà en rupture)
+    const rows = [[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 30, -1, 20], [9, 9, 9, 9, 9, 9, 0, 0, 0, 0, 0, -1, -1, 20], null, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, 20], [2, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, -1, -1, 20]];
+    const live = riskNow(ev, rows), hidden = riskNow(riskEval(drift), rows);
+    ok(hidden.empty === null && hidden.full === null, 'probabilité non vérifiée : rien en direct');
+    ok(live.full === null && live.empty.length === 3 && live.empty[0].i === 0 && live.empty[1].i === 4 && live.empty[2].i === 1 && live.empty[0].p > 0.75 && live.empty[2].p < 0.05,
+      `vérifiée : ${live.empty.map((x) => `st${x.i} ${Math.round(x.p * 100)} %`).join(' · ')} ; côté « pleine » (jamais vérifié ici) toujours masqué`);
+    ok(!JSON.stringify(ev).includes('tables'), 'la table interne ne part pas dans la réponse de l\'API');
+  }
+  console.log('besoin conseillé : comparaison estimée des deux règles');
+  {
+    const D = (k) => `2026-11-${String(k).padStart(2, '0')}`;
+    const mk = (pairs) => pairs.map(([b50, bP], k) => ({ day: D(k + 1), complete: true, target: { n: 40, slots: 1920, bad0: 300, bad50: b50, badP: bP, mv50: 240, mvP: 200 } }));
+    const v = targetVerdict(mk([[120, 90], [110, 95], [130, 100], [115, 92], [125, 97], [118, 99], [122, 91]]));
+    const S = 7 * 1920;
+    ok(v.cases === 280 && same(v.none, +(100 * 2100 / S).toFixed(2)) && same(v.half, +(100 * 840 / S).toFixed(2)) && same(v.ahead, +(100 * 664 / S).toFixed(2))
+      && same(v.movedHalf, 6) && same(v.movedAhead, 5) && same(v.diff, +(100 * (664 - 840) / S).toFixed(2)) && v.verdict === 'moins de ruptures',
+      `7 journées : ${v.none} % sans rien, ${v.half} % règle 50 %, ${v.ahead} % demande à venir, écart ${v.diff} [${v.lo} ; ${v.hi}] : « ${v.verdict} »`);
+    ok(targetVerdict(mk([[90, 120], [95, 110], [100, 130], [92, 115], [97, 125], [99, 118], [91, 122]])).verdict === 'plus de ruptures', 'rôles échangés : « plus de ruptures »');
+    ok(targetVerdict(mk([[120, 90], [90, 120], [130, 100], [100, 130], [125, 97], [97, 125], [110, 110]])).verdict === 'non concluant', 'journées qui se contredisent : « non concluant »');
+    ok(targetVerdict(mk([[120, 90], [110, 95]])).verdict === 'en cours' && targetVerdict([]).cases === 0, 'deux journées : « en cours » ; aucune : rien');
+  }
+  console.log('calendrier et prévision par type de jour');
+  {
+    const cal0 = loadCalendar(fresh());
+    ok(!cal0.file && cal0.events.length === 0 && cal0.school.length === SCHOOL_HOLIDAYS.length && cal0.errors.length === 0, 'sans calendrier.json : les vacances officielles, aucun événement');
+    ok(dayType(cal0, '2026-11-03', 0).type === 'vacances' && dayType(cal0, '2026-11-03', 0).name === 'Toussaint' && dayType(cal0, '2026-11-09', 0).type === 'ouvre'
+      && dayType(cal0, '2026-10-30', 0).type === 'ouvre' && dayType(cal0, '2026-11-01', 1).type === 'weekend' && dayType(cal0, '2026-12-28', 0).type === 'vacances'
+      && dayType(cal0, '2027-01-04', 0).type === 'ouvre', 'Toussaint 2026 du 31/10 au 08/11 : mardi 03/11 « vacances », lundi 09/11 « ouvré », dimanche 01/11 « week-end et fériés »');
+    ok(SCHOOL_HOLIDAYS.every(([du, au], k) => du < au && new Date(`${du}T12:00:00Z`).getUTCDay() >= 5 && (k === 0 || SCHOOL_HOLIDAYS[k - 1][1] < du)),
+      'périodes officielles : dans l\'ordre, sans recouvrement, commençant un vendredi ou un samedi');
+    const dir = fresh();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'calendrier.json'), JSON.stringify({ evenements: [{ du: '2026-11-05', au: '2026-11-06', nom: 'Foire' }, { du: '2026-13-40', nom: 'faux' }, { du: '2026-11-20', au: '2026-11-10', nom: 'à l\'envers' }],
+      vacances: [{ du: '2026-11-16', nom: 'pont' }] }));
+    const cal = loadCalendar(dir);
+    ok(cal.file && cal.events.length === 1 && cal.errors.length === 2 && dayType(cal, '2026-11-05', 0).type === 'evenement' && dayType(cal, '2026-11-05', 0).name === 'Foire'
+      && dayType(cal, '2026-11-16', 0).type === 'vacances' && dayType(cal, '2026-11-07', 1).type === 'weekend',
+      `calendrier.json : 1 événement gardé, 2 entrées fausses nommées (${cal.errors.length}), l'événement passe avant les vacances`);
+    writeFileSync(join(dir, 'calendrier.json'), '{ pas du json');
+    ok(loadCalendar(dir).errors.length === 1 && loadCalendar(dir).events.length === 0, 'calendrier.json illisible : dit, rien d\'inventé');
+    // rapport par type : MAE du modèle et de la persistance à +60 min, écart apparié par journées
+    const note = (day, m, p, n) => ({ day, complete: true, model: [0, 0, { s: m, n }], per: [0, 0, { s: p, n }] });
+    const notes = [note('2026-10-27', 900, 1000, 1000), note('2026-10-28', 880, 1000, 1000), note('2026-10-29', 910, 1000, 1000), note('2026-10-30', 905, 1000, 1000),
+      note('2026-10-31', 500, 520, 600), note('2026-11-01', 480, 500, 600),
+      note('2026-11-02', 1150, 1000, 1000), note('2026-11-03', 1180, 1000, 1000), note('2026-11-04', 1120, 1000, 1000), note('2026-11-05', 1160, 1000, 1000)];
+    const cls = (d) => (['2026-10-31', '2026-11-01'].includes(d) ? 1 : 0);
+    const rep = dayTypeReport(notes, (d) => dayType(cal0, d, cls(d)));
+    const by = Object.fromEntries(rep.map((r) => [r.type, r]));
+    ok(rep.length === 3 && by.ouvre.days === 4 && same(by.ouvre.model, 0.8988) && same(by.ouvre.per, 1) && same(by.ouvre.gainPct, 10.1) && by.ouvre.verdict === 'gagne',
+      `jours ouvrés hors vacances : ${by.ouvre.model} contre ${by.ouvre.per}, « ${by.ouvre.verdict} »`);
+    ok(by.vacances.days === 4 && same(by.vacances.gainPct, -15.3) && by.vacances.verdict === 'perd' && by.vacances.names[0] === 'Toussaint' && by.weekend.verdict === 'en cours',
+      `vacances de la Toussaint : le modèle « ${by.vacances.verdict} » contre la persistance (${by.vacances.gainPct} %) ; week-end, 2 journées : « ${by.weekend.verdict} »`);
+    ok(dayTypeReport(notes, null) === null, 'sans calendrier branché : pas de rapport par type');
   }
   console.log('verdict du témoin : quotient par journées, intervalle de Student, aucun verdict avant une semaine');
   {

@@ -515,6 +515,12 @@ static bool textVisible(lv_obj_t * o, const char * prefix) {
   for (uint32_t i = 0; i < lv_obj_get_child_cnt(o); i++) if (textVisible(lv_obj_get_child(o, i), prefix)) return true;
   return false;
 }
+static lv_obj_t * findLabelPrefix(lv_obj_t * o, const char * prefix) {
+  if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return nullptr;
+  if (lv_obj_check_type(o, &lv_label_class) && strncmp(lv_label_get_text(o), prefix, strlen(prefix)) == 0) return o;
+  for (uint32_t i = 0; i < lv_obj_get_child_cnt(o); i++) if (lv_obj_t * r = findLabelPrefix(lv_obj_get_child(o, i), prefix)) return r;
+  return nullptr;
+}
 static int opsScenario(const std::string & in, StatusRec * recs, int ns) {
   s_namedShots = true;
   int fails = 0;
@@ -1451,7 +1457,27 @@ static int realMain(int argc, char ** argv) {
   tap(30, tabY(ui::TAB_ALERTS));
   run(500);
   printf("Tap réel sur « Alertes » après étalonnage → onglet %s\n", ui::debugTab() == ui::TAB_ALERTS ? "Alertes ✓" : "INCORRECT");
-  return (s_auditFail || worst > 4 || ui::debugTab() != ui::TAB_ALERTS) ? 2 : 0;
+  const bool tabOk = ui::debugTab() == ui::TAB_ALERTS;
+  // Fiche : la ligne « Erreur … » de la prévision (mesurée, celle du parc, ou « pas encore mesurée ») est présente
+  // et tient dans la feuille. En dernier, pour ne pas décaler la numérotation des captures précédentes.
+  bool errLine = false;
+  {
+    int pk = -1;
+    for (int i = 0; i < g_model.n && pk < 0; i++) if (g_model.st[i].active && g_model.st[i].live && g_model.st[i].status != ST_CLOSED) pk = i;
+    if (pk >= 0) {
+      ui::openStation(pk); run(500);
+      lv_obj_t * l = findLabelPrefix(lv_layer_top(), "Erreur ");
+      if (l) {
+        lv_obj_scroll_to_view_recursive(l, LV_ANIM_OFF); run(200);
+        lv_area_t a; lv_obj_get_coords(l, &a);
+        errLine = a.x1 >= 0 && a.x2 < 480 && a.y1 >= 0 && a.y2 < 272;
+        printf("Fiche : « %s » en (%d,%d)–(%d,%d) %s\n", lv_label_get_text(l), a.x1, a.y1, a.x2, a.y2, errLine ? "✓" : "hors de l'écran (INCORRECT)");
+      } else printf("Fiche : ligne « Erreur … » introuvable (INCORRECT)\n");
+      shot("fiche_station_erreur");
+      ui::sheetClose(); run(300);
+    }
+  }
+  return (s_auditFail || worst > 4 || !tabOk || !errLine) ? 2 : 0;
 }
 
 // ── Exécution sur une pile peinte : mesure de la profondeur de pile maximale de l'UI ──

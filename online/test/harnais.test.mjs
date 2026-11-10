@@ -37,7 +37,7 @@ try {
   console.log('un bloc sauté sans bruit fait échouer npm test (plancher par fichier)');
   // revue §5.1 : sans le binaire du banc, features.test.mjs affichait « 59/59 vérifications réussies » pour 89
   const low = sousPlancher('features.test.mjs', decompte('59/59 vérifications réussies'));
-  ok(/59 vérifications pour un plancher de 91/.test(low || ''), `features à 59/59 : ${low}`);
+  ok(new RegExp(`59 vérifications pour un plancher de ${PLANCHER['features.test.mjs']}`).test(low || '') && PLANCHER['features.test.mjs'] > 59, `features à 59/59 : ${low}`);
   ok(sousPlancher('nouveau.test.mjs', decompte('3 vérifications, 0 échec(s)')) !== null && Object.keys(PLANCHER).every((f) => sousPlancher(f, { checks: PLANCHER[f], fails: 0 }) === null),
     'fichier sans plancher refusé ; chaque plancher atteint exactement passe');
 
