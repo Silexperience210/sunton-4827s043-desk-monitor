@@ -1,0 +1,47 @@
+name: release
+
+# Un tag « v1.4.1 » poussé sur le dépôt → une Release GitHub avec les deux images flashables.
+# Les binaires n'ont plus besoin d'être versionnés dans dist/ (1,5 Mo chacun, à chaque version).
+#   git tag v1.4.1 && git push origin v1.4.1
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('platformio.ini') }}
+      - run: pip install platformio
+      # Le tag doit être la version gravée dans le firmware : sinon la Release mentirait sur ce qu'elle contient
+      - name: Tag = VN_VERSION
+        run: |
+          v="$(sed -n 's/^#define VN_VERSION *"\(.*\)"/\1/p' src/config.h)"
+          test "v$v" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME ≠ VN_VERSION $v (src/config.h)"; exit 1; }
+          echo "VN_V=$v" >> "$GITHUB_ENV"
+      - name: Images fusionnées (0x0) et contrôle
+        run: |
+          mkdir -p out
+          for e in c r; do
+            pio run -e esp32-4827s043$e
+            python3 tools/merge_dist.py --build .pio/build/esp32-4827s043$e --out out/velohnav-ops-esp32-4827s043$e-v$VN_V.bin
+          done
+          python3 tools/check_dist_bin.py out/*.bin
+          (cd out && sha256sum *.bin > SHA256SUMS)
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/*.bin out/SHA256SUMS \
+            --title "VelohNav Ops $VN_V" \
+            --notes "Notes de version : [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md). Flasher à l'adresse 0x0, sans « Erase Flash » pour garder ce que la carte a appris (README, « Mise à jour d'une carte déjà en service »)."

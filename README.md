@@ -34,7 +34,7 @@ courbe 24 h réelle + profil habituel + prévision 2 h, prévisions +15 min / +3
 lecture opérationnelle (« Rupture prévue dans ~25 min », tendance, comportement habituel), action
 conseillée (« Apporter +6 vélos »), confiance du modèle, dernier mouvement, adresse.
 
-## Version en ligne : serveur, jumeau de l'écran, synchro (1.3.0)
+## Version en ligne : serveur, jumeau de l'écran, synchro
 
 Le dossier [`online/`](online/README.md) fait tourner **le même cœur que la carte** (`src/core`,
 compilé en WebAssembly) sur une machine allumée en permanence — Umbrel, Raspberry Pi, NAS — avec
@@ -79,11 +79,16 @@ exploitation, axe de couleur *vide → pleine* (les stations pleines comptent au
 
 ## Prévisions : méthode
 
-Pour chaque station, à l'horizon *h* (0 à 120 min) :
+Pour chaque station, à l'horizon *h* (courbe et fiches : 0 à 120 min ; prévision 24 h et mesures : jusqu'à 4 h
+et au-delà) :
 
 ```
-prévu(h) = actuel + c · [profil(t+h) − profil(t) + part météo(h)] + (1 − 0,6·c) · tendance(h)
+prévu(h) = actuel + a(h) · [profil(t+h) − profil(t)] + b(h) · [profil(t) − actuel] + part météo(h)
 ```
+
+borné entre 0 et la capacité utile. C'est le **modèle 2** (1.4.0) ; il remplace « profil + tendance », qui
+faisait moins bien que la simple persistance de +15 à +60 min sur les données réelles
+([`docs/mesures-modele.md`](docs/mesures-modele.md)).
 
 - **profil** : vélos attendus selon le jour de la semaine et le quart d'heure, appris en continu
   (moyenne mobile plafonnée ≈ 8 semaines par créneau, lissage ±15 min). Tant qu'un créneau est jeune,
@@ -92,8 +97,22 @@ prévu(h) = actuel + c · [profil(t+h) − profil(t) + part météo(h)] + (1 −
   Un **jour férié** légal luxembourgeois (fêtes fixes, lundi de Pâques, Ascension, lundi de Pentecôte)
   se prévoit et s'évalue avec le profil du **dimanche**, et l'écran le dit (« jour férié : profil du
   dimanche ») ; le lendemain reprend le profil de son propre jour.
-- **tendance** : régression sur les 30 dernières minutes, amortie (τ = 25 min).
-- **c** : confiance (0 → 1) selon le nombre d'observations ; affichée dans les fiches.
+- **a(h)** : la part du mouvement habituel que la station suivra ; **b(h)** : la part de son écart au profil
+  qu'elle aura rattrapée. Les deux sont **appris en ligne** : tous les quarts d'heure de 6 h à 22 h, chaque
+  station émet une prévision par horizon (15, 30, 60, 120, 240 min) ; à l'échéance, le relevé la juge pour
+  chaque couple d'une grille, et le couple appliqué est celui qui s'est le moins trompé (oubli : demi-vie de
+  7 jours). Un jeu de couples par **classe de jour** (ouvré | week-end et férié) ; entre deux horizons, les
+  couples sont interpolés. Tant qu'une classe n'a pas une journée complète de prévisions jugées, a = b = 0 :
+  la **persistance**, qui ne prétend rien.
+- **un couple par station** à +60, +120 et +240 min, choisi sur ses propres erreurs et rétréci vers celui de sa
+  classe (une station peu observée garde le couple de la classe). Ce levier est livré **sous surveillance** : le
+  serveur en ligne le mesure en continu contre le couple de la classe seule, hors échantillon, et dit s'il
+  gagne (onglet Prévisions, verdict après 7 jours).
+- **c** : maturité du profil (0 → 1) selon le nombre d'observations ; c'est le « CONFIANCE » des fiches. Ce
+  n'est pas une précision : l'erreur mesurée des prévisions est dans l'onglet Prévisions du serveur.
+- **échéances** « vide / pleine dans X min » : lues sur une trajectoire à part, profil + tendance des 30 dernières
+  minutes (amortie, τ = 25 min) — c'est la tendance qui porte ces alertes, pas la prévision la plus juste
+  (mesuré : `docs/mesures-modele.md`).
 - **part météo** : quand le temps est pire que la normale de l'heure (pluie, vent > 20 km/h, froid,
   neige, orage — les barèmes de l'indice vélo), le mouvement attendu du profil est freiné d'un
   coefficient **appris sur le parc** (fenêtres de 30 min, météo observée), appliqué seulement s'il
@@ -110,7 +129,7 @@ prévisions des stations.
 
 L'historique 24 h (avec la météo de chaque tranche de 5 min) et les profils (avec l'apprentissage
 météo) sont sauvegardés en flash toutes les 30 min (LittleFS) et restaurés au redémarrage ; les
-fichiers d'une version antérieure sont relus, ceux d'un format inconnu ignorés. Au tout premier démarrage, seule la tendance est disponible : les prévisions s'affinent
+fichiers d'une version antérieure sont relus, ceux d'un format inconnu ignorés. Au tout premier démarrage, la prévision est la persistance (le relevé lui-même) : elle s'affine
 jour après jour (progression visible dans **Réglages → Prédiction**).
 
 ## Matériel
@@ -119,8 +138,8 @@ jour après jour (progression visible dans **Réglages → Prédiction**).
 
 | Version | Tactile | Environnement PlatformIO | Binaire |
 |---|---|---|---|
-| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.3.0.bin` |
-| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.3.0.bin` |
+| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.4.1.bin` |
+| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.4.1.bin` |
 | C monté tête en bas | capacitif, rotation 180° | `esp32-4827s043c-180` | — |
 
 Brochage (dans `src/hal/board.h`), recoupé avec deux références indépendantes
@@ -160,8 +179,8 @@ L'étalonnage détecte seul un axe inversé ou des axes échangés et s'enregist
 ### A. Binaire prêt à flasher (le plus simple)
 
 Télécharger le binaire de sa version de carte :
-[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.3.0.bin) ·
-[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.3.0.bin)
+[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.4.1.bin) ·
+[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.4.1.bin)
 
 **Sans rien installer (Chrome ou Edge)** :
 
@@ -177,216 +196,16 @@ En ligne de commande :
 ```bash
 pip install esptool
 esptool.py --chip esp32s3 --baud 460800 erase_flash
-esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.3.0.bin
+esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.4.1.bin
 ```
 
-### Mise à jour d'une carte déjà en service (1.0.x → 1.1.0)
+### Mise à jour d'une carte déjà en service
 
-La 1.1.0 relit sans perte les profils et l'historique d'une 1.0.x, puis les réécrit dans un format plus
-récent (`/vn_prof.bin` v4, `/vn_hist.bin` v2, nouveau `/vn_days.bin`) que **les 1.0.8 et 1.0.9 refusent**.
-Revenir en arrière sans sauvegarde, c'est repartir d'un profil vide. Donc :
-
-> **1.2.9 → 1.3.0 : aucune migration.** Mêmes formats de fichiers ; la 1.3.0 ajoute seulement
-> `/vn_sync.cfg` (adresse du serveur en ligne, en texte), absent tant qu'on ne règle rien.
-
-#### 1.3.0 — synchro en ligne : une carte éteinte le week-end repart avec le week-end appris
-
-Réglages → **Synchro en ligne** (ou en série : `sync url http://<machine>:8790`). Au démarrage, avant de
-relire son historique, la carte demande au serveur (`online/`) son manifeste et décide fichier par
-fichier (`src/core/sync.cpp`) : profils s'il a **strictement plus de relevés**, historique 24 h s'il est
-**plus récent** et encore relisible (< 20 h), résumés par jour s'il en a **plus**. Chaque fichier est
-vérifié — taille, CRC32, puis les contrôles d'en-tête de `Model::load`, factorisés dans
-`Model::profFileOk` / `histFileOk` — **avant** d'être écrit : un téléchargement faux n'efface jamais la
-flash. Avec « Partager l'apprentissage », la carte envoie au serveur ses profils et ses jours quand ils
-valent mieux que les siens (premier amorçage d'un serveur neuf, sans câble). « Maintenant » fait la même
-chose en cours de route et redémarre la carte si un fichier a été adopté. Serveur absent ou injoignable :
-la carte démarre avec ce qu'elle a. Testé sans carte : 39 vérifications dans `test_core`, et
-`online/test/sync.e2e.mjs` fait dialoguer la vraie synchro du firmware (`sim/sync_sim`) avec le vrai
-serveur. La ligne de commande série accepte désormais 160 caractères (au lieu de 24) pour l'adresse.
-
-> **1.1.0 → 1.2.0 : aucune migration.** La 1.2.0 n'ajoute aucun format de fichier (`/vn_hist.bin`
-> reste en v2) : elle se flashe par-dessus et retrouve l'historique, les profils et les résumés tels
-> quels. C'est la 1.1.0 qui a introduit les formats actuels.
-
-> **1.2.0 → 1.2.1 : aucune migration.** La 1.2.1 ne change que la recherche Wi-Fi (voir plus bas) :
-> même flash par-dessus, mêmes fichiers relus à l'identique.
-
-> **1.2.1 → 1.2.2 : aucune migration.** La 1.2.2 ne change qu'un critère de calcul (voir plus bas) :
-> mêmes fichiers, mêmes formats.
-
-#### 1.2.2 — « vélos en trajet » : une profondeur d'historique RÉELLEMENT observée
-
-Signalé par le propriétaire : « le device était hors tension 12 h ». La validité du chiffre et la
-ligne `hist. Xh YY` venaient de l'**écart d'horloge** entre la tranche la plus ancienne et la plus
-récente de l'anneau : une carte éteinte douze heures affichait donc douze heures d'historique avec
-trois relevés, et pouvait se déclarer validée dessus. Une coupure n'est pas une observation.
-
-Désormais la profondeur est celle des tranches **réellement renseignées et comparables** à la
-population courante (× 5 min, trous, coupures et changements de couverture exclus) : validé à
-**6 h observées** *et* un creux ; le provisoire garde son seuil, seule la mesure change — aucune
-décision produit n'est prise au passage.
-
-Trois autres endroits mentaient de la même façon et sont corrigés :
-
-- **fiche « Variation sur 1 h »** : « Historique disponible : 1440 min » après une coupure, alors que
-  la carte n'avait que 145 tranches — elle affiche maintenant la profondeur observée ;
-- **tuile d'activité du tableau de bord** : « 1 h : 0 retraits · 0 retours » dès le premier relevé
-  après une coupure, parce que le critère comptait des lignes d'anneau au lieu de tranches
-  renseignées — il en faut désormais douze pleines ;
-- **quart « calme »** : il se mesure sur les mêmes tranches que le parc (couverture égale), sinon un
-  moment jugé calme pour trois stations pouvait servir à valider un parc calculé sur six.
-
-Un **recul d'horloge** (resynchronisation NTP vers l'arrière) n'inscrit plus deux fois la même
-tranche, ce qui gonflait la profondeur. Et la tranche de référence est **datée de son âge** : la
-fiche écrit « Réf. 00:30 (−15 h) », y compris quand la référence reste dans la même journée.
-
-#### 1.2.7 — le parc tient compte de deux artefacts, et le chiffre dit d'où il vient
-
-Le parc était la troisième plus grande valeur comparable : ce budget ne tolérait que **deux tranches
-aberrantes sur 24 h, toutes causes confondues**. Une revue l'a mesuré : deux artefacts indépendants de
-deux tranches (une station fantôme le matin, un cache le soir) faisaient annoncer **400 vélos en trajet
-pour 200 réels, validé, pendant vingt-quatre heures**. La valeur retenue passe au **sixième** rang :
-elle absorbe exactement cinq tranches aberrantes — deux artefacts indépendants, ou une station fantôme
-d'un quart d'heure. Le test (l) fige le cas ; (l') fige la borne exacte (cinq tranches passent, six
-dépassent) et tombe à K = 5 comme à K = 3.
-
-**Le quart calme était mal mesuré.** L'activité de la référence se comparait aux seules tranches **plus
-anciennes** qu'elle (et le rattrapage comparait à −1 : code mort). Une référence prise en pleine
-vidange au démarrage passait donc pour un creux, et −40 % s'affichaient comme **validés** le premier
-jour. Le comptage porte désormais sur toutes les tranches comparables, avant comme après la référence ;
-la couverture est aussi bornée par le haut (une tranche plus couverte ne compte plus comme calme). Le
-test (m) le tient : référence en vidange, 108 tranches plus calmes après → **provisoire**, plus validé.
-
-**Le chiffre porte sa provenance.** La tuile écrit « parc ≈ 856 · réf. −15 h » (ou « réf. courante »),
-et la fiche donne l'heure exacte, la profondeur d'historique et la couverture. Le parc reste une
-**estimation** — la fiche dit les deux sens d'erreur — et le clamp « parc ≥ vélos garés » tolère
-désormais ±1 % (ou ±5 vélos), ce qui supprime les bascules dues au seul bruit de lecture de la nuit
-(54 bascules sur 480 relevés à ±6, mesurées par la revue).
-
-**Trois défauts de la 1.2.7 corrigés après revue** (revue K7, `RAPPORT-K7.md`) : les fiches
-contenaient encore des chaînes avalées par le compilateur (« rßérence », « Ürite ») — la séquence
-`\xHH` suivie d'un chiffre hexadécimal déborde (`\xA9f` = `0xA9F` tronqué à `0x9F`) ; un test vérifie
-désormais qu'aucune fiche ne contient les octets de cette famille, et que le détecteur les voit. La
-provenance de la tuile était **tronquée** (« parc ≈ 880 ·… ») : le label fait **80 px** à la police
-`vn_inter_11` et « parc ≈ 1 419 · −20h » en demande 99 (mesuré, crénage compris) ; la tuile écrit donc
-« ≈ 1 419 · −20h » (74 px), et « parc ≈ 880 » quand la référence est le relevé courant. Et l'invariant « parc ≥ vélos
-garés » ne tient plus **toujours** : il était relâché de la tolérance de bruit ; seule la *référence*
-est jetée au-delà du bruit, le niveau est corrigé dans tous les cas.
-
-Coût documenté : sur une nuit **en rampe** sans palier de trente minutes, un biais permanent de quelques
-vélos à une quinzaine selon la pente ; sur une nuit avec palier, il est nul. Sur une vidange qui démarre
-à froid, le biais de pente (−5 rangs) dure environ vingt heures, jusqu'au premier palier — et il est
-désormais **provisoire**, donc affiché comme « — » et non comme une mesure.
-
-#### 1.2.6 — « vélos en trajet » reste une estimation, et le dit
-
-Le parc estimé est une valeur **prudente** (la troisième plus grande valeur comparable, pour ignorer
-les relevés aberrants). On avait d'abord écrit le nombre de vélos en circulation comme un **plancher**
-(« ≥ 156 ») ; une revue l'a réfuté avec des chiffres : **deux artefacts indépendants** surestiment
-encore le parc (« ≥ 400 » annoncés pour 200 réels). Un plancher qui peut être faux est pire qu'une
-estimation assumée : la tuile et la fiche disent donc une **estimation**, et la règle écrite explique
-pourquoi (« une surestimation du parc la fait monter, une sous-estimation la fait descendre »).
-
-Deux autres restes de la revue sont corrigés :
-
-- le badge « AUCUN RELEVÉ » ne s'affiche plus chaque nuit avant 8 h (fausse alerte : aucune heure de
-  service n'est encore complète) ;
-- la courbe 30 jours applique la **même définition de « jour relevé »** que le cœur (une heure
-  pleinement relevée), et le classement compte aussi les stations inactives parmi les écartées.
-
-Les chaînes corrompues sont éliminées partout (`\xHH` suivi d'un chiffre hexadécimal), y compris
-« rßérence », qui subsistait dans la règle de validité et produisait un avertissement à chaque build.
-
-#### 1.2.5 — l'onglet Service ne promet plus ce qu'il compte
-
-Sept défauts de chiffres et de libellés, relevés par une revue indépendante qui a confronté
-`docs/vue-service.md` au code et pratiqué 26 mutations sur le banc :
-
-- **le volet « La carte » se rafraîchit tout seul** : hors ligne, il restait figé sur « reçu à
-  l'instant · FRAIS · OK », c'est-à-dire le panneau chargé de prouver la fraîcheur qui mentait ;
-- **« COMPLET » ne s'affiche plus quand aucun relevé n'a eu lieu aujourd'hui** (dénominateur nul) ;
-- **les comparaisons de ruptures disent le nombre de jours de chaque côté** (« 237 (7 j) contre 212
-  (6 j) ») et « non relevé » remplace un zéro inventé quand le jour de référence manque ;
-- **la courbe « 30 j » couvre exactement la même fenêtre que la tuile** (30 jours, aujourd'hui exclu) :
-  elle en additionnait 29, avec une fenêtre différente de la tuile voisine ;
-- **un jour relevé seulement hors 7 h–22 h n'est plus compté comme un jour relevé**, et n'apparaît
-  plus comme un zéro sur la courbe (c'est un trou) ;
-- **« % des tranches » précise qu'il porte sur les jours relevés** ;
-- **« 6 week-ends/fériés sur 6 » devient « 6 jours de week-end/férié sur 6 »** — c'étaient des jours,
-  pas des week-ends.
-
-Deux précisions de sens : la « série » d'un problème récurrent s'écrit maintenant « série 12 j
-relevés » (elle peut traverser des jours sans données), et le tableau des états dit « vide = aucun
-vélo louable » au lieu de promettre qu'on peut rendre — le cas « 0 vélo et 0 borne libre » existe.
-Le classement affiche aussi le nombre de stations écartées.
-
-Cinq règles qui n'étaient pas vraiment testées le sont désormais : « ≥ 3 tranches » pour un état
-touché, « ≥ 6 tranches » pour un créneau relevé, la tranche de 6 h 55 qui sert de précédente à 7 h, un
-jour relevé seulement la nuit qui n'en est pas un, et une station observée moins de la moitié du temps
-qui est écartée du classement avec son compte affiché.
-
-Deux corrections issues de la revue de ces correctifs : l'axe de la courbe écrit « hier » sous sa
-dernière barre (il disait « auj. »), et la ligne d'un problème récurrent reste lisible — abrégée en
-« j », elle ne tronque plus la série. La carte mémoire ne se rafraîchit qu'une fois toutes les 30 s :
-`sysInfo` interroge LittleFS, et le minuteur de fraîcheur l'aurait sollicité soixante fois par minute
-sous le verrou du modèle.
-
-#### 1.2.4 — parc lu à la troisième plus grande valeur, et fiches lisibles
-
-Trois corrections issues d'une revue indépendante, avec des cas chiffrés :
-
-- **la couverture est comparée dans les deux sens** : une tranche qui couvrait **plus** de stations
-  qu'aujourd'hui était jugée comparable. Trois stations retirées du référentiel faisaient annoncer
-  « 94 vélos en trajet, validés » pour une vraie valeur de 49 ;
-- **le parc est la troisième plus grande valeur comparable**, au lieu du maximum : un relevé unique ou
-  double anormalement haut (redémarrage, valeur en cache, station fantôme) est écarté et **compté**
-  dans la fiche (« 2 relevés plus hauts écartés »), au lieu de gonfler le chiffre — et sans refuser la
-  mesure pendant les ~23 h où cet artefact reste dans l'anneau ;
-- **les fiches ne sont plus corrompues** : la séquence d'échappement `\xA9` du mot « Réf. » avalait la
-  lettre suivante, et le firmware livré affichait « Rß. 03:05 » et « RÞLLEMENT OBSERVÞS ». Corrigé
-  dans toutes les chaînes concernées, avec un test qui compare le texte rendu.
-
-Les tests ont été refaits là où ils ne mordaient pas : le contrôle « pic isolé » restait vert même en
-retirant la fonctionnalité (le garde-fou « calme » invalidait tout seul), et deux scénarios
-dépendaient du jour de la semaine ou d'une série sans mouvement. Ils s'appuient maintenant sur une
-station fantôme à deux tranches et sur une couverture réduite.
-
-#### 1.2.3 — un maximum isolé n'est pas un parc
-
-Le parc estimé est le plus haut relevé de la fenêtre. Un **relevé unique** plus haut que tous les
-autres — redémarrage, valeur en cache, station fantôme — suffisait donc à fabriquer un parc trop
-grand, donc des « vélos en trajet » inventés. La validation exige désormais un **palier** : au moins
-deux tranches comparables confirment le maximum à 1 % près (deux vélos au minimum). La fiche nomme le
-cas : « max isolé ».
-
-*Pourquoi pas une comparaison « maximum 24 h contre maximum 6 h » ?* Parce que la baisse du parc en
-journée est **normale** : les vélos sont dehors, pas disparus. Ce critère marquerait la tuile
-provisoire chaque après-midi, pour une raison qui n'est pas une erreur de mesure. Quatre tests de non-régression figent ces cas : coupure
-(trois relevés espacés de 6 h → ni validé ni provisoire, 15 min d'historique), couverture inégale,
-recul d'horloge, et le seuil du provisoire inchangé.
-
-#### 1.2.1 — la recherche Wi-Fi fonctionne aussi sans réseau
-
-Le pilote refuse tout balayage **pendant qu'une association est en cours**, et la carte, quand son
-réseau enregistré est injoignable, passait son temps à s'associer : la recherche échouait alors
-systématiquement, si bien qu'on ne pouvait plus découvrir — donc plus choisir — un autre réseau.
-La recherche **suspend maintenant l'association le temps du balayage** puis la relance, et un refus
-du pilote est réessayé au lieu d'être pris pour un échec définitif. Deux corrections liées :
-
-- le réseau saisi à l'écran n'est **enregistré qu'une fois l'association réussie** : une faute de
-  frappe ne devient plus le réseau du démarrage ;
-- **plus de plantage à la validation du mot de passe** : la feuille et son clavier étaient détruits
-  par deux suppressions différées, dans un ordre qui laissait le clavier écrire dans un objet déjà
-  libéré — l'écran redémarrait avant toute tentative d'association, ce qui interdisait de changer de
-  réseau ;
-- le journal série ne dit plus « déconnexion … délai dépassé » quand la carte coupe elle-même pour
-  changer de réseau ;
-- le journal série dit ce qui s'est passé : `association suspendue`, `réseau enregistré : « X »`,
-  `réseau « X » NON enregistré : l'ancien réseau reste celui du démarrage`.
-
-Recette faite sur la carte : recherche associée (5 réseaux), changement pour « Bitcoin » avec
-enregistrement après succès, mot de passe refusé (code 15) puis **recherche non associée réussie**
-(`5 bornes, 4 réseaux listés … association suspendue puis reprise`), et retour au réseau enregistré.
+Les profils, l'historique et les résumés appris sont dans la partition de fichiers de la carte : une mise à
+jour les garde, **un effacement de la flash les détruit**. Les formats ont changé deux fois — en 1.1.0
+(`/vn_prof.bin` v4, `/vn_hist.bin` v2, nouveau `/vn_days.bin`) et en 1.4.0 (`/vn_prof.bin` v6) : une version
+récente relit les anciens fichiers sans perte, **une version ancienne refuse les nouveaux**. Revenir en arrière
+sans sauvegarde, c'est repartir d'un profil vide. Donc :
 
 1. **Sauvegarder la partition de fichiers** (lecture seule ; refuse d'écraser une sauvegarde, et vérifie
    la taille et le superbloc LittleFS — code de sortie ≠ 0 : ne pas flasher) :
@@ -397,6 +216,8 @@ enregistrement après succès, mot de passe refusé (code 15) puis **recherche n
    s'arrête vers 1,5 Mo et ne touche pas la partition (0xC90000) ; `pio run -t upload` non plus.
 3. Retour arrière, si besoin : reflasher l'ancienne version, **puis**
    `python3 tools/sauvegarde_littlefs.py restaurer --port /dev/ttyUSB0 littlefs-avant.bin`.
+
+Ce que chaque version change, et ses éventuelles migrations : [`CHANGELOG.md`](CHANGELOG.md).
 
 ### B. Compilation PlatformIO
 
@@ -558,8 +379,13 @@ Les trois corps tiennent sur un plateau de 220 × 220 mm. Glisser la carte par l
   `/vn_days.bin`) : par heure de service, le temps observé vide / plein / hors service et les entrées en
   rupture ou saturation, et par station les créneaux touchés. Les jours où la carte était éteinte ne
   comptent ni pour ni contre — l'écran Service dit combien de jours sont réellement relevés.
-- **TLS** : les certificats ne sont pas vérifiés (`setInsecure`) — données publiques en lecture seule,
-  aucun identifiant transmis.
+- **TLS** : les certificats ne sont pas vérifiés (`setInsecure`). Pour les flux Vel'OH! et la météo — données
+  publiques, en lecture seule, aucun identifiant transmis — cela ne coûte rien. Pour la **synchro en ligne**,
+  c'est une limite réelle : le jeton (`VN_TOKEN`) est chiffré en `https`, mais la carte ne vérifie pas à qui elle
+  parle ; quelqu'un placé sur le trajet avec un faux certificat pourrait le lire. Depuis la 1.4.1 le jeton ne part
+  jamais en clair (`http`) hors du réseau local. Sur un réseau local de confiance ou derrière Tailscale, le risque
+  est celui du réseau ; pour une carte dans un camion derrière un tunnel public, tant que le certificat n'est pas
+  vérifié, traiter ce jeton comme révocable et le changer en cas de doute.
 - Les données internes JCDecaux (tickets de maintenance, trajets, parc exact) ne sont pas publiques.
   Pour les brancher, `src/core/gbfs.cpp` et `src/net/net_esp32.cpp` sont les deux points d'entrée.
 

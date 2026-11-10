@@ -161,6 +161,19 @@ sur l'archive, en partant du profil du plus ancien instantané (le banc écarte 
 connaît déjà : pas de fuite). Rapport complet (`data/banc/AAAA-MM-JJ.md`) et extrait affiché sur la page :
 MAE par horizon, par jour, et les verdicts appariés. Il faut au moins deux instantanés (une journée).
 
+### Couples par station : la preuve sur le parc (1.4.1)
+
+Le modèle 2 choisit, à +60, +120 et +240 min, un couple de coefficients propre à chaque station. Ce levier a été
+livré sans mesure hors échantillon (`docs/mesures-modele.md`). Le serveur la fait donc lui-même, en continu : à
+chaque quart d'heure noté, il garde aussi le **témoin** — la même prévision avec le seul couple de la classe de
+jour (clé `cl` du journal `prevision/AAAA-MM-JJ.jsonl`) — et note les deux sur les mêmes relevés.
+
+`GET /api/forecast` → `shadow` : par horizon, MAE des deux, écart apparié (négatif = les couples par station se
+trompent moins), intervalle à 95 % et verdict. Une journée complète = une grappe (les quarts d'heure d'un même
+jour ne sont pas indépendants) ; intervalle de Student ; **aucun verdict avant 7 journées complètes** (« en
+cours »), puis « gagne », « perd » ou « non concluant ». Si le verdict est « perd » ou reste « non concluant »,
+le levier se coupe dans le code (`g_pred.fcStation`, `src/core/model.h`) : le témoin devient alors la prévision.
+
 ## Notifications (onglet Notifications)
 
 Sur le téléphone, via **ntfy** (application libre, iPhone et Android ; serveur public ntfy.sh ou privé,
@@ -182,7 +195,7 @@ Garde-fous : au démarrage, les ruptures déjà en cours ne sont pas annoncées 
 (les suivants attendent et partent groupés) ; filtre de stations. Un **webhook** générique reçoit le même
 objet JSON (Home Assistant, n8n…).
 
-## Brancher un Sunton (firmware 1.3.0)
+## Brancher un Sunton (firmware 1.3.0 et suivants)
 
 Réglages → **Synchro en ligne** → Serveur : saisir `http://<machine>:8790` (ou, en série,
 `sync url http://<machine>:8790`, puis `sync jeton …` si `VN_TOKEN` est défini). Sans `VN_TOKEN`, la carte
