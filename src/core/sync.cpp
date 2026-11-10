@@ -97,6 +97,12 @@ bool syncTokenSafe(const char * url) {
   return false;
 }
 
+bool syncTokenTruncated(const char * stocke, const char * compile) {
+  if (!stocke || !compile || !stocke[0] || !compile[0]) return false;
+  const size_t a = strlen(stocke), b = strlen(compile);
+  return a < b && !strncmp(stocke, compile, a);
+}
+
 bool syncCfgLoad() {
   syncCfgDefaults(g_sync);
   long sz = plat::fsSize(SYNC_CFG_PATH);
@@ -114,11 +120,20 @@ bool syncCfgLoad() {
     else if (!strcmp(line, "boot")) g_sync.atBoot = atoi(v) != 0;
     else if (!strcmp(line, "push")) g_sync.push = atoi(v) != 0;
   }
+#ifdef VN_SYNC_TOKEN
+  // Provision au moment du build : quand un jeton est compilé (include/secrets.h), il FAIT FOI.
+  // Deux défauts évités d'un coup : le fichier ne peut plus le tronquer (ancien champ de 48
+  // octets), et un jeton périmé — typiquement celui d'avant une rotation côté serveur — ne
+  // bloque plus la synchro en 401 sans que rien ne le signale.
+  // Sur un firmware sans jeton compilé, la configuration par la série (`sync jeton`) reste
+  // la seule source, comme avant.
+  snprintf(g_sync.token, sizeof(g_sync.token), "%s", VN_SYNC_TOKEN);
+#endif
   return true;
 }
 
 bool syncCfgSave() {
-  char b[320];
+  char b[512];
   int n = snprintf(b, sizeof(b), "url=%s\ntoken=%s\nboot=%d\npush=%d\n", g_sync.url, g_sync.token, g_sync.atBoot ? 1 : 0,
                    g_sync.push ? 1 : 0);
   return n > 0 && plat::fsWrite(SYNC_CFG_PATH, b, (size_t)n);

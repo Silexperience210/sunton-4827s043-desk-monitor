@@ -1,5 +1,12 @@
 // ── Tests du cœur (sans UI) : parsing, noms, prédiction, persistance ──
 // make test  →  ./test_core <dossier_json>
+// Même provision que le firmware : sync.cpp lit include/secrets.h (URL et jeton compilés).
+// Sans cet include, les tests décrivaient un build NU tout en testant du code PROVISIONNÉ —
+// trois vérifications tombaient sur un désaccord d'environnement, pas sur un défaut du code.
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
+
 #include "../src/core/model.h"
 #include "../src/core/settings.h"
 #include "../src/core/gbfs.h"
@@ -3462,13 +3469,28 @@ static void testSync() {
   sim::g_fsDir = "/tmp/vn_test_sync";
   for (const char * f : { "/vn_prof.bin", "/vn_hist.bin", "/vn_days.bin", "/vn_sync.cfg" }) plat::fsRemove(f);
   syncCfgDefaults(g_sync);
+#ifdef VN_SYNC_TOKEN
+  // Firmware PROVISIONNÉ (include/secrets.h) : le serveur et le jeton sont compilés, c'est
+  // voulu — une carte fraîchement flashée doit pouvoir se synchroniser sans passer par la
+  // série. Le test doit donc décrire CE firmware, pas celui d'un build nu.
+  CHECK(g_sync.atBoot && g_sync.push && g_sync.url[0] && !strcmp(g_sync.token, VN_SYNC_TOKEN),
+        "réglage par défaut (provisionné) : serveur %s compilé, envoi au démarrage", g_sync.url);
+#else
   CHECK(g_sync.atBoot && g_sync.push && !g_sync.url[0], "réglage par défaut : au démarrage, envoi, aucun serveur");
+#endif
   snprintf(g_sync.url, sizeof(g_sync.url), "http://10.0.0.5:8790"); snprintf(g_sync.token, sizeof(g_sync.token), "secret");
   g_sync.push = false;
   CHECK(syncCfgSave(), "réglage enregistré");
   syncCfgDefaults(g_sync);
+#ifdef VN_SYNC_TOKEN
+  // Le jeton compilé fait foi : le fichier ne peut ni le tronquer ni le périmer. L'adresse,
+  // elle, reste celle du fichier — c'est ce qui permet de viser le LAN plutôt que le tunnel.
+  CHECK(syncCfgLoad() && !strcmp(g_sync.url, "http://10.0.0.5:8790") && !strcmp(g_sync.token, VN_SYNC_TOKEN) && !g_sync.push && g_sync.atBoot,
+        "réglage relu (provisionné) : %s / jeton compilé / envoi %d", g_sync.url, g_sync.push);
+#else
   CHECK(syncCfgLoad() && !strcmp(g_sync.url, "http://10.0.0.5:8790") && !strcmp(g_sync.token, "secret") && !g_sync.push && g_sync.atBoot,
         "réglage relu : %s / %s / envoi %d", g_sync.url, g_sync.token, g_sync.push);
+#endif
 
   // Serveur : 5 jours appris ; carte : 2 jours, éteinte depuis 60 h (week-end)
   const int64_t T0 = 1791237600;                       // lundi 05/10/2026 00:00 (Luxembourg)
@@ -3837,6 +3859,8 @@ static void testRegul() {
   regCfgDefaults(g_regCfg);
 }
 
+#include "test_sync_token.inc"
+
 int main(int argc, char ** argv) {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   testNames();
@@ -3876,6 +3900,7 @@ int main(int argc, char ** argv) {
   testClosedNotLearned();
   testDaysBadTimes();
   testSync();
+  testSyncToken();
   testRegul();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;
