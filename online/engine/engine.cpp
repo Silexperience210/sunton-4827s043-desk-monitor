@@ -167,12 +167,14 @@ EXPORT(vn_recompute) void vn_recompute() { if (g_model.lastUpdate) g_model.recom
 // propre au moteur en ligne (le firmware ne le lit pas) : il n'est échangé qu'entre deux copies du
 // MÊME module, d'où les tailles de structure dans l'en-tête — un module différent le refuse.
 static const uint32_t LIVE_MAGIC = 0x314C4E56;   // "VNL1"
-static const uint16_t LIVE_VER = 1;
+static const uint16_t LIVE_VER = 3;            // 2 : + prévisions d'apprentissage en attente (modèle 2, fcPend) ;
+                                               // 3 : + heure de la dernière intervention déclarée par station (ivAt)
+static const uint16_t LIVE_VER_NOPEND = 1;     // 1.3.0 – 1.4.0 : relu sans les prévisions en attente
 struct LiveHdr {
   uint32_t magic;
   uint16_t ver, nSt;
   uint16_t szStation, szWeather, szElec, szFeed, szLog;
-  uint16_t pad;
+  uint16_t szIssue;            // sizeof(FcIssue) × FC_PEND lots (0 en version 1)
   int64_t  savedAt;
   int64_t  lastUpdate, feedUpdated, typesAt, infoAt;
   int32_t  fetchErrors, rHead, rCount, nLog, logHead;
@@ -201,11 +203,22 @@ static AlertLog cleanLog(const AlertLog & e) {
   return c;
 }
 
+static FcIssue cleanIssue(const FcIssue & e) {
+  FcIssue c;
+  memset((void *)&c, 0, sizeof(c));
+  c.cur = e.cur;
+  if (e.cur == 255) return c;                           // rien d'émis : seul ce champ compte
+  for (int h = 0; h < FC_NH; h++) { c.x1[h] = e.x1[h]; c.x2[h] = e.x2[h]; }
+  c.cap = e.cap; c.use = e.use;
+  return c;
+}
+static const size_t LIVE_PEND_FIXED = sizeof(g_model.fcPendT) + sizeof(g_model.fcPendC) + sizeof(int32_t);
+
 static void liveSerialize(std::string & o) {
   LiveHdr h{};
   h.magic = LIVE_MAGIC; h.ver = LIVE_VER; h.nSt = (uint16_t)g_model.n;
   h.szStation = sizeof(Station); h.szWeather = sizeof(Weather); h.szElec = sizeof(ElecTypes);
-  h.szFeed = sizeof(FeedStat); h.szLog = sizeof(AlertLog);
+  h.szFeed = sizeof(FeedStat); h.szLog = sizeof(AlertLog); h.szIssue = sizeof(FcIssue);
   h.savedAt = plat::now();
   h.lastUpdate = g_model.lastUpdate; h.feedUpdated = g_model.feedUpdated;
   h.typesAt = eng::g_typesAt; h.infoAt = eng::g_infoAt;
@@ -224,18 +237,34 @@ static void liveSerialize(std::string & o) {
   o.append((const char *)g_model.dispPendDev, sizeof(float) * n);
   o.append((const char *)g_model.dispPendCell, sizeof(int16_t) * n);
   o.append((const char *)g_feed, sizeof(g_feed));
+  // Modèle 2 : prévisions d'apprentissage en attente de leur échéance (jusqu'à 4 h). Sans elles, un moteur
+  // relancé sur cet instantané perd les jugements des 4 h suivantes et son /vn_prof.bin s'écarte de celui
+  // du serveur (couples par station compris) : le jumeau ne calculerait plus « au bit près ».
+  o.append((const char *)g_model.fcPendT, sizeof(g_model.fcPendT));
+  o.append((const char *)g_model.fcPendC, sizeof(g_model.fcPendC));
+  { int32_t hd = g_model.fcPendHead; o.append((const char *)&hd, sizeof(hd)); }
+  for (int k = 0; k < FC_PEND; k++)
+    for (int i = 0; i < n; i++) { FcIssue c = cleanIssue(g_model.fcPend[(size_t)k * VN_MAX_ST + i]); o.append((const char *)&c, sizeof(c)); }
+  // Interventions déclarées : elles décident de ce qui sera jugé dans les 4 h qui suivent (Model::fcLearnSlot)
+  o.append((const char *)g_model.ivAt, sizeof(int64_t) * n);
+  o.append((const char *)&g_model.fcIvSkipped, sizeof(uint32_t));     // et leur compte, pour qu'un jumeau publie le même résumé
 }
 
 static bool liveLoad(const std::vector<uint8_t> & b) {
   if (b.size() < sizeof(LiveHdr)) return false;
   LiveHdr h; memcpy(&h, b.data(), sizeof(h));
-  if (h.magic != LIVE_MAGIC || h.ver != LIVE_VER || h.szStation != sizeof(Station) || h.szWeather != sizeof(Weather)
-      || h.szElec != sizeof(ElecTypes) || h.szFeed != sizeof(FeedStat) || h.szLog != sizeof(AlertLog) || h.nSt > VN_MAX_ST)
+  if (h.magic != LIVE_MAGIC || h.ver < LIVE_VER_NOPEND || h.ver > LIVE_VER || h.szStation != sizeof(Station)
+      || h.szWeather != sizeof(Weather) || h.szElec != sizeof(ElecTypes) || h.szFeed != sizeof(FeedStat)
+      || h.szLog != sizeof(AlertLog) || h.nSt > VN_MAX_ST)
     return false;
+  const bool hasPend = h.ver >= 2;
+  if (hasPend && h.szIssue != sizeof(FcIssue)) return false;
   const int n = h.nSt;
   size_t need = sizeof(h) + sizeof(Station) * n + sizeof(int64_t) * VN_RECENT_SLOTS + (size_t)VN_RECENT_SLOTS * n
                 + sizeof(AlertLog) * VN_ALERT_LOG + sizeof(Weather) + sizeof(ElecTypes) + sizeof(float) * n
-                + sizeof(int16_t) * n + sizeof(g_feed);
+                + sizeof(int16_t) * n + sizeof(g_feed)
+                + (hasPend ? LIVE_PEND_FIXED + sizeof(FcIssue) * (size_t)FC_PEND * n : 0)
+                + (h.ver >= 3 ? sizeof(int64_t) * (size_t)n + sizeof(uint32_t) : 0);
   if (b.size() != need) return false;
   const uint8_t * p = b.data() + sizeof(h);
   // Les stations du fichier, retrouvées par sid (créées si absentes) ; map[j] = index dans le modèle
@@ -269,7 +298,40 @@ static bool liveLoad(const std::vector<uint8_t> & b) {
   p += sizeof(float) * n;
   for (int j = 0; j < n; j++) if (map[j] >= 0) memcpy(&g_model.dispPendCell[map[j]], p + sizeof(int16_t) * j, sizeof(int16_t));
   p += sizeof(int16_t) * n;
-  memcpy(g_feed, p, sizeof(g_feed));
+  memcpy(g_feed, p, sizeof(g_feed)); p += sizeof(g_feed);
+  if (hasPend) {
+    // Lots relus seulement s'ils sont cohérents (tête dans l'anneau, classes connues) : sinon rien en attente,
+    // comme après un redémarrage de la carte — l'apprentissage reprend au prochain quart d'heure.
+    int64_t pt[FC_PEND]; uint8_t pc[FC_PEND]; int32_t hd;
+    memcpy(pt, p, sizeof(pt)); p += sizeof(pt);
+    memcpy(pc, p, sizeof(pc)); p += sizeof(pc);
+    memcpy(&hd, p, sizeof(hd)); p += sizeof(hd);
+    bool sane = hd >= -1 && hd < FC_PEND;
+    for (int k = 0; k < FC_PEND && sane; k++) sane = pc[k] < FC_NC && pt[k] >= 0 && pt[k] <= h.savedAt + 300;
+    if (sane) {
+      memcpy(g_model.fcPendT, pt, sizeof(pt));
+      memcpy(g_model.fcPendC, pc, sizeof(pc));
+      g_model.fcPendHead = hd;
+      for (int k = 0; k < FC_PEND; k++) {
+        FcIssue * lot = g_model.fcPend + (size_t)k * VN_MAX_ST;
+        for (int i = 0; i < VN_MAX_ST; i++) { memset((void *)&lot[i], 0, sizeof(FcIssue)); lot[i].cur = 255; }
+        for (int j = 0; j < n; j++) {
+          FcIssue e; memcpy((void *)&e, p + sizeof(FcIssue) * ((size_t)k * n + j), sizeof(FcIssue));
+          if (map[j] >= 0) lot[map[j]] = cleanIssue(e);
+        }
+      }
+    }
+    p += sizeof(FcIssue) * (size_t)FC_PEND * n;
+  }
+  memset(g_model.ivAt, 0, sizeof(int64_t) * VN_MAX_ST);
+  if (h.ver >= 3) {
+    for (int j = 0; j < n; j++) {
+      int64_t v; memcpy(&v, p + sizeof(int64_t) * j, sizeof(v));
+      if (map[j] >= 0 && v > 0 && v <= h.savedAt + 300) g_model.ivAt[map[j]] = v;      // une heure dans le futur n'est pas relue
+    }
+    p += sizeof(int64_t) * (size_t)n;
+    memcpy(&g_model.fcIvSkipped, p, sizeof(uint32_t)); p += sizeof(uint32_t);
+  }
   g_model.lastUpdate = h.lastUpdate; g_model.feedUpdated = h.feedUpdated;
   eng::g_typesAt = h.typesAt; eng::g_infoAt = h.infoAt;
   g_model.fetchErrors = h.fetchErrors; g_model.rHead = h.rHead; g_model.rCount = h.rCount;
@@ -373,6 +435,7 @@ EXPORT(vn_summary_json) size_t vn_summary_json() {
   j.num("learnSince", (double)g_model.learnSince);
   j.num("learnSamples", g_model.learnSamples);
   j.num("learnPct", g_model.learnPct());
+  j.num("fcIvSkipped", g_model.fcIvSkipped);                  // prévisions d'apprentissage non jugées : intervention déclarée
   j.num("netConf", g_model.netConf);
   j.num("histMinutes", t.histMinutes);
   j.num("daysKept", g_model.days.count);
@@ -531,13 +594,21 @@ EXPORT(vn_forecast_json) size_t vn_forecast_json() {
   s_out += ",\"bikes\":";
   numOrNull(s_out, g_model.tot.bikes);
   s_out += ",\"st\":[";
-  static float tmp[49], cf[49];
+  static float tmp[49], cf[49], tcl[49];
+  // Témoin « couple de la classe » (clé "cl") : la même prévision SANS les couples par station (g_pred.fcStation),
+  // à +60, +120 et +240 min — les seuls horizons où ils existent. Le serveur note les deux sur les mêmes relevés
+  // (lib/forecast.mjs) : c'est la mesure hors échantillon que docs/mesures-modele.md dit manquer. Rien n'est
+  // affiché ni appris avec ce témoin : il se calcule à côté, le levier est remis aussitôt.
+  std::string cl, er, nd;
+  const bool witness = g_pred.fcRule == FC_RULE_V2 && g_pred.fcStation;
+  const int cls = g_model.fcClassAt(t);
   const uint8_t * row = head < 0 ? nullptr : g_model.ring + (size_t)head * VN_MAX_ST;
   for (int i = 0; i < g_model.n; i++) {
-    if (i) s_out += ",";
+    if (i) { s_out += ","; cl += ","; er += ","; nd += ","; }
     const Station & st = g_model.st[i];
-    if (!row || row[i] == 255 || !st.live || st.status == ST_CLOSED) { s_out += "null"; continue; }
+    if (!row || row[i] == 255 || !st.live || st.status == ST_CLOSED) { s_out += "null"; cl += "null"; er += "null"; nd += "null"; continue; }
     g_model.project(i, t, 5, 49, tmp, cf);
+    if (witness) { g_pred.fcStation = false; g_model.project(i, t, 5, 49, tcl, nullptr); g_pred.fcStation = true; }
     float p0, n0, ph, nh;
     const bool has0 = g_model.profileAt(i, t, p0, n0);
     int v[16], k = 0;
@@ -553,8 +624,45 @@ EXPORT(vn_forecast_json) size_t vn_forecast_json() {
     s_out += "[";
     for (int q = 0; q < k; q++) { if (q) s_out += ","; snprintf(b, sizeof(b), "%d", v[q]); s_out += b; }
     s_out += "]";
+    // Témoin : là où les deux règles donnent le même chiffre arrondi, la valeur notée du modèle est reprise
+    // telle quelle (aucun écart ne peut venir d'autre chose que du couple).
+    cl += "[";
+    for (int h = 2; h < 5; h++) {
+      const int kk = FC_HK[h];
+      const int vm = v[1 + h];
+      const int vc = !witness || (int)roundf(tcl[kk]) == (int)roundf(tmp[kk]) ? vm : (int)roundf(tcl[kk]);
+      snprintf(b, sizeof(b), "%s%d", h > 2 ? "," : "", vc);
+      cl += b;
+    }
+    cl += "]";
+    // Erreur annoncée à +60 min (Model::fcErrAt, la ligne « Erreur mesurée » de la fiche), en centièmes de vélo,
+    // seulement quand elle est mesurée sur la station elle-même : le serveur la compare à l'erreur constatée.
+    {
+      FcErr fe;
+      if (g_model.fcErrAt(i, cls, 2, t, fe) && fe.own) { snprintf(b, sizeof(b), "%d", (int)lroundf(fe.mae * 100.f)); er += b; }
+      else er += "null";
+    }
+    // Besoin conseillé : la règle livrée (viser 50 % à +1 h, st.need) et le témoin « demande à venir » — le
+    // déplacement qui laisse autant de marge avant le vide qu'avant le plein sur la trajectoire prévue de +1 h à
+    // +4 h : d = (capacité − max − min) / 2. Même déclencheur (station en tension, besoin livré ≥ 2), mêmes bornes.
+    {
+      int alt = 0;
+      if (st.need) {
+        float lo = tmp[12], hi = tmp[12];
+        for (int q = 13; q <= 48; q++) { if (tmp[q] < lo) lo = tmp[q]; if (tmp[q] > hi) hi = tmp[q]; }
+        alt = (int)lroundf(((float)st.capEff() - hi - lo) * 0.5f);
+        if (alt > 60) alt = 60;
+        if (alt < -60) alt = -60;
+        if (abs(alt) < 2) alt = 0;
+      }
+      snprintf(b, sizeof(b), "[%d,%d]", (int)st.need, alt);
+      nd += b;
+    }
   }
-  s_out += "]}";
+  s_out += "]";
+  if (witness) { s_out += ",\"cl\":["; s_out += cl; s_out += "]"; }
+  s_out += ",\"er\":["; s_out += er; s_out += "],\"nd\":["; s_out += nd; s_out += "]";
+  s_out += "}";
   return s_out.size();
 }
 
@@ -681,3 +789,37 @@ EXPORT(vn_digest_json) size_t vn_digest_json(int day) {
 }
 
 EXPORT(vn_local_day) int vn_local_day(double t) { return localDay((int64_t)t); }
+// Intervention DÉCLARÉE sur une station (registre de régulation, lib/regulation.mjs) : les prévisions d'apprentissage
+// dont la fenêtre la contient ne seront pas jugées. 1 = station connue. Rejoué tel quel par les jumeaux (évènement « iv »).
+EXPORT(vn_intervention) int vn_intervention(const char * sid, double t) {
+  const int i = g_model.find(sid);
+  if (i < 0) return 0;
+  g_model.noteIntervention(i, (int64_t)t);
+  return 1;
+}
+// Classe de jour du modèle à l'instant t : 0 = ouvré, 1 = week-end ou jour férié légal (Model::fcClassAt)
+EXPORT(vn_day_class) int vn_day_class(double t) { return g_model.fcClassAt((int64_t)t); }
+
+// Courbes prévues de chaque station, 0 → 240 min au pas de 5 min (Model::project, la règle de la prévision
+// 2 h prolongée), pour le planificateur de tournées : [capacité utile, vélos, bornes, vélos HS, statut,
+// courbe ×49 au dixième]. null = station inconnue du flux ou sans relevé.
+EXPORT(vn_curves_json) size_t vn_curves_json() {
+  s_out.clear();
+  const int64_t t = plat::now();
+  char b[64];
+  snprintf(b, sizeof(b), "{\"t\":%lld,\"st\":[", (long long)t);
+  s_out += b;
+  static float c[49];
+  for (int i = 0; i < g_model.n; i++) {
+    if (i) s_out += ",";
+    const Station & st = g_model.st[i];
+    if (!st.active || !st.live) { s_out += "null"; continue; }
+    g_model.project(i, t, 5, 49, c, nullptr);
+    snprintf(b, sizeof(b), "[%u,%u,%u,%u,%u", st.capEff(), st.bikes, st.docks, st.bikesDis, st.status);
+    s_out += b;
+    for (int k = 0; k < 49; k++) { snprintf(b, sizeof(b), ",%.1f", c[k] < 0 ? 0.f : c[k]); s_out += b; }
+    s_out += "]";
+  }
+  s_out += "]}";
+  return s_out.size();
+}

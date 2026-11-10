@@ -25,7 +25,7 @@ struct SheetW {
   lv_obj_t * meter, * capL;
   lv_obj_t * chart, * chartMeta;
   lv_obj_t * fcV[4];
-  lv_obj_t * insFlash, * insIc, * insTitle, * insWhy, * insNeed, * insConf, * insAnom, * insWx;
+  lv_obj_t * insFlash, * insIc, * insTitle, * insWhy, * insNeed, * insConf, * insAnom, * insWx, * insErr;
   lv_obj_t * lastMove, * lastRep, * ruptures, * rupturesToday, * addr;
 };
 static SheetW W;
@@ -196,6 +196,16 @@ static void fill() {
     lv_obj_clear_flag(W.insWx, LV_OBJ_FLAG_HIDDEN);
   }
 
+  // Erreur mesurée de la prévision à +1 h et +2 h : celle de la station, à défaut celle du parc, sinon dit
+  if (s.status == vn::ST_CLOSED) lv_obj_add_flag(W.insErr, LV_OBJ_FLAG_HIDDEN);
+  else {
+    char eb[200];
+    const bool known = vn::fcErrText(g_model, W.st, t, eb, sizeof(eb));
+    lv_label_set_text(W.insErr, eb);
+    lv_obj_set_style_text_color(W.insErr, C(known ? HX_TEXT2 : HX_TEXT3), 0);
+    lv_obj_clear_flag(W.insErr, LV_OBJ_FLAG_HIDDEN);
+  }
+
   char a1[32];
   fmtAgo(a1, sizeof(a1), s.lastChange, t);
   snprintf(b, sizeof(b), "Dernier mouvement d\xC3\xA9tect\xC3\xA9 %s", a1);
@@ -341,6 +351,10 @@ void openStation(int st) {
   W.insWx = label(ins, &vn_inter_12, HX_TEXT3, "");
   lv_label_set_long_mode(W.insWx, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(W.insWx, BW - 18);
+  // Erreur mesurée de la prévision (Model::fcErrAt) : une estimation se montre avec son erreur
+  W.insErr = label(ins, &vn_inter_12, HX_TEXT3, "");
+  lv_label_set_long_mode(W.insErr, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(W.insErr, BW - 18);
   W.insNeed = badge(ins, "", T_GOOD);
 
   // Détails

@@ -10,6 +10,8 @@
 #include "../src/core/service.h"
 #include "../src/core/dump.h"
 #include "../src/core/sync.h"
+#include "../src/core/regul.h"
+#include <ArduinoJson.h>
 #include "../src/platform/platform.h"
 #include "../src/hal/touch_api.h"
 #include <stdio.h>
@@ -2980,6 +2982,154 @@ static void m2Run(Model & m, int64_t t0, int days, M2World & w, InfoRec * ir) {
   }
 }
 
+// ── Erreur mesurée affichée (Model::fcErrAt, fcErrText) ──────────────
+// Le chiffre « ± x vélo à +1 h » de la fiche : (1) c'est bien l'erreur moyenne du couple appliqué, relue des
+// champs bruts ; (2) il annonce l'erreur réellement faite ensuite — trois semaines apprises, puis une semaine
+// de prévisions affichées comparées au relevé une heure plus tard, station par station ; (3) à défaut de mesure
+// propre à la station, c'est celle du parc, dite comme telle ; (4) sans profil ni apprentissage : rien, dit aussi.
+static void testErreurMesuree() {
+  settingsDefaults(g_set);
+  g_pred = PredictOpts();
+  const int64_t T0 = 1791842400 - 86400 * 8;                // lundi 05/10/2026 0 h
+  InfoRec ir[6] = { mkInfo("1", 49.60f, 6.13f, 20), mkInfo("2", 49.61f, 6.14f, 20), mkInfo("3", 49.62f, 6.15f, 20),
+                    mkInfo("4", 49.63f, 6.16f, 40), mkInfo("5", 49.64f, 6.17f, 40), mkInfo("6", 49.65f, 6.18f, 40) };
+  static Model m;
+  CHECK(m.init(), "erreur mesurée : init");
+  m.applyInfo(ir, 6, T0);
+  M2World w;
+  char txt[200];
+  FcErr e;
+  m2Run(m, T0, 1, w, ir);
+  CHECK(!m.fcErrAt(0, 0, 2, T0 + 86400 - 300, e) && !fcErrText(m, 0, T0 + 86400 - 300, txt, sizeof(txt)) && strstr(txt, "pas encore mesur"),
+        "erreur mesurée : rien appris → rien d'annoncé (« %s »)", txt);
+  m2Run(m, T0 + 86400, 20, w, ir);                          // jusqu'au dimanche 25/10 inclus
+  const int64_t T1 = T0 + 21 * 86400;                       // dimanche 25/10 à 23 h (l'heure d'hiver a commencé ce dimanche)
+  // (1) lundi 7 h : l'erreur annoncée = Σ erreurs du couple appliqué ÷ prévisions jugées, relue des champs bruts
+  float ann[6]; bool own[6]; int nOwn = 0, exact = 0;
+  {
+    StatusRec sr[6];
+    for (int64_t t = T1; t <= T1 + 8 * 3600; t += 300) { w.step(t); for (int q = 0; q < 6; q++) sr[q] = mkStat(ir[q].sid, w.at(q, t), q >= 3 ? 40 : 20); m.applyStatus(sr, 6, t); }
+  }
+  const int64_t tA = T1 + 8 * 3600;
+  for (int i = 0; i < 6; i++) {
+    const bool got = m.fcErrAt(i, 0, 2, tA, e);
+    ann[i] = got ? e.mae : -1; own[i] = got && e.own;
+    if (!own[i]) continue;
+    nOwn++;
+    const uint8_t j = m.fcS[i].sel[0][0];
+    const float raw = j < FC_SNG ? m.fcS[i].err[0][0][j] / m.fcS[i].w[0][0] : -1;
+    float a, b; m.fcCoefAt(0, 60, a, b, i);
+    if (j < FC_SNG && e.mae == raw && e.n == m.fcS[i].w[0][0] && e.n >= FC_ERR_MIN
+        && fabsf(a - FC_SA[j / FC_SNB] / 10.f) < 1e-6f && fabsf(b - FC_SB[j % FC_SNB] / 20.f) < 1e-6f) exact++;
+  }
+  CHECK(nOwn == 6 && exact == 6, "erreur mesurée : 6 stations jugées sur leurs propres prévisions, chiffre = champs bruts du couple appliqué (%d propres, %d exactes)", nOwn, exact);
+  // (2) le reste de la semaine (lundi 7 h → vendredi 23 h) : ce que l'écran prévoit à +1 h contre le relevé 1 h après
+  double sumReal[6] = {}, sumAnn = 0, sumRealAll = 0; int nReal[6] = {};
+  {
+    static int pend[5 * 288][6];                              // prévision arrondie émise à la tranche k, −1 = aucune
+    StatusRec sr[6];
+    int k = 0;
+    for (int64_t t = tA + 300; t < T1 + 5 * 86400; t += 300, k++) {
+      w.step(t);
+      for (int q = 0; q < 6; q++) sr[q] = mkStat(ir[q].sid, w.at(q, t), q >= 3 ? 40 : 20);
+      m.applyStatus(sr, 6, t);
+      if (k >= 12) for (int q = 0; q < 6; q++) if (pend[k - 12][q] >= 0) { sumReal[q] += abs(pend[k - 12][q] - (int)m.st[q].bikes); nReal[q]++; }
+      struct tm lt; plat::localTime(t, &lt);
+      const bool emit = lt.tm_min % 15 == 0 && lt.tm_hour >= 6 && lt.tm_hour < 22;
+      for (int q = 0; q < 6; q++) pend[k][q] = emit ? (int)lroundf(m.st[q].fc[12]) : -1;
+    }
+  }
+  printf("  erreur à +1 h, annoncée lundi 7 h puis constatée sur la semaine :");
+  for (int i = 0; i < 6; i++) {
+    const double real = nReal[i] ? sumReal[i] / nReal[i] : -1;
+    printf(" st%d %.2f → %.2f", i, ann[i], real);
+    sumAnn += ann[i]; sumRealAll += real;
+  }
+  printf("\n");
+  CHECK(nReal[0] > 250 && fabs(sumRealAll - sumAnn) / sumAnn < 0.25,
+        "erreur mesurée : l'erreur annoncée annonce l'erreur constatée ensuite (somme des 6 stations : %.2f annoncée, %.2f constatée, %d prévisions par station)",
+        sumAnn, sumRealAll, nReal[0]);
+  CHECK(ann[2] < 0.05f && sumReal[2] == 0, "erreur mesurée : station immobile → ± 0 annoncé, 0 constaté (%.2f)", ann[2]);
+  // phrase : la station, ses prévisions jugées, virgule décimale
+  const int64_t tB = T1 + 4 * 86400 + 10 * 3600;            // vendredi 9 h
+  CHECK(fcErrText(m, 3, tB, txt, sizeof(txt)) && strstr(txt, "Erreur mesur\xC3\xA9" "e : \xC2\xB1 ") && strstr(txt, "+1 h") && strstr(txt, "+2 h")
+        && strstr(txt, "de la station") && !strchr(txt, '.'), "erreur mesurée : phrase de la fiche (« %s »)", txt);
+  // (3) station trop peu jugée : l'erreur de sa classe, dite « sur le parc »
+  {
+    const float keep1 = m.fcS[3].w[0][0], keep2 = m.fcS[3].w[0][1];
+    m.fcS[3].w[0][0] = m.fcS[3].w[0][1] = FC_ERR_MIN - 1;
+    FcErr c;
+    const bool got = m.fcErrAt(3, 0, 2, tB, c);
+    float a, b; m.fcCoefAt(0, 60, a, b, 3);
+    const int ia = (int)lroundf(a * 10), ib = (int)lroundf(b * 20);
+    CHECK(got && !c.own && c.mae == m.fcL->err[0][2][ia * FC_NB + ib] / m.fcL->w[0][2] && c.n == m.fcL->w[0][2],
+          "erreur mesurée : %d prévisions jugées seulement → l'erreur de la classe pour le couple appliqué (%.2f)", (int)(FC_ERR_MIN - 1), c.mae);
+    CHECK(fcErrText(m, 3, tB, txt, sizeof(txt)) && strstr(txt, "sur le parc") && strstr(txt, "pas encore assez jug"), "erreur mesurée : phrase « sur le parc » (« %s »)", txt);
+    m.fcS[3].w[0][0] = keep1; m.fcS[3].w[0][1] = keep2;
+  }
+  // (4) station nouvelle, sans profil : elle se prévoit par la persistance — l'erreur de la classe n'est pas la sienne
+  {
+    InfoRec ir7[7];
+    for (int i = 0; i < 6; i++) ir7[i] = ir[i];
+    ir7[6] = mkInfo("7", 49.66f, 6.19f, 20);
+    m.applyInfo(ir7, 7, tB);
+    const int j = m.find("7");
+    CHECK(j >= 0 && !m.fcErrAt(j, 0, 2, tB, e) && !fcErrText(m, j, tB, txt, sizeof(txt)) && strstr(txt, "pas encore mesur"),
+          "erreur mesurée : station sans profil → rien d'annoncé");
+  }
+  CHECK(!m.fcErrAt(-1, 0, 2, tB, e) && !m.fcErrAt(0, 2, 2, tB, e) && !m.fcErrAt(0, 0, 5, tB, e), "erreur mesurée : index hors bornes refusés");
+}
+
+// ── Interventions déclarées : la prévision qui les traverse n'est pas jugée ──
+// Deux modèles nourris du même monde ; à 10 h 02 un camion dépose 15 vélos à la station 3. Le premier le sait
+// (déclaration), le second non. Rien n'est jamais déduit du saut lui-même : sans déclaration, tout est jugé.
+static void testIntervention() {
+  settingsDefaults(g_set);
+  g_pred = PredictOpts();
+  const int64_t T0 = 1791842400 - 86400 * 8;                // lundi 05/10/2026 0 h
+  InfoRec ir[6] = { mkInfo("1", 49.60f, 6.13f, 20), mkInfo("2", 49.61f, 6.14f, 20), mkInfo("3", 49.62f, 6.15f, 20),
+                    mkInfo("4", 49.63f, 6.16f, 40), mkInfo("5", 49.64f, 6.17f, 40), mkInfo("6", 49.65f, 6.18f, 40) };
+  static Model A, B;
+  CHECK(A.init() && B.init() && A.ivAt && B.ivAt, "intervention : init");
+  A.applyInfo(ir, 6, T0); B.applyInfo(ir, 6, T0);
+  M2World wa, wb;
+  m2Run(A, T0, 21, wa, ir); m2Run(B, T0, 21, wb, ir);
+  // T0 + 21 jours = dimanche 25/10 à 23 h (l'heure d'hiver a commencé ce dimanche) ; le camion passe lundi à 10 h 02
+  const int64_t T1 = T0 + 21 * 86400, tau = lux(2026, 10, 26, 10, 2);
+  CHECK(memcmp(A.fcL, B.fcL, sizeof(FcLearn)) == 0 && A.fcIvSkipped == 0, "intervention : mêmes modèles avant le camion, rien d'écarté");
+  StatusRec sr[6];
+  for (Model * m : { &A, &B }) {
+    M2World & w = m == &A ? wa : wb;
+    for (int64_t t = T1; t < T1 + 17 * 3600; t += 300) {
+      w.step(t);
+      if (t <= tau && tau < t + 300) {                      // le camion : 15 vélos, visibles à ce relevé
+        w.walk[3] += w.walk[3] > 20 ? -15 : 15;             // 15 vélos pris ou déposés, selon la place
+        if (m == &A) A.noteIntervention(A.find("4"), tau);
+      }
+      for (int q = 0; q < 6; q++) sr[q] = mkStat(ir[q].sid, w.at(q, t), q >= 3 ? 40 : 20);
+      m->applyStatus(sr, 6, t);
+    }
+  }
+  // Fenêtres [émission, fin de la tranche jugée] qui contiennent 10 h 02, quarts d'heure émis de 6 h à 22 h :
+  // +15 min : 9 h 45, 10 h · +30 : 9 h 30 … 10 h (3) · +60 : 9 h … 10 h (5) · +120 : 8 h … 10 h (9) · +240 : 6 h … 10 h (17)
+  CHECK(A.fcIvSkipped == 2 + 3 + 5 + 9 + 17 && B.fcIvSkipped == 0, "intervention déclarée : %u prévisions d'apprentissage non jugées (36 attendues) ; sans déclaration : %u",
+        (unsigned)A.fcIvSkipped, (unsigned)B.fcIvSkipped);
+  const int s = A.find("4");
+  bool lessW = true, lessErr = true, others = true;
+  for (int hh = 0; hh < FC_NSH; hh++) {
+    lessW &= A.fcS[s].w[0][hh] < B.fcS[s].w[0][hh];
+    lessErr &= A.fcS[s].err[0][hh][0] + 20.f < B.fcS[s].err[0][hh][0];      // couple (0 ; 0) : la persistance, qui prend le saut de plein fouet
+  }
+  for (int i = 0; i < 6; i++) if (i != s) others &= memcmp(A.fcS[i].err, B.fcS[i].err, sizeof(A.fcS[i].err)) == 0 && memcmp(A.fcS[i].w, B.fcS[i].w, sizeof(A.fcS[i].w)) == 0;
+  CHECK(lessW && lessErr && others, "intervention : la station visitée a moins de prévisions jugées et n'a pas appris le saut du camion (persistance à +60 : %.0f contre %.0f) ; les autres stations sont identiques",
+        A.fcS[s].err[0][0][0], B.fcS[s].err[0][0][0]);
+  bool sameProf = memcmp(A.prof, B.prof, sizeof(ProfCell) * 6 * 672) == 0;
+  CHECK(sameProf, "intervention : les profils (niveaux habituels) ne sont pas touchés — le vélo déposé est bien là");
+  // bornes : la plus récente est gardée, index et heures invalides ignorés
+  A.noteIntervention(s, tau - 3600); A.noteIntervention(-1, tau); A.noteIntervention(99, tau); A.noteIntervention(s, 0);
+  CHECK(A.ivAt[s] == tau, "intervention : une déclaration plus ancienne, un index ou une heure invalides ne changent rien");
+}
+
 static void testModele2() {
   settingsDefaults(g_set);
   g_pred = PredictOpts();
@@ -3289,6 +3439,25 @@ static void testSync() {
   CHECK(syncNormalizeUrl("https://ops.exemple.lu/sync/manifest", u, sizeof(u)) && !strcmp(u, "https://ops.exemple.lu"), "/sync/manifest retiré : %s", u);
   CHECK(!syncNormalizeUrl("ftp://x.y", u, sizeof(u)), "protocole autre que http(s) refusé");
   CHECK(!syncNormalizeUrl("   ", u, sizeof(u)) && !syncNormalizeUrl("http://", u, sizeof(u)), "adresse vide refusée");
+  // Jeton : https, ou http vers le réseau local seulement
+  {
+    static const struct { const char * url; bool safe; } T[] = {
+      { "https://ops.exemple.lu", true }, { "https://203.0.113.9:8443", true },
+      { "http://192.168.1.2:8790", true }, { "http://10.0.0.5:8790", true }, { "http://172.16.0.1", true }, { "http://172.31.255.254/x", true },
+      { "http://127.0.0.1:8790", true }, { "http://169.254.3.4", true }, { "http://100.100.20.3:8790", true },
+      { "http://umbrel:8790", true }, { "http://localhost:8790", true }, { "http://umbrel.local:8790", true }, { "http://nas.lan", true },
+      { "http://ops.home.arpa:8790", true }, { "http://velo.tail1234.ts.net:8790", true }, { "http://[::1]:8790", true }, { "http://[fd12:3456::1]:8790", true },
+      { "http://[fe80::1]:8790", true }, { "http://UMBREL.LOCAL:8790", true },
+      { "http://ops.exemple.lu:8790", false }, { "http://203.0.113.9:8790", false }, { "http://172.32.0.1", false }, { "http://172.15.0.1", false },
+      { "http://100.63.0.1", false }, { "http://100.128.0.1", false }, { "http://192.169.1.1", false }, { "http://11.0.0.1", false },
+      { "http://[2001:db8::1]:8790", false }, { "http://192.168.1.2.exemple.lu", false }, { "http://local.exemple.lu", false },
+      { "http://999.1.1.1", false }, { "http://10.1", false }, { "http://", false }, { "ftp://10.0.0.5", false }, { "http://exemple.locale", false },
+    };
+    int bad = 0;
+    for (const auto & t : T) if (syncTokenSafe(t.url) != t.safe) { bad++; printf("  jeton : %s attendu %s\n", t.url, t.safe ? "permis" : "refusé"); }
+    CHECK(bad == 0, "jeton en clair : %d adresse(s) mal classée(s) sur %d", bad, (int)(sizeof(T) / sizeof(T[0])));
+    CHECK(!syncTokenSafe(nullptr), "jeton : adresse absente refusée");
+  }
 
   sim::g_fsDir = "/tmp/vn_test_sync";
   for (const char * f : { "/vn_prof.bin", "/vn_hist.bin", "/vn_days.bin", "/vn_sync.cfg" }) plat::fsRemove(f);
@@ -3406,8 +3575,266 @@ static void testSync() {
   char line[160];
   syncStatusLine(st, now, line, sizeof(line));
   CHECK(strstr(line, "injoignable") != nullptr, "ligne d'état : %s", line);
+  // f) jeton réglé et adresse http publique : aucune requête ne part (le jeton serait lisible sur le trajet)
+  fs.failGet = 0;
+  snprintf(g_sync.token, sizeof(g_sync.token), "secret-de-test");
+  size_t getsBefore = fs.gets.size(), postsBefore = fs.posts.size();
+  r = syncRun(fio.io, "http://ops.exemple.lu:8790", now, true, st);
+  CHECK(r == -1 && st.state == SS_FAIL && strstr(st.text, "https") && fs.gets.size() == getsBefore && fs.posts.size() == postsBefore,
+        "jeton + http public : refus sans aucune requête (%s)", st.text);
+  //    même jeton, réseau local : la synchro se fait
+  r = syncRun(fio.io, "http://10.0.0.5:8790", now, true, st);
+  CHECK(r >= 0 && st.state != SS_FAIL && fs.gets.size() > getsBefore, "jeton + réseau local : synchro faite (%s)", st.text);
+  //    adresse https, mais le serveur annonce ses fichiers en http public (tunnel sans VN_PUBLIC_URL) : arrêt
+  //    après le manifeste, aucun fichier lu ni envoyé à cette adresse
+  {
+    FakeSrv f2;
+    f2.files.push_back({ "https://ops.exemple.lu/sync/manifest", vec((const uint8_t *)"", 0) });
+    std::string man = manifestOf("http://ops.exemple.lu/sync/abc/", sb, 999999, now, 30, now);
+    f2.files.back().second = vec((const uint8_t *)man.data(), man.size());
+    FakeIo io2; memset(&io2.io, 0, sizeof(io2.io)); io2.srv = &f2;
+    io2.io.ctx = &io2.io; io2.io.get = fakeGet; io2.io.post = fakePost;
+    r = syncRun(io2.io, "https://ops.exemple.lu", now, true, st);
+    CHECK(r == -1 && st.state == SS_FAIL && strstr(st.text, "VN_PUBLIC_URL") && f2.gets.size() == 1 && f2.posts.empty(),
+          "manifeste qui renvoie vers du http public : arrêt après le manifeste (%s ; %zu lecture(s))", st.text, f2.gets.size());
+    //  sans jeton, la même configuration reste permise (rien de secret ne circule)
+    g_sync.token[0] = 0;
+    r = syncRun(io2.io, "https://ops.exemple.lu", now, true, st);
+    CHECK(f2.gets.size() > 2, "sans jeton : la synchro suit l'adresse annoncée (%zu lectures)", f2.gets.size());
+  }
   plat::psFree(sb.prof); plat::psFree(sb.hist); plat::psFree(sb.days);
   syncCfgDefaults(g_sync);
+}
+
+// ── Rôle régulateur (core/regul) : réponse du serveur, gestes, file hors connexion, échange ─
+// Réponse réelle de GET /reg/tour (online/server.mjs), raccourcie : 2 arrêts dont l'atelier, 2 déclarations
+static const char * REG_TOUR_JSON = R"J({"device":"sunton-test","trucks":[{"id":"kangoo","name":"Kangoo","capacity":10},{"id":"master","name":"Master","capacity":25}],
+"regulators":[{"id":"paul","name":"Paul"},{"id":"lea","name":"Léa"}],"atelier":{"name":"Atelier Bertrange","address":"rue des Romains, Bertrange","lat":49.6106,"lon":6.0507},
+"atelierStock":{"ok":0,"at":0},"openTours":[{"id":"TOUR","truckName":"Master","regulatorName":"Léa","device":"sunton-test","startedAt":1793059233}],"now":1793059234,
+"tour":{"id":"TOUR","device":"sunton-test","truck":"master","truckName":"Master","capacity":25,"regulator":"lea","regulatorName":"Léa","load0":{"ok":12,"hs":0},"startedAt":1793059233,"endedAt":0},
+"load":{"ok":LOADOK,"hs":2},"plan":{"tour":"TOUR","stops":[
+{"seq":1,"kind":"station","sid":"40","name":"Glacis Kapell","drop":{"ok":3,"hs":0},"take":{"ok":0,"hs":1},"etaMin":5,"arriveAt":1793059506,"benefitMin":125,"why":"vide maintenant (mesuré) · 1 vélo(s) hors service ramassé(s) au passage (mesuré : 1 HS)","now":{"bikes":0,"docks":12,"dis":1,"cap":12},"loadAfter":{"ok":7,"hs":3}},
+{"seq":2,"kind":"atelier","name":"Atelier Bertrange","drop":{"ok":0,"hs":3},"take":{"ok":4,"hs":0},"etaMin":21,"benefitMin":0,"why":"décharger 3 HS · 4 neufs repris (stock déclaré)","now":null,"loadAfter":{"ok":11,"hs":0}}],
+"benefitMin":125,"durationMin":38},"method":"Plan proposé : minutes de rupture évitées ESTIMÉES par la prévision de la carte (2 h après chaque arrivée).",
+"events":[{"id":"ev-2","kind":"station","sid":47,"name":"Leopold Goebel","at":1793059234,"took":{"ok":0,"hs":2},"dropped":{"ok":2,"hs":0},"impossible":null,"check":{"verdict":"ecart","declared":{"ok":2,"hs":-2},"observed":{"ok":1,"hs":-2}}},
+{"id":"ev-1","kind":"station","sid":"14","name":"Kolleisch","at":1793058000,"took":{"ok":0,"hs":0},"dropped":{"ok":0,"hs":0},"impossible":"Impossible de se garer","check":{"verdict":"hors-flux"}}]})J";
+
+static std::string regTourJson(const char * tourId, int loadOk) {
+  std::string j = REG_TOUR_JSON;
+  for (size_t at; (at = j.find("TOUR")) != std::string::npos;) j.replace(at, 4, tourId);
+  j.replace(j.find("LOADOK"), 6, std::to_string(loadOk));
+  return j;
+}
+
+struct FakeReg {
+  int postCode = 200;                // code renvoyé aux POST
+  std::string postResp = "{\"ok\":true}";
+  int failAfter = -1;                // ≥ 0 : le POST numéro n (et suivants) échoue (réseau coupé)
+  int getCode = 200;
+  std::string getResp;
+  std::vector<std::string> paths, bodies, gets;
+};
+static int fakeRegGet(void * ctx, const char * url, char * buf, size_t cap, size_t & len) {
+  FakeReg & f = *(FakeReg *)ctx;
+  f.gets.push_back(url);
+  len = 0;
+  if (f.getCode != 200) return f.getCode;
+  len = std::min(cap, f.getResp.size());
+  memcpy(buf, f.getResp.data(), len);
+  return 200;
+}
+static int fakeRegPost(void * ctx, const char * url, const char * body, size_t n, char * resp, size_t cap, size_t & rlen) {
+  FakeReg & f = *(FakeReg *)ctx;
+  if (f.failAfter >= 0 && (int)f.paths.size() >= f.failAfter) { rlen = 0; return -1; }
+  f.paths.push_back(url);
+  f.bodies.push_back(std::string(body, n));
+  rlen = std::min(cap, f.postResp.size());
+  memcpy(resp, f.postResp.data(), rlen);
+  return f.postCode;
+}
+
+static void testRegul() {
+  sim::g_fsDir = "/tmp/vn_test_regul";
+  for (const char * f : { REG_CFG_PATH, REG_QUEUE_PATH, REG_SNAP_PATH }) plat::fsRemove(f);
+  const int64_t now = 1793059300;
+  char why[200];
+
+  // Réglage
+  regCfgDefaults(g_regCfg);
+  CHECK(g_regCfg.role == ROLE_POSTE, "rôle par défaut : poste de supervision");
+  g_regCfg.role = ROLE_REGUL;
+  CHECK(regCfgSave(), "réglage enregistré");
+  regCfgDefaults(g_regCfg);
+  CHECK(regCfgLoad() && g_regCfg.role == ROLE_REGUL, "rôle relu : régulateur");
+
+  // Réponse du serveur
+  static RegSnap sn;
+  std::string j = regTourJson("t-1", 10);
+  CHECK(regParseTour(j.c_str(), j.size(), sn), "réponse /reg/tour lue");
+  CHECK(sn.nTrucks == 2 && sn.trucks[1].cap == 25 && !strcmp(sn.regs[1].name, "Léa") && sn.atelierSet && sn.atelierStock == -1,
+        "listes : %d camions, %d régulateurs, atelier %s, stock %d (non déclaré)", sn.nTrucks, sn.nRegs, sn.atelierName, sn.atelierStock);
+  CHECK(sn.hasTour && !strcmp(sn.tourId, "t-1") && sn.cap == 25 && sn.load.ok == 10 && sn.load.hs == 2, "tournée : %s, à bord %d + %d HS", sn.tourId, sn.load.ok, sn.load.hs);
+  CHECK(sn.hasPlan && sn.nStops == 2 && sn.stops[0].kind == RK_STATION && !strcmp(sn.stops[0].sid, "40") && sn.stops[0].drop.ok == 3
+        && sn.stops[0].take.hs == 1 && sn.stops[0].hasNow && sn.stops[0].nowDis == 1, "arrêt 1 : %s, déposer %d, HS %d", sn.stops[0].name, sn.stops[0].drop.ok, sn.stops[0].take.hs);
+  CHECK(sn.stops[1].kind == RK_ATELIER && !sn.stops[1].hasNow && sn.stops[1].drop.hs == 3 && sn.stops[1].take.ok == 4, "arrêt 2 : atelier");
+  CHECK(strstr(sn.method, "ESTIMÉES") != nullptr, "le plan dit qu'il est estimé");
+  CHECK(sn.nEvents == 2 && !strcmp(sn.events[0].sid, "47") && sn.events[0].verdict == RV_ECART && sn.events[0].declOk == 2 && sn.events[0].obsOk == 1,
+        "déclaration : numéro de station en nombre accepté, écart déclaré %d / observé %d", sn.events[0].declOk, sn.events[0].obsOk);
+  CHECK(sn.events[1].verdict == RV_HORSFLUX && !strcmp(sn.events[1].impossible, "Impossible de se garer"), "arrêt impossible relu avec sa raison");
+  char t[160];
+  regActText(sn.stops[1], t, sizeof(t));
+  CHECK(!strcmp(t, "décharger 3 HS · reprendre 4 neufs"), "texte de l'arrêt atelier : %s", t);
+  regDeclText(RK_STATION, RegCount{ 0, 2 }, RegCount{ 3, 0 }, t, sizeof(t));
+  CHECK(!strcmp(t, "déposé 3, pris 2 HS"), "texte déclaré : %s", t);
+  regVerdictText(sn.events[0], t, sizeof(t));
+  CHECK(!strcmp(t, "écart : déclaré +2, observé +1"), "verdict : %s", t);
+  CHECK(!regParseTour("{\"error\":\"jeton requis\"}", 24, sn) && !regParseTour("<html>", 6, sn), "réponse d'erreur ou illisible refusée");
+
+  // Début de tournée (hors connexion) : contrôlé comme sur le serveur, puis rangé dans la file
+  regInit(g_reg);
+  CHECK(!regStart(g_reg, 0, 0, RegCount{ 0, 0 }, now, "sunton-test", why, sizeof(why)) && strstr(why, "pas encore re"), "sans listes du serveur : refusé (%s)", why);
+  j = regTourJson("t-ancien", 0);
+  regParseTour(j.c_str(), j.size(), g_reg.snap);
+  g_reg.snap.hasTour = false; g_reg.snap.hasPlan = false; g_reg.snap.nStops = 0;   // aucune tournée en cours
+  CHECK(!regStart(g_reg, 0, 0, RegCount{ 11, 0 }, now, "sunton-test", why, sizeof(why)) && strstr(why, "capacit"), "au-delà de la capacité : %s", why);
+  CHECK(!regStart(g_reg, 1, 1, RegCount{ 8, 0 }, 0, "sunton-test", why, sizeof(why)) && strstr(why, "Heure inconnue"), "heure inconnue : refusé");
+  CHECK(regStart(g_reg, 1, 1, RegCount{ 8, 0 }, now, "sunton-test", why, sizeof(why)), "tournée commencée hors connexion");
+  RegTourView v;
+  regTourNow(g_reg, v);
+  CHECK(v.has && v.local && v.cap == 25 && !strcmp(v.truckName, "Master") && !strcmp(v.regName, "Léa") && regLoadNow(g_reg).ok == 8,
+        "vue locale : %s, %s, à bord %d", v.truckName, v.regName, regLoadNow(g_reg).ok);
+  CHECK(!strcmp(g_regCfg.lastTruck, "master") && !strcmp(g_regCfg.lastReg, "lea"), "camion et régulateur gardés pour le prochain départ");
+  CHECK(!regStart(g_reg, 1, 1, RegCount{ 0, 0 }, now, "sunton-test", why, sizeof(why)) && strstr(why, "d\xC3\xA9j\xC3\xA0"), "deux tournées à la fois : refusé");
+  const std::string tourId = v.id;
+
+  // Déclarations
+  RegDecl d;
+  memset(&d, 0, sizeof(d));
+  d.kind = RK_STATION; snprintf(d.sid, sizeof(d.sid), "40"); snprintf(d.name, sizeof(d.name), "Glacis Kapell"); d.plSeq = 1;
+  d.dropped = RegCount{ 9, 0 };
+  CHECK(!regDeclare(g_reg, d, now + 60, "sunton-test", why, sizeof(why)) && strstr(why, "que 8"), "déposer plus que le chargement : %s", why);
+  d.dropped = RegCount{ 0, 1 };
+  CHECK(!regDeclare(g_reg, d, now + 60, "sunton-test", why, sizeof(why)) && strstr(why, "hors service en station"), "HS déposé en station : refusé");
+  d.dropped = RegCount{ 0, 0 };
+  CHECK(!regDeclare(g_reg, d, now + 60, "sunton-test", why, sizeof(why)) && strstr(why, "Rien de d"), "rien déclaré : refusé");
+  d.dropped = RegCount{ 3, 0 }; d.took = RegCount{ 0, 1 }; d.plDrop = RegCount{ 3, 0 }; d.plTake = RegCount{ 0, 1 };
+  CHECK(regDeclare(g_reg, d, now + 60, "sunton-test", why, sizeof(why)), "dépose déclarée");
+  RegCount l = regLoadNow(g_reg);
+  CHECK(l.ok == 5 && l.hs == 1, "à bord après l'arrêt : %d + %d HS", l.ok, l.hs);
+  RegDecl a;
+  memset(&a, 0, sizeof(a));
+  a.kind = RK_ATELIER; a.plSeq = -1; a.took = RegCount{ 0, 1 };
+  CHECK(!regDeclare(g_reg, a, now + 120, "sunton-test", why, sizeof(why)) && strstr(why, "atelier"), "HS repris à l'atelier : refusé");
+  a.took = RegCount{ 20, 0 };
+  CHECK(!regDeclare(g_reg, a, now + 120, "sunton-test", why, sizeof(why)) && strstr(why, "ne prend que 25"), "atelier au-delà de la capacité : %s", why);
+  a.took = RegCount{ 4, 0 }; a.dropped = RegCount{ 0, 1 };
+  CHECK(regDeclare(g_reg, a, now + 120, "sunton-test", why, sizeof(why)), "atelier déclaré");
+  RegDecl im = d;
+  snprintf(im.sid, sizeof(im.sid), "12"); snprintf(im.name, sizeof(im.name), "Hamilius");
+  im.impossible = "Impossible de se garer";
+  CHECK(regDeclare(g_reg, im, now + 180, "sunton-test", why, sizeof(why)), "arrêt impossible déclaré");
+  l = regLoadNow(g_reg);
+  CHECK(l.ok == 9 && l.hs == 0 && regPendingEvents(g_reg) == 3 && g_reg.nq == 4, "à bord %d + %d HS, %d déclarations en attente", l.ok, l.hs, regPendingEvents(g_reg));
+  CHECK(strcmp(g_reg.q[1].id, g_reg.q[2].id) != 0 && strlen(g_reg.q[1].id) >= 6 && strlen(g_reg.q[1].id) <= 64, "identifiants uniques : %s", g_reg.q[1].id);
+  // JSON envoyé
+  char body[1024];
+  size_t bn = regItemJson(g_reg.q[1], body, sizeof(body));
+  JsonDocument doc;
+  CHECK(bn && !deserializeJson(doc, body, bn) && doc["kind"] == "station" && doc["sid"] == "40" && doc["dropped"]["ok"] == 3
+        && doc["took"]["hs"] == 1 && doc["planned"]["drop"]["ok"] == 3 && doc["tour"] == tourId.c_str() && doc["impossible"].isNull(),
+        "corps de la déclaration : %s", body);
+  bn = regItemJson(g_reg.q[0], body, sizeof(body));
+  CHECK(bn && !deserializeJson(doc, body, bn) && doc["truck"] == "master" && doc["regulator"] == "lea" && doc["load"]["ok"] == 8, "corps du début : %s", body);
+  bn = regItemJson(g_reg.q[3], body, sizeof(body));
+  CHECK(bn && !deserializeJson(doc, body, bn) && doc["impossible"] == "Impossible de se garer" && doc["dropped"]["ok"] == 0, "corps de l'arrêt impossible");
+
+  // File en flash : un redémarrage ne perd rien
+  uint32_t ctr = g_reg.counter;
+  static RegState saved;
+  saved = g_reg;
+  regInit(g_reg);
+  CHECK(regQueueLoad(g_reg) && g_reg.nq == 4 && g_reg.counter == ctr && !strcmp(g_reg.q[1].id, saved.q[1].id), "file relue après redémarrage : %d gestes", g_reg.nq);
+  g_reg.snap = saved.snap;
+
+  // Réseau coupé : rien n'est perdu
+  FakeReg f;
+  RegIo io = { &f, fakeRegGet, fakeRegPost };
+  static char buf[32 * 1024];
+  f.failAfter = 0;
+  int r = regPoll(io, "http://srv:8790", g_reg, now + 200, buf, sizeof(buf));
+  char line[200];
+  regStatusLine(g_reg, true, now + 200, line, sizeof(line));
+  CHECK(r == -1 && g_reg.nq == 4 && strstr(g_reg.lastErr, "injoignable") && strstr(line, "4 gestes en attente"), "réseau coupé : file gardée (%s)", line);
+  // Jeton refusé : la file reste
+  f.failAfter = -1; f.postCode = 401; f.postResp = "{\"error\":\"jeton requis\"}";
+  r = regPoll(io, "http://srv:8790", g_reg, now + 210, buf, sizeof(buf));
+  CHECK(r == -1 && g_reg.nq == 4 && strstr(g_reg.lastErr, "jeton"), "jeton refusé : file gardée (%s)", g_reg.lastErr);
+  // Le début et la première déclaration passent, puis le réseau tombe : la vue compte les deux, file : 2
+  f.paths.clear(); f.bodies.clear();
+  f.postCode = 200; f.postResp = "{\"ok\":true}"; f.failAfter = 2;
+  r = regPoll(io, "http://srv:8790", g_reg, now + 220, buf, sizeof(buf));
+  regTourNow(g_reg, v);
+  l = regLoadNow(g_reg);
+  CHECK(r == -1 && g_reg.nq == 2 && g_reg.nSent == 2 && v.has && l.ok == 9 && f.paths[0] == "http://srv:8790/reg/tour/start" && f.paths[1] == "http://srv:8790/reg/event",
+        "envoi partiel : 2 acceptés, 2 en file, la vue reste juste (à bord %d)", l.ok);
+  // La suite : le serveur refuse l'atelier (stock) ; l'arrêt impossible passe ; l'état relu remplace les gestes acceptés
+  f.failAfter = -1; f.paths.clear();
+  f.postCode = 409; f.postResp = "{\"ok\":false,\"error\":\"chargement supérieur à la capacité (26 / 25)\"}";
+  f.getResp = regTourJson(tourId.c_str(), 5);
+  // première requête refusée (409), la seconde acceptée : on change la réponse après le premier envoi
+  struct Two { static int post(void * ctx, const char * url, const char * b, size_t n, char * resp, size_t cap, size_t & rl) {
+    FakeReg & ff = *(FakeReg *)ctx;
+    int c = fakeRegPost(ctx, url, b, n, resp, cap, rl);
+    ff.postCode = 200; ff.postResp = "{\"ok\":true}";
+    return c;
+  } };
+  io.post = Two::post;
+  r = regPoll(io, "http://srv:8790", g_reg, now + 300, buf, sizeof(buf));
+  io.post = fakeRegPost;
+  CHECK(r == 2 && g_reg.nq == 0 && g_reg.nSent == 0 && g_reg.nRej == 1 && strstr(g_reg.rej[0].why, "capacit") && !strcmp(g_reg.rej[0].what, "Atelier Bertrange"),
+        "refus du serveur gardé avec sa raison : %s — %s", g_reg.rej[0].what, g_reg.rej[0].why);
+  CHECK(g_reg.snap.hasTour && !strcmp(g_reg.snap.tourId, tourId.c_str()) && regLoadNow(g_reg).ok == 5 && !g_reg.snapFromFlash && g_reg.lastOk == now + 300,
+        "état relu du serveur : à bord %d (calculé par le serveur)", regLoadNow(g_reg).ok);
+  CHECK(!f.gets.empty() && f.gets.back() == "http://srv:8790/reg/tour", "relecture : %s", f.gets.empty() ? "" : f.gets.back().c_str());
+  regStatusLine(g_reg, true, now + 310, line, sizeof(line));
+  CHECK(strstr(line, "En ligne") != nullptr, "ligne d'état : %s", line);
+  // Arrêts du plan : un arrêt déclaré mais pas encore relu disparaît de la liste
+  int idx[REG_MAX_STOPS];
+  int n = regStopsNow(g_reg, idx, REG_MAX_STOPS);
+  CHECK(n == 2 && idx[0] == 0, "plan : %d arrêts à faire", n);
+  d.dropped = RegCount{ 3, 0 }; d.took = RegCount{ 0, 1 };
+  CHECK(regDeclare(g_reg, d, now + 320, "sunton-test", why, sizeof(why)), "arrêt 1 fait");
+  n = regStopsNow(g_reg, idx, REG_MAX_STOPS);
+  CHECK(n == 1 && g_reg.snap.stops[idx[0]].kind == RK_ATELIER, "l'arrêt fait disparaît du plan affiché avant même l'envoi");
+  // État gardé en flash : relu au démarrage, marqué comme ancien
+  regInit(g_reg);
+  CHECK(regSnapLoad(g_reg) && g_reg.snapFromFlash && g_reg.snap.hasTour && g_reg.snapAt == now + 300, "état relu de la flash au démarrage");
+  regStatusLine(g_reg, true, now + 400, line, sizeof(line));
+  CHECK(strstr(line, "gard") != nullptr, "ligne d'état hors connexion au démarrage : %s", line);
+  regQueueLoad(g_reg);
+  CHECK(g_reg.nq == 1 && regStopsNow(g_reg, idx, REG_MAX_STOPS) == 1, "après redémarrage : la déclaration en file cache toujours l'arrêt fait");
+  // Fin de tournée : la vue n'a plus de tournée tant que le serveur ne l'a pas confirmée
+  CHECK(regEnd(g_reg, RegCount{ 2, 1 }, now + 500, why, sizeof(why)), "fin de tournée rangée dans la file");
+  regTourNow(g_reg, v);
+  CHECK(!v.has && regStopsNow(g_reg, idx, REG_MAX_STOPS) == 0, "fin en attente : plus de tournée à l'écran");
+  bn = regItemJson(g_reg.q[g_reg.nq - 1], body, sizeof(body));
+  CHECK(bn && !deserializeJson(doc, body, bn) && doc["tour"] == tourId.c_str() && doc["load"]["hs"] == 1, "corps de la fin : %s", body);
+
+  // Début refusé par le serveur : les déclarations de cette tournée sont dites non enregistrées, une seule fois
+  regInit(g_reg);
+  regParseTour(j.c_str(), j.size(), g_reg.snap);
+  g_reg.snap.hasTour = false; g_reg.snap.nStops = 0;
+  regStart(g_reg, 0, 0, RegCount{ 2, 0 }, now, "sunton-test", why, sizeof(why));
+  d.dropped = RegCount{ 1, 0 }; d.took = RegCount{ 0, 0 };
+  regDeclare(g_reg, d, now + 60, "sunton-test", why, sizeof(why));
+  regDeclare(g_reg, d, now + 70, "sunton-test", why, sizeof(why));
+  f = FakeReg(); io.ctx = &f;
+  f.postCode = 400; f.postResp = "{\"ok\":false,\"error\":\"camion inconnu : le choisir dans la liste des camions\"}";
+  f.getResp = regTourJson("autre", 0);
+  r = regPoll(io, "http://srv:8790", g_reg, now + 100, buf, sizeof(buf));
+  CHECK(r == 1 && g_reg.nq == 0 && g_reg.nRej == 1 && strstr(g_reg.rej[0].why, "camion inconnu") && strstr(g_reg.rej[0].why, "2 déclarations non enregistrées") && f.paths.size() == 1,
+        "début refusé : %s", g_reg.rej[0].why);
+  regCfgDefaults(g_regCfg);
 }
 
 int main(int argc, char ** argv) {
@@ -3443,10 +3870,13 @@ int main(int argc, char ** argv) {
   testDump();
   testHorsLigne(argc > 1 ? argv[1] : "");
   testModele2();
+  testErreurMesuree();
+  testIntervention();
   testVersion();
   testClosedNotLearned();
   testDaysBadTimes();
   testSync();
+  testRegul();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;
 }

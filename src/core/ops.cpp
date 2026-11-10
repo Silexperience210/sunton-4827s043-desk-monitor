@@ -441,6 +441,30 @@ void wxPartText(const Model & m, float part, bool forecast, int64_t at, char * o
   }
 }
 
+bool fcErrText(const Model & m, int st, int64_t now, char * out, size_t n) {
+  const int cls = m.fcClassAt(now);
+  FcErr e1, e2;
+  const bool h1 = m.fcErrAt(st, cls, 2, now, e1), h2 = m.fcErrAt(st, cls, 3, now, e2);   // +60 et +120 min
+  if (!h1 && !h2) {
+    snprintf(out, n, "Erreur de la pr\xC3\xA9vision : pas encore mesur\xC3\xA9" "e (il faut une journ\xC3\xA9" "e de pr\xC3\xA9visions jug\xC3\xA9" "es)");
+    return false;
+  }
+  // une seule origine par phrase : dès qu'un des deux horizons vient du parc, la phrase le dit pour les deux
+  const bool own = (!h1 || e1.own) && (!h2 || e2.own);
+  char a[40] = "", b[40] = "";
+  // « 1,2 vélo », « 2,3 vélos » : le pluriel commence à 2
+  if (h1) snprintf(a, sizeof(a), "\xC2\xB1 %.1f v\xC3\xA9lo%s \xC3\xA0 +1 h", e1.mae, e1.mae >= 1.95f ? "s" : "");
+  if (h2) snprintf(b, sizeof(b), "%s\xC2\xB1 %.1f%s%s \xC3\xA0 +2 h", h1 ? " \xC2\xB7 " : "", e2.mae, h1 ? "" : " v\xC3\xA9lo",
+                   !h1 && e2.mae >= 1.95f ? "s" : "");
+  const float cnt = h1 ? e1.n : e2.n;
+  if (own)
+    snprintf(out, n, "Erreur mesur\xC3\xA9" "e : %s%s (sur %.0f pr\xC3\xA9visions jug\xC3\xA9" "es de la station)", a, b, cnt);
+  else
+    snprintf(out, n, "Erreur mesur\xC3\xA9" "e sur le parc : %s%s (station pas encore assez jug\xC3\xA9" "e)", a, b);
+  commaDec(out);
+  return true;
+}
+
 // ── Écart au profil (« inhabituel ») ─────────────────────────────────
 static const char * plural(int v) { return abs(v) > 1 ? "s" : ""; }
 

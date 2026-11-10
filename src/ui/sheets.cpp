@@ -102,6 +102,8 @@ static void kbClose() {
 static void doConnect() {
   if (!s_selSsid[0]) return;
   const char * pass = s_wTa ? lv_textarea_get_text(s_wTa) : "";
+  // Réseau déjà enregistré et champ laissé vide : on garde son mot de passe (il n'est plus affiché, voir pickNetwork)
+  if (!pass[0] && g_set.pass[0] && strcmp(s_selSsid, g_set.ssid) == 0) pass = g_set.pass;
   // Rien n'est enregistré ici : une faute de frappe deviendrait le réseau du démarrage et la
   // carte resterait à s'associer sans pouvoir en balayer un autre. La tâche réseau enregistre
   // le réseau une fois l'association réussie.
@@ -128,7 +130,11 @@ static void pickNetwork(const char * ssid, bool secure) {
   lv_obj_add_flag(s_wList, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(s_wHead, LV_OBJ_FLAG_HIDDEN);
   lv_obj_scroll_to_y(lv_obj_get_parent(s_wTa), 0, LV_ANIM_OFF);
-  lv_textarea_set_text(s_wTa, strcmp(s_selSsid, g_set.ssid) == 0 ? g_set.pass : "");
+  // Le mot de passe enregistré n'est JAMAIS réaffiché : l'écran est posé sur un bureau ou dans un camion, et
+  // toucher le réseau en cours suffisait à le lire en clair. Champ vide ; le laisser vide garde l'ancien.
+  const bool known = strcmp(s_selSsid, g_set.ssid) == 0 && g_set.pass[0];
+  lv_textarea_set_text(s_wTa, "");
+  lv_textarea_set_placeholder_text(s_wTa, known ? "Enregistr\xC3\xA9 \xE2\x80\x94 vide = le garder" : "Mot de passe");
     kbClose();
   // Clavier dans le panneau du sheet : supprimé avec lui
   lv_obj_t * sheet = lv_obj_get_parent(lv_obj_get_parent(s_wTa));

@@ -1,5 +1,5 @@
-// ── Tableau de bord : historique long, erreur des prévisions, notifications ─
-// Données : /api/history/*, /api/forecast, /api/bench, /api/notify (voir server.mjs). Dans l'aperçu
+// ── Tableau de bord : historique long, erreur des prévisions, notifications, régulation ─
+// Données : /api/history/*, /api/forecast, /api/bench, /api/notify, /reg/* (voir server.mjs). Dans l'aperçu
 // autonome, window.VN_DEMO.api(chemin) répond à la place du serveur, avec les mêmes formes.
 // Graphiques en SVG faits main (aucune dépendance) : traits fins, grille discrète, réticule et infobulle,
 // légende dès deux séries, tableau équivalent sous chaque graphique.
@@ -400,7 +400,7 @@ function renderHistory() {
     tile(k, 'Vélos disponibles', lastIdx >= 0 ? fmtNum(ser.avail[lastIdx]) : '—', av.length ? `moyenne ${fmtNum(av.reduce((a, b) => a + b, 0) / av.length)} sur la période` : '');
     const full = daily.days.filter((d) => d.slots >= 200);
     const depMean = full.length ? full.reduce((a, d) => a + d.depFull, 0) / full.length : null;
-    tile(k, 'Retraits par jour', fmtNum(depMean), full.length ? `moyenne de ${full.length} jour${full.length > 1 ? 's' : ''} complet${full.length > 1 ? 's' : ''}` : 'aucun jour complet encore');
+    tile(k, 'Retraits observés par jour', fmtNum(depMean), full.length ? `minimum · moyenne de ${full.length} jour${full.length > 1 ? 's' : ''} complet${full.length > 1 ? 's' : ''}` : 'aucun jour complet encore');
     const dd = daily.days.at(-1);
     tile(k, 'En rupture aujourd\'hui', dd ? `${fmtNum(dd.emptyH + dd.fullH, 0)} h` : '—', dd ? `stations·heures : ${fmtNum(dd.emptyH, 0)} à vide, ${fmtNum(dd.fullH, 0)} pleines` : '');
   }
@@ -416,7 +416,7 @@ function renderHistory() {
     yFmt: (v, d) => fmtNum(v, d), tipFmt: (v) => fmtNum(v, st ? 1 : 0),
     tipTitle: (t) => (ser.step >= 1440 ? fDay.format(new Date(t * 1000)) : ser.step > 5 ? `${fFull.format(new Date(t * 1000))} (${ser.step >= 60 ? ser.step / 60 + ' h' : ser.step + ' min'})` : fFull.format(new Date(t * 1000))),
     extraTip: (i) => (st ? [{ value: fmtNum(ser.cap[i]), label: 'bornes' }] : [
-      { value: fmtNum(ser.dep[i]), label: `retraits (${ser.step >= 60 ? 'par ' + (ser.step / 60) + ' h' : 'par ' + ser.step + ' min'})` },
+      { value: fmtNum(ser.dep[i]), label: `retraits observés (${ser.step >= 60 ? 'par ' + (ser.step / 60) + ' h' : 'par ' + ser.step + ' min'})` },
       ...(ser.temp[i] !== null ? [{ value: `${fmtNum(ser.temp[i], 1)} °C`, label: ser.rain[i] > 0.05 ? `pluie ${fmtNum(ser.rain[i], 1)} mm` : 'sec' }] : []),
     ]),
     empty: 'Aucune tranche sur cette période.', label: 'Courbe des vélos disponibles',
@@ -433,11 +433,11 @@ function renderHistory() {
   });
   columnChart($('histDep'), {
     x: dl.map((d) => fDayShort.format(new Date(`${d.day}T12:00:00Z`))),
-    series: [{ name: 'Retraits', color: C.line(), values: dl.map((d) => d.dep) }],
+    series: [{ name: 'Retraits observés', color: C.line(), values: dl.map((d) => d.dep) }],
     tipTitle: (i) => `${dayLabel(dl[i].day)} · ${Math.round(dl[i].slots / 2.88)} % de la journée relevée`,
-    empty: 'Pas encore de retraits comptés.', label: 'Retraits par jour',
+    empty: 'Pas encore de retraits comptés.', label: 'Retraits observés par jour',
   });
-  table($('histTable'), ['Jour', 'Relevé', 'Retraits', 'Vélos (moy. / creux / pic)', 'Vides 7–22 h', 'Pleines 7–22 h', 'Pluie'],
+  table($('histTable'), ['Jour', 'Relevé', 'Retraits observés', 'Vélos (moy. / creux / pic)', 'Vides 7–22 h', 'Pleines 7–22 h', 'Pluie'],
     dl.slice().reverse().map((d) => [dayLabel(d.day), `${Math.round(d.slots / 2.88)} %`, fmtNum(d.dep), `${fmtNum(d.availMean)} / ${fmtNum(d.availMin)} / ${fmtNum(d.availMax)}`,
       `${fmtNum(d.emptyH, 1)} h`, `${fmtNum(d.fullH, 1)} h`, `${fmtNum(d.rainH, 1)} h`]));
   // service (résumés de la carte, 60 jours) : disponibilité par jour
@@ -479,6 +479,8 @@ function renderForecast(f, b) {
   $('prevMeta').textContent = days.length
     ? `${days.length} jour${days.length > 1 ? 's' : ''} mesuré${days.length > 1 ? 's' : ''} · ${fmtNum(days.reduce((a, d) => a + d.preds, 0))} quarts d'heure notés · dernier ${f.lastSlot ? fHour.format(new Date(f.lastSlot * 1000)) : '—'}`
     : 'Aucune prévision notée pour l\'instant (de 6 h à 22 h, tous les quarts d\'heure).';
+  // prévisions traversées par une intervention DÉCLARÉE : non notées (le camion ne se prévoit pas), et dites
+  if (f.skipped?.intervention) $('prevMeta').textContent += ` · ${fmtNum(f.skipped.intervention)} prévision${f.skipped.intervention > 1 ? 's' : ''} non notée${f.skipped.intervention > 1 ? 's' : ''} : une intervention déclarée est passée entre-temps`;
   // erreur selon l'horizon
   const hl = f.horizons.map((h) => h.replace(' min', '').replace('+', '+ '));
   lineChart($('prevHorizon'), {
@@ -515,8 +517,103 @@ function renderForecast(f, b) {
   });
   table($('prevHard'), ['Station', 'Erreur +1 h', 'Persistance', 'n'], f.hardest.map((s) => [s.name, fmtNum(s.model, 2), fmtNum(s.per, 2), fmtNum(s.n)]));
   table($('prevTable'), ['Horizon', 'Prévision', 'Persistance', 'Profil seul', 'n'], f.horizons.map((h, i) => [h, fmtNum(f.total.model[i].mae, 3), fmtNum(f.total.per[i].mae, 3), fmtNum(f.total.prof[i].mae, 3), fmtNum(f.total.model[i].n)]));
+  renderShadow(f.shadow);
+  renderRisk(f.risk, f.riskNow);
+  renderErrCheck(f.errCheck);
+  renderDayTypes(f.dayTypes, f.calendar);
+  renderTarget(f.target);
   // banc de nuit
   renderBench(b);
+}
+// Témoin : la prévision livrée (un couple par station à +1 h, +2 h, +4 h) contre la même prévision avec le seul
+// couple de la classe, notées sur les mêmes relevés depuis que le serveur garde le témoin (lib/forecast.mjs)
+function renderShadow(sh) {
+  const meta = $('shadowMeta'), host = $('shadowTable');
+  if (!meta || !host) return;
+  host.replaceChildren();
+  if (!sh || !sh.days) {
+    meta.textContent = 'Le serveur note chaque prévision deux fois : avec le couple propre à la station (ce que l\'écran affiche) et avec le seul couple de sa classe de jour. Première journée complète notée demain.';
+    return;
+  }
+  const signed = (v, d) => (v === null || v === undefined ? '—' : `${v > 0 ? '+' : v < 0 ? '−' : ''}${fmtNum(Math.abs(v), d)}`);
+  const left = Math.max(0, sh.minDays - sh.days);
+  meta.textContent = `${sh.days} journée${sh.days > 1 ? 's' : ''} complète${sh.days > 1 ? 's' : ''} notée${sh.days > 1 ? 's' : ''} (${dayLabel(sh.from)} → ${dayLabel(sh.to)}). `
+    + (left ? `Verdict dans ${left} jour${left > 1 ? 's' : ''} : il en faut ${sh.minDays}, pour que les deux types de jour y soient.` : 'Écart négatif = les couples par station se trompent moins. Intervalle à 95 %, une journée = une grappe.');
+  table(host, ['Horizon', 'Par station', 'Classe seule', 'Écart', 'Intervalle à 95 %', 'Verdict', 'n'], sh.horizons.map((r) => [
+    r.h, fmtNum(r.model, 3), fmtNum(r.cls, 3), r.diff === null ? '—' : `${signed(r.diff, 4)}${r.pct === null ? '' : ` (${signed(r.pct, 1)} %)`}`,
+    r.lo === null ? '—' : `${signed(r.lo, 4)} ; ${signed(r.hi, 4)}`, r.verdict, fmtNum(r.n)]));
+}
+const pctTxt = (v, d = 0) => (v === null || v === undefined ? '—' : `${fmtNum(100 * v, d)} %`);
+const sgn = (v, d) => (v === null || v === undefined ? '—' : `${v > 0 ? '+' : v < 0 ? '−' : ''}${fmtNum(Math.abs(v), d)}`);
+const plural = (n, w) => `${fmtNum(n)} ${w}${n > 1 ? 's' : ''}`;
+
+// Risque de rupture dans l'heure : la probabilité est une fréquence observée, annoncée avec les seules journées
+// passées puis comparée à ce qui s'est produit. La liste en direct n'existe que si la vérification est acquise.
+function renderRisk(r, now) {
+  const meta = $('riskMeta'), tb = $('riskTable'), live = $('riskNow');
+  if (!meta || !tb || !live) return;
+  tb.replaceChildren(); live.replaceChildren();
+  if (!r) { meta.textContent = 'Indisponible.'; return; }
+  const e = r.empty, f = r.full;
+  if (!e.judgedDays) {
+    meta.textContent = `Pour chaque station, la part des situations passées semblables (même nombre de vélos, même prévision, même alerte) qui ont fini vides dans l'heure. Il faut ${r.trainDays} journées notées pour commencer à annoncer, puis ${r.minDays} journées annoncées pour vérifier (${e.trainDays} notée${e.trainDays > 1 ? 's' : ''}).`;
+    return;
+  }
+  const word = { 'vérifiée': 'vérifiée : affichée', 'fausse': 'fausse : non affichée', 'en cours': 'en cours de vérification : non affichée' };
+  meta.textContent = `Annoncée avec les seules journées passées, puis comparée à ce qui s'est produit (${plural(e.judgedDays, 'journée')}, ${fmtNum(e.n)} situations). `
+    + `Station vide dans l'heure : ${word[e.verdict]}. Station pleine dans l'heure : ${word[f.verdict]}. `
+    + `Une tranche est vérifiée quand constaté et annoncé s'accordent à ± ${fmtNum(100 * r.tol)} points, intervalle à 95 % compris.`
+    + (e.skillVsAlert !== null ? ` Contre l'alerte « vide dans l'heure » seule : ${sgn(100 * e.skillVsAlert, 1)} % sur le score de Brier.` : '');
+  const rows = [];
+  for (const [name, side] of [['Vide', e], ['Pleine', f]])
+    for (const b of side.bins) if (b.n) rows.push([name, `${fmtNum(100 * b.from)} – ${fmtNum(100 * b.to)} %`, pctTxt(b.announced, 1), pctTxt(b.observed, 1),
+      b.lo === null ? '—' : `${sgn(100 * b.lo, 1)} ; ${sgn(100 * b.hi, 1)}`, b.verdict, fmtNum(b.n)]);
+  table(tb, ['Rupture', 'Tranche annoncée', 'Annoncé', 'Constaté', 'Écart (95 %), points', 'Verdict', 'Situations'], rows);
+  const list = [];
+  for (const [name, l] of [['vide', now?.empty], ['pleine', now?.full]]) for (const x of l || []) if (x.p >= 0.15) list.push([x.name || x.sid, name, pctTxt(x.p), fmtNum(x.bikes)]);
+  if (list.length) table(live, ['Station', 'Risque d\'être', 'Dans l\'heure', 'Vélos'], list.sort((a, b) => parseFloat(b[2]) - parseFloat(a[2])));
+}
+
+// La fiche d'une station annonce « ± x vélo à +1 h » : ici, ce que valait cette annonce
+function renderErrCheck(c) {
+  const meta = $('errMeta'), tb = $('errTable');
+  if (!meta || !tb) return;
+  tb.replaceChildren();
+  if (!c || !c.n) { meta.textContent = 'La fiche de chaque station annonce l\'erreur de sa prévision à +1 h. Le serveur compare cette annonce à l\'erreur réellement faite une heure plus tard ; premier résultat après une journée complète.'; return; }
+  const left = Math.max(0, c.minDays - c.days);
+  meta.textContent = `Somme des erreurs réellement faites ÷ somme des erreurs annoncées, sur ${fmtNum(c.n)} prévisions à +1 h (${plural(c.days, 'journée')}). 1 = l'annonce dit vrai ; au-dessus, on se trompe plus qu'annoncé. `
+    + (left ? `Verdict dans ${left} jour${left > 1 ? 's' : ''}.` : `« fidèle » si tout l'intervalle tient entre ${fmtNum(1 - c.tol, 2)} et ${fmtNum(1 + c.tol, 2)}.`);
+  table(tb, ['Annoncée (moyenne)', 'Constatée (moyenne)', 'Constatée ÷ annoncée', 'Intervalle à 95 %', 'Verdict'],
+    [[`${fmtNum(c.announced, 2)} vélo`, `${fmtNum(c.observed, 2)} vélo`, fmtNum(c.ratio, 3), c.lo === null ? '—' : `${fmtNum(c.lo, 3)} ; ${fmtNum(c.hi, 3)}`, c.verdict]]);
+}
+
+// Le modèle a deux types de jour (ouvré, week-end et férié). Avant d'en ajouter : se trompe-t-il plus ailleurs ?
+function renderDayTypes(list, cal) {
+  const meta = $('dayTypeMeta'), tb = $('dayTypeTable');
+  if (!meta || !tb) return;
+  tb.replaceChildren();
+  if (!list || !list.length) { meta.textContent = 'Erreur à +1 h par type de jour (ouvré, week-end et fériés, vacances scolaires, événements déclarés) : après la première journée complète.'; return; }
+  meta.textContent = 'Erreur à +1 h du modèle et de la persistance, par type de jour. Un type où le modèle « perd » ou gagne nettement moins qu\'ailleurs mérite son propre réglage ; sinon, inutile d\'en ajouter. '
+    + `Vacances scolaires : calendrier officiel renseigné jusqu'au ${cal?.schoolKnownTo ? dayLabel(cal.schoolKnownTo) : '—'}. Événements : ${cal?.events ? plural(cal.events, 'déclaré') : 'aucun déclaré'} (fichier calendrier.json du dossier de données).`
+    + (cal?.errors?.length ? ` À corriger : ${cal.errors.join(' ; ')}.` : '');
+  table(tb, ['Type de jour', 'Journées', 'Modèle', 'Persistance', 'Gain', 'Écart (95 %)', 'Verdict', 'n'], list.map((r) => [
+    r.names?.length ? `${r.label} (${r.names.join(', ')})` : r.label, fmtNum(r.days), fmtNum(r.model, 3), fmtNum(r.per, 3), r.gainPct === null ? '—' : `${sgn(r.gainPct, 1)} %`,
+    r.lo === null ? '—' : `${sgn(r.lo, 3)} ; ${sgn(r.hi, 3)}`, r.verdict, fmtNum(r.n)]));
+}
+
+// « Viser 50 % à +1 h » (affiché par les écrans) contre « autant de marge avant le vide qu'avant le plein sur 4 h »
+function renderTarget(t) {
+  const meta = $('targetMeta'), tb = $('targetTable');
+  if (!meta || !tb) return;
+  tb.replaceChildren();
+  if (!t || !t.cases) { meta.textContent = 'Quand une station est en tension, les écrans conseillent de viser 50 % de remplissage à +1 h. Le serveur note à côté une autre règle (autant de marge avant le vide qu\'avant le plein sur la trajectoire prévue de +1 h à +4 h) ; premier résultat après une journée complète.'; return; }
+  const left = Math.max(0, t.minDays - t.days);
+  meta.textContent = `Une estimation, pas une mesure : la suite réellement relevée (4 h) est rejouée avec le déplacement conseillé, comme si les usagers avaient fait exactement la même chose — ce qui flatte les deux règles. Elles se comparent donc entre elles, sur les mêmes ${fmtNum(t.cases)} conseils (${plural(t.days, 'journée')}). `
+    + (left ? `Verdict dans ${left} jour${left > 1 ? 's' : ''}.` : `Écart demande à venir − 50 % : ${sgn(t.diff, 2)} point [${sgn(t.lo, 2)} ; ${sgn(t.hi, 2)}] : ${t.verdict}.`);
+  table(tb, ['Règle', 'Tranches vides ou pleines sur 4 h', 'Vélos déplacés par conseil'], [
+    ['Ne rien faire (relevé)', `${fmtNum(t.none, 2)} %`, '0'],
+    ['Viser 50 % à +1 h (affichée)', `${fmtNum(t.half, 2)} %`, fmtNum(t.movedHalf, 1)],
+    ['Demande à venir (témoin)', `${fmtNum(t.ahead, 2)} %`, fmtNum(t.movedAhead, 1)]]);
 }
 function renderBench(b) {
   const box = $('benchBody');
@@ -628,7 +725,209 @@ function wireNotify() {
 // ════════════════════════════════════════════════════════════════════
 // Onglets, filtres, rafraîchissement
 // ════════════════════════════════════════════════════════════════════
-const loaders = { hist: loadHistory, prev: loadForecast, notif: loadNotify };
+// Régulation : tournées, déclarations recoupées, indicateurs, réglages
+// ════════════════════════════════════════════════════════════════════
+const R = { range: store.get('vn.regRange') || '7', st: null, cfgShown: '' };
+const fmtSigned = (v) => (v === null || v === undefined ? '—' : v > 0 ? `+${v}` : v < 0 ? `−${-v}` : '0');
+function actText(s) {
+  const p = [];
+  if (s.drop?.ok) p.push(`déposer ${s.drop.ok}`);
+  if (s.drop?.hs) p.push(`décharger ${s.drop.hs} HS`);
+  if (s.take?.ok) p.push(s.kind === 'atelier' ? `reprendre ${s.take.ok} neufs` : `prendre ${s.take.ok}`);
+  if (s.take?.hs) p.push(`ramasser ${s.take.hs} HS`);
+  return p.join(' · ') || '—';
+}
+function declText(e) {
+  if (e.impossible) return `impossible : ${e.impossible}`;
+  const p = [];
+  if (e.dropped?.ok) p.push(`déposé ${e.dropped.ok}`);
+  if (e.dropped?.hs) p.push(`déchargé ${e.dropped.hs} HS`);
+  if (e.took?.ok) p.push(`${e.kind === 'atelier' ? 'repris' : 'pris'} ${e.took.ok}`);
+  if (e.took?.hs) p.push(`pris ${e.took.hs} HS`);
+  return p.join(', ') || 'rien';
+}
+function verdictOf(e) {
+  const c = e.check;
+  if (e.impossible) return ['arrêt non fait', 'v-dim'];
+  if (e.kind === 'atelier') return ['atelier (hors flux)', 'v-dim'];
+  if (!c) return ['recoupement 10 min après l\'arrêt', 'v-dim'];
+  if (c.verdict === 'concordant') return [`concordant : déclaré ${fmtSigned(c.declared?.ok)}, observé ${fmtSigned(c.observed?.ok)}`, 'v-ok'];
+  if (c.verdict === 'ecart') return [`écart : déclaré ${fmtSigned(c.declared?.ok)}, observé ${fmtSigned(c.observed?.ok)}`, 'v-ecart'];
+  if (c.verdict === 'non-visible') return ['non visible dans le flux', 'v-dim'];
+  return ['hors flux', 'v-dim'];
+}
+
+async function loadReg() {
+  try { R.st = await api(`reg/state?days=${R.range}`); }
+  catch (err) { $('regKpis').replaceChildren(el('p', 'txt txt--warn', `Régulation indisponible : ${err.message}`)); return; }
+  renderReg();
+}
+function renderReg() {
+  const st = R.st;
+  if (!st) return;
+  const cfg = st.config || {};
+  const names = (list, id) => (list || []).find((x) => x.id === id)?.name || id || '—';
+  // indicateurs : seulement du déclaré et du mesuré, chaque tuile dit sa classe
+  const days = st.kpi?.days || [];
+  const sum = (k) => days.reduce((a, d) => a + (d[k] || 0), 0);
+  const k = $('regKpis');
+  k.replaceChildren();
+  const stops = sum('stops'), conc = sum('concordant'), ecart = sum('ecart');
+  tile(k, 'Arrêts validés', fmtNum(stops), `${sum('impossible')} impossible(s) · déclaré`);
+  tile(k, 'Vélos déposés en station', fmtNum(sum('dropOk')), `pris ${sum('takeOk')} · HS ramassés ${sum('takeHs')} · déclaré`);
+  tile(k, 'Recoupés concordants', conc + ecart ? `${conc} / ${conc + ecart}` : '—',
+    `écarts ${ecart} · non visibles ${sum('nonVisible')} · en attente ${sum('pending')}`, ecart ? 'warn' : conc ? 'good' : '');
+  const dl = st.kpi?.delays;
+  tile(k, 'Délai médian station vide → dépose', dl?.medianMin !== null && dl?.medianMin !== undefined ? `${dl.medianMin} min` : '—',
+    `${dl?.n || 0} dépose(s) dans une station vide · déclaré + mesuré`);
+  tile(k, 'Atelier', `${sum('atelierIn')} déchargés`, `${sum('atelierOut')} repris · stock déclaré ${cfg.atelierStock?.at ? cfg.atelierStock.ok : 'inconnu'}`);
+
+  // tournées en cours, avec le plan proposé (estimé)
+  const box = $('regOpen');
+  box.replaceChildren();
+  $('regOpenN').textContent = String(st.open?.length || 0);
+  if (!st.open?.length) box.appendChild(el('p', 'vempty', 'Aucune tournée en cours. Elles se commencent sur le Sunton du camion (rôle « régulateur ») ou sur la page du téléphone.'));
+  for (const t of st.open || []) {
+    const d = el('div', 'tour');
+    const top = el('div', 'tour__top');
+    top.append(el('b', null, `${t.regulatorName} · ${t.truckName}`), el('span', 'tour__load', `à bord ${t.load.ok}${t.load.hs ? ` + ${t.load.hs} HS` : ''} / ${t.capacity}`));
+    d.appendChild(top);
+    d.appendChild(el('div', 'tour__meta', `depuis ${fHour.format(new Date(t.startedAt * 1000))} · ${t.stops} arrêt(s) déclaré(s) · appareil ${t.device}${t.last ? ` · dernier : ${t.last.name || t.last.sid || 'atelier'} (${ago(t.last.at)})` : ''}`));
+    const plan = st.plans?.plans?.find((p) => p.tour === t.id);
+    if (plan?.stops?.length) {
+      const ol = el('ol');
+      for (const s of plan.stops.slice(0, 6)) {
+        const li = el('li');
+        li.append(el('b', null, s.kind === 'atelier' ? (cfg.atelier?.name || 'Atelier') : s.name), document.createTextNode(` — ${actText(s)} · ~${s.etaMin} min`));
+        li.title = s.why || '';
+        ol.appendChild(li);
+      }
+      d.appendChild(el('div', 'tour__meta', 'Plan proposé (ESTIMÉ) :'));
+      d.appendChild(ol);
+    } else d.appendChild(el('div', 'tour__meta', 'Aucun arrêt proposé pour l\'instant.'));
+    box.appendChild(d);
+  }
+  if (st.plans?.method) box.appendChild(el('p', 'txt txt--dim', st.plans.method));
+
+  // arrêts par jour selon le recoupement
+  columnChart($('regDays'), {
+    x: days.map((d) => fDayShort.format(new Date(`${d.day}T12:00:00Z`))),
+    series: [
+      { name: 'concordants', color: cssVar('--good'), values: days.map((d) => d.concordant) },
+      { name: 'écarts', color: cssVar('--warn'), values: days.map((d) => d.ecart) },
+      { name: 'non visibles', color: cssVar('--text3'), values: days.map((d) => d.nonVisible) },
+      { name: 'en attente', color: cssVar('--viz-2'), values: days.map((d) => d.pending) },
+      { name: 'atelier', color: cssVar('--transit'), values: days.map((d) => d.stops - d.concordant - d.ecart - d.nonVisible - d.pending) },
+    ],
+    tipTitle: (i) => dayLabel(days[i].day),
+    empty: 'Aucun arrêt déclaré sur la période.',
+    label: 'Arrêts déclarés par jour',
+  });
+
+  // déclarations : déclaré, état de la station à la réception (mesuré), recoupement
+  const ev = st.events || [];
+  $('regEvMeta').textContent = ev.length ? `${ev.length} sur la période, la plus récente d'abord` : '';
+  const host = $('regEvents');
+  host.replaceChildren();
+  if (!ev.length) host.appendChild(el('p', 'vempty', 'Aucune déclaration sur la période.'));
+  else {
+    const t = el('table', 'vtable');
+    const tr = el('tr');
+    for (const h of ['Heure', 'Régulateur', 'Camion', 'Arrêt', 'Déclaré', 'À la réception (mesuré)', 'Recoupement']) tr.appendChild(el('th', null, h));
+    const th = el('thead'); th.appendChild(tr); t.appendChild(th);
+    const tb = el('tbody');
+    for (const e of ev.slice(0, 200)) {
+      const x = el('tr');
+      const [vt, vc] = verdictOf(e);
+      const at = e.state ? `${e.state.bikes} vélos · ${e.state.docks} bornes · ${e.state.dis} HS` : '—';
+      for (const c of [fFull.format(new Date(e.at * 1000)), names(cfg.regulators, e.regulator), names(cfg.trucks, e.truck),
+        e.kind === 'atelier' ? (cfg.atelier?.name || 'Atelier') : `${e.name || ''} · n°${e.sid}`, declText(e), at]) x.appendChild(el('td', null, c));
+      x.appendChild(el('td', vc, vt));
+      tb.appendChild(x);
+    }
+    t.appendChild(tb);
+    host.appendChild(t);
+  }
+  const dlist = dl?.list || [];
+  if (dlist.length) table($('regDelays'), ['Station', 'Vide depuis', 'Dépose déclarée', 'Délai'],
+    dlist.map((d) => [d.name || d.sid, fHour.format(new Date(d.emptySince * 1000)), fFull.format(new Date(d.at * 1000)), `${d.minutes} min`]));
+  else $('regDelays').replaceChildren(el('p', 'vempty', 'Aucune dépose dans une station vide sur la période.'));
+
+  // réglages : remplis une fois (on ne réécrit pas ce que l'utilisateur est en train de taper)
+  const sig = JSON.stringify([cfg.trucks, cfg.regulators, cfg.atelier, cfg.atelierStock]);
+  if (sig !== R.cfgShown && !$('regForm').contains(document.activeElement)) { R.cfgShown = sig; fillRegForm(cfg); }
+}
+
+const rid = (pre) => `${pre}${Date.now().toString(36).slice(-4)}${Math.random().toString(36).slice(2, 5)}`;
+function rowTruck(t = {}) {
+  const r = el('div', 'r');
+  r.dataset.id = t.id || rid('c');
+  const n = el('input'); n.placeholder = 'Nom (ex. Master)'; n.value = t.name || ''; n.setAttribute('aria-label', 'Nom du camion');
+  const c = el('input'); c.type = 'number'; c.min = 1; c.max = 60; c.placeholder = 'vélos'; c.value = t.capacity || ''; c.setAttribute('aria-label', 'Capacité en vélos');
+  const x = el('button', null, '×'); x.type = 'button'; x.title = 'Retirer'; x.onclick = () => r.remove();
+  r.append(n, c, x);
+  return r;
+}
+function rowPerson(p = {}) {
+  const r = el('div', 'r p');
+  r.dataset.id = p.id || rid('r');
+  const n = el('input'); n.placeholder = 'Prénom'; n.value = p.name || ''; n.setAttribute('aria-label', 'Nom du régulateur');
+  const x = el('button', null, '×'); x.type = 'button'; x.title = 'Retirer'; x.onclick = () => r.remove();
+  r.append(n, x);
+  return r;
+}
+function fillRegForm(cfg) {
+  $('regTrucks').replaceChildren(...(cfg.trucks || []).map(rowTruck));
+  $('regPeople').replaceChildren(...(cfg.regulators || []).map(rowPerson));
+  const f = $('regForm');
+  f.atName.value = cfg.atelier?.name || '';
+  f.atAddress.value = cfg.atelier?.address || '';
+  f.atPoint.value = '';
+  const set = Number.isFinite(cfg.atelier?.lat);
+  f.atPoint.placeholder = set ? `${cfg.atelier.lat}, ${cfg.atelier.lon} (laisser vide pour le garder)` : '49.6106, 6.0507';
+  $('regAtSay').textContent = set ? `Point déclaré : ${cfg.atelier.lat}, ${cfg.atelier.lon}. Le plan part de là quand la position du camion est inconnue.`
+    : 'Point non déclaré : le plan ne propose pas d\'arrêt à l\'atelier tant qu\'il manque (l\'adresse seule n\'est jamais géocodée).';
+  $('regAtSay').className = set ? 'txt txt--dim' : 'txt txt--warn';
+  f.atStock.value = cfg.atelierStock?.at ? cfg.atelierStock.ok : '';
+  f.atStock.dataset.was = f.atStock.value;
+}
+function wireReg() {
+  for (const b of document.querySelectorAll('#regRange button')) {
+    b.setAttribute('aria-pressed', b.dataset.r === R.range ? 'true' : 'false');
+    b.addEventListener('click', () => {
+      R.range = b.dataset.r; store.set('vn.regRange', R.range);
+      for (const x of document.querySelectorAll('#regRange button')) x.setAttribute('aria-pressed', x === b ? 'true' : 'false');
+      loadReg();
+    });
+  }
+  $('regAddTruck').addEventListener('click', () => $('regTrucks').appendChild(rowTruck()));
+  $('regAddPerson').addEventListener('click', () => $('regPeople').appendChild(rowPerson()));
+  $('regForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const say = $('regSay');
+    const trucks = [...$('regTrucks').children].map((r) => ({ id: r.dataset.id, name: r.children[0].value.trim(), capacity: +r.children[1].value }))
+      .filter((t) => t.name || t.capacity);
+    const bad = trucks.find((t) => !(t.capacity >= 1 && t.capacity <= 60) || !t.name);
+    if (bad) { say.textContent = `Camion « ${bad.name || '?'} » : un nom et une capacité de 1 à 60 vélos.`; say.className = 'txt txt--warn'; return; }
+    const body = {
+      trucks,
+      regulators: [...$('regPeople').children].map((r) => ({ id: r.dataset.id, name: r.children[0].value.trim() })).filter((p) => p.name),
+      atelier: { name: f.atName.value.trim(), address: f.atAddress.value.trim(), ...(f.atPoint.value.trim() ? { point: f.atPoint.value.trim() } : {}) },
+    };
+    if (f.atStock.value !== f.atStock.dataset.was && f.atStock.value !== '') body.atelierStock = +f.atStock.value;
+    try {
+      await api('reg/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      say.textContent = 'Enregistré. Les Sunton et téléphones le reçoivent à leur prochain échange.'; say.className = 'txt txt--dim';
+      R.cfgShown = '';
+      if (document.activeElement) document.activeElement.blur();
+      loadReg();
+    } catch (err) { say.textContent = err.message; say.className = 'txt txt--warn'; }
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════
+const loaders = { hist: loadHistory, prev: loadForecast, notif: loadNotify, reg: loadReg };
 let current = store.get('vn.tab') || 'hist';
 function select(tab) {
   if (!loaders[tab]) tab = 'hist';
@@ -676,6 +975,7 @@ export function initBoard() {
     try { await api('api/bench/run', { method: 'POST' }); $('benchRun').disabled = true; setTimeout(loadForecast, 8000); } catch (err) { $('benchBody').prepend(el('p', 'txt txt--warn', err.message)); }
   });
   wireNotify();
+  wireReg();
   // l'aperçu autonome change de jeu de données (serveur réel / exemple simulé) : tout relire
   window.addEventListener('vn-board-reload', () => {
     H.info = null; H.stations = []; H.sid = ''; H.last = null;
@@ -685,13 +985,15 @@ export function initBoard() {
   if (DEMO) { const c = $('histCsv'); if (c) c.hidden = true; }
   select(current);
   // nouvelles tranches toutes les 5 min ; redessin à la largeur
-  setInterval(() => { if (!document.hidden && current !== 'notif') { H.info = null; loaders[current](); } }, 5 * 60 * 1000);
+  setInterval(() => { if (!document.hidden && current !== 'notif' && current !== 'reg') { H.info = null; loaders[current](); } }, 5 * 60 * 1000);
+  // régulation : les tournées bougent à chaque arrêt déclaré
+  setInterval(() => { if (!document.hidden && current === 'reg') loadReg(); }, 30 * 1000);
   let rz = 0, lastW = window.innerWidth;
   window.addEventListener('resize', () => {
     if (Math.abs(window.innerWidth - lastW) < 8) return;
     lastW = window.innerWidth;
     clearTimeout(rz);
-    rz = setTimeout(() => { if (current === 'hist') renderHistory(); else if (current === 'prev') loadForecast(); }, 150);
+    rz = setTimeout(() => { if (current === 'hist') renderHistory(); else if (current === 'prev') loadForecast(); else if (current === 'reg') renderReg(); }, 150);
   });
 }
 if (typeof document !== 'undefined') {

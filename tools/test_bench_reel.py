@@ -76,7 +76,14 @@ def main():
     if S and R:
         rel = abs(R["mae60_mur"] - S["mae60"]) / S["mae60"]
         check(rel < 0.015, "le rejeu reproduit le banc simulé : MAE +60 mûre %.4f contre %.4f (%.1f %%)" % (R["mae60_mur"], S["mae60"], 100 * rel))
-        check(R["prof60"] < R["mae60"], "la tendance coûte aussi au rejeu (profil seul %.4f < modèle %.4f), comme au banc" % (R["prof60"], R["mae60"]))
+        # Jusqu'à la 1.3.0 ce contrôle disait l'inverse (« la tendance coûte : profil seul < modèle ») : c'était le
+        # défaut de l'ancienne règle. Le modèle 2 (1.4.0) l'a corrigé, et le contrôle, resté tel quel, échouait.
+        check(R["mae60"] < R["prof60"] and R["mae60"] < R["per60"],
+              "modèle 2 au rejeu : mieux que le profil seul et que la persistance à +60 min (modèle %.4f, profil seul %.4f, persistance %.4f)"
+              % (R["mae60"], R["prof60"], R["per60"]))
+        check((R["mae60"] < R["per60"]) == (S["mae60"] < S["per60"]),
+              "rejeu et banc simulé d'accord sur le sens contre la persistance (rejeu %.4f / %.4f, banc %.4f / %.4f)"
+              % (R["mae60"], R["per60"], S["mae60"], S["per60"]))
     check("écart **significatif**" in txt and "jours, 2 erreurs-types" in txt, "plusieurs semaines : verdicts tranchés")
     check("trop court pour conclure" not in txt.split("## 2.")[1].split("## 3.")[0], "plusieurs semaines : pas de « trop court » sur les comparaisons")
     check(R.get("verite_rappel", 0) >= 85, "vérité construite : ≥ 85 %% des incidents injectés retrouvés (%.1f)" % R.get("verite_rappel", -1))

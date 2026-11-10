@@ -32,6 +32,15 @@ FC_MIN_LOTS = 64 : sur la période de test, les seuils 16 et 32 donnent les mêm
 (section 7b). Seul le seuil 8 diffère : il fait perdre +0,108 à +240 min, à cause du dimanche 01/11. Ce choix
 ne déplace donc pas les chiffres de test.
 
+## Mesure hors échantillon en continu (depuis la 1.4.1)
+
+Cette mesure manquante se fait maintenant toute seule, sur le parc réel : le serveur en ligne note chaque
+prévision avec et sans les couples par station, sur les mêmes relevés, et publie l'écart, son intervalle à 95 %
+(une journée = une grappe) et un verdict après 7 journées complètes — onglet Prévisions, `GET /api/forecast`
+(`shadow`), `online/lib/forecast.mjs` (`shadowVerdict`). Toutes ces journées sont postérieures au commit
+f1b17f7 : c'est la mesure propre que cette note réclame. Tant que le verdict n'est pas « gagne », le gain des
+couples par station annoncé plus bas (1,2 à 1,9 % de MAE) reste une mesure **dans** l'échantillon.
+
 ## Réfuté ou non retenu
 
 Tous les candidats sont en sections 7a à 7d, par période. Ils sont appris en ligne comme le cœur, sur les

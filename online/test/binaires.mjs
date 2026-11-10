@@ -10,6 +10,7 @@ export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const BINAIRES = {
   bench_prevision: join(ROOT, 'sim', 'bench_prevision'),
   sync_sim: join(ROOT, 'sim', 'sync_sim'),
+  reg_sim: join(ROOT, 'sim', 'reg_sim'),          // le Sunton du camion (rôle régulateur) : test/reg.e2e.mjs
 };
 
 export function exigerBinaires(noms = Object.keys(BINAIRES)) {

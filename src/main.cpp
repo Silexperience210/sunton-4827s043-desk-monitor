@@ -17,6 +17,7 @@
 #include "platform/platform.h"
 #include "core/settings.h"
 #include "core/sync.h"
+#include "core/regul.h"
 #include "core/model.h"
 #include "hal/board.h"
 #include "hal/display.h"
@@ -65,6 +66,13 @@ void setup() {
   boot::stage(boot::S_SETTINGS, "Lecture des r\xC3\xA9glages");
   vn::settingsLoad();
   vn::syncCfgLoad();                                // serveur en ligne (/vn_sync.cfg), facultatif
+  vn::regCfgLoad();                                 // rôle : poste de supervision ou Sunton du camion (/vn_reg.cfg)
+  if (vn::g_regCfg.role == vn::ROLE_REGUL) {
+    // Gestes pas encore envoyés et dernier état reçu : un redémarrage (contact coupé) ne perd rien
+    bool q = vn::regQueueLoad(vn::g_reg), s = vn::regSnapLoad(vn::g_reg);
+    Serial.printf("[regul] r\xC3\xB4le r\xC3\xA9gulateur \xC2\xB7 %u geste(s) en file%s \xC2\xB7 %s\n", (unsigned)vn::g_reg.nq, q ? "" : " (aucune file)",
+                  s ? "dernier \xC3\xA9tat relu" : "aucun \xC3\xA9tat gard\xC3\xA9");
+  }
   plat::setBacklight(vn::effectiveBrightness(0));
 
   boot::stage(boot::S_MEMORY, "R\xC3\xA9servation de la m\xC3\xA9moire");

@@ -70,6 +70,8 @@ function* scenario(t0, cycles) {
       yield { k: 'ingest', t: t + 1, feed: FEED.STATUS, got: true, code: 200, body: statusAt(t + 1), dur: 300, cyc: 900 };
     }
     yield { k: 'fetching', on: false, t: t + 2 };
+    // une intervention déclarée de temps en temps (registre de régulation) : rejouée telle quelle par les jumeaux
+    if (k % 211 === 100) yield { k: 'iv', t: t + 2, sid: st0.data.stations[k % 7].station_id, at: t - 30 };
     if (!wxAt || t - wxAt >= 900) {
       wxAt = t;
       yield k % 50 === 3 ? { k: 'ingest', t: t + 3, feed: FEED.WEATHER, got: false, code: 503, body: '', dur: 2000, cyc: 0 }
@@ -83,6 +85,7 @@ function apply(e, ev, ms) {
     case 'ingest': return e.ingest(ev.feed, ev.got, ev.code, ev.body, ev.dur, ev.cyc);
     case 'cycle': return e.cycleEnd(ev.ok);
     case 'fetching': return e.setFetching(ev.on);
+    case 'iv': return e.intervention(ev.sid, ev.at);
   }
 }
 const files = ['/vn_prof.bin', '/vn_hist.bin', '/vn_days.bin', '/vn_live.bin'];
@@ -133,7 +136,21 @@ const a2 = saved(server, tEnd, ms), c2 = saved(late, tEnd, ms);
 for (const f of files) ok(same(a2[f], c2[f]), `${f} diffère entre le serveur et le jumeau tardif`);
 ok(JSON.stringify(server.summary()) === JSON.stringify(late.summary()), 'résumé identique pour le jumeau tardif');
 
-console.log('3. chemin de la carte : Model::load sur les seuls fichiers de la carte');
+console.log('3. témoin « couple de la classe » : aligné sur les prévisions, identique sur le serveur et le jumeau');
+{
+  const fs = server.forecast(), ft = twin.forecast();
+  ok(JSON.stringify(fs) === JSON.stringify(ft), 'prévisions notées et témoin identiques sur le serveur et le jumeau');
+  ok(Array.isArray(fs.cl) && fs.cl.length === fs.st.length && fs.st.every((v, i) => (v === null) === (fs.cl[i] === null)),
+    `un témoin par station prévue, null aux mêmes places (${fs.cl?.length} pour ${fs.st.length})`);
+  const rows = fs.st.map((v, i) => [v, fs.cl[i]]).filter(([v]) => v);
+  ok(rows.length > 100 && rows.every(([v, c]) => c.length === 3 && c.every((x) => Number.isInteger(x) && x >= 0 && x <= v[13])),
+    `témoin : trois entiers par station (+60, +120, +240 min), entre 0 et la capacité (${rows.length} stations)`);
+  const differ = rows.filter(([v, c]) => c[0] !== v[3] || c[1] !== v[4] || c[2] !== v[5]).length;
+  console.log(`   ${differ} station(s) sur ${rows.length} où le couple par station change un chiffre affiché`);
+  ok(differ < rows.length, 'le témoin reprend le chiffre du modèle là où le couple ne change rien');
+}
+
+console.log('4. chemin de la carte : Model::load sur les seuls fichiers de la carte');
 const card = await loadEngine(core, quiet);
 card.clock(tEnd, ms); card.init(); card.settings({ refreshSec: 60 });
 for (const f of ['/vn_prof.bin', '/vn_hist.bin', '/vn_days.bin']) card.putFile(f, a2[f]);
@@ -147,6 +164,50 @@ ok(cs.totals.bikes === ss.totals.bikes && cs.totals.docks === ss.totals.docks, '
 ok(cs.learnSamples === ss.learnSamples, `même apprentissage (${cs.learnSamples} contre ${ss.learnSamples})`);
 ok(cs.daysKept === ss.daysKept, 'mêmes jours résumés');
 ok(cs.histMinutes === ss.histMinutes, `même profondeur d'historique (${cs.histMinutes} contre ${ss.histMinutes} min)`);
+
+console.log('5. état vivant : prévisions d\'apprentissage en attente gardées, et fichier d\'une version 1 encore relu');
+{
+  // En-tête LiveHdr : version à l'octet 4, nSt à 6, taille d'une prévision en attente à 18 (0 en version 1).
+  // Le bloc des prévisions en attente est en fin de fichier : 17 dates, 17 classes, la tête, puis 17 lots × nSt.
+  const live = a2['/vn_live.bin'];
+  const dv = new DataView(live.buffer, live.byteOffset, live.byteLength);
+  const nSt = dv.getUint16(6, true), szIssue = dv.getUint16(18, true), PEND = 17;
+  ok(dv.getUint16(4, true) === 3 && szIssue > 0, `état vivant en version 3 avec les prévisions en attente (version ${dv.getUint16(4, true)}, ${szIssue} o)`);
+  // fin du fichier : [prévisions en attente] puis [heure de la dernière intervention déclarée, par station]
+  const ivBytes = nSt * 8 + 4, tail = PEND * 8 + PEND + 4 + szIssue * PEND * nSt + ivBytes;      // + le compte des prévisions non jugées
+  const ivs = [];
+  for (let j = 0; j < nSt; j++) ivs.push(Number(dv.getBigInt64(live.length - ivBytes + j * 8, true)));
+  ok(ivs.filter((t) => t > 0).length >= 5 && ivs.every((t) => t === 0 || (t > t0 && t <= tEnd)) && server.summary().fcIvSkipped > 0,
+    `interventions déclarées gardées dans l'état vivant (${ivs.filter((t) => t > 0).length} stations) ; ${server.summary().fcIvSkipped} prévisions d'apprentissage non jugées`);
+  {
+    // version 2 fabriquée (1.4.1 – 1.5.0) : sans le bloc des interventions
+    const v2 = Buffer.from(live.subarray(0, live.length - ivBytes));
+    v2.writeUInt16LE(2, 4);
+    const mid = await loadEngine(core, quiet);
+    mid.clock(tEnd, ms); mid.init(); mid.settings({ refreshSec: 60 });
+    for (const f of ['/vn_prof.bin', '/vn_hist.bin', '/vn_days.bin']) mid.putFile(f, a2[f]);
+    mid.putFile('/vn_live.bin', v2);
+    ok(mid.load(true) === 3, 'un état vivant de version 2 (sans interventions) est encore relu');
+  }
+  const pendT = [];
+  for (let k = 0; k < PEND; k++) pendT.push(Number(dv.getBigInt64(live.length - tail + k * 8, true)));
+  ok(pendT.filter((t) => t > tEnd - 4 * 3600 - 900 && t <= tEnd).length >= 1, 'des lots émis dans les 4 dernières heures sont dans le fichier');
+  // version 1 fabriquée : même fichier sans le bloc, version et taille remises comme en 1.4.0
+  const v1 = Buffer.from(live.subarray(0, live.length - tail));
+  v1.writeUInt16LE(1, 4); v1.writeUInt16LE(0, 18);
+  const old = await loadEngine(core, quiet);
+  old.clock(tEnd, ms); old.init(); old.settings({ refreshSec: 60 });
+  for (const f of ['/vn_prof.bin', '/vn_hist.bin', '/vn_days.bin']) old.putFile(f, a2[f]);
+  old.putFile('/vn_live.bin', v1);
+  ok(old.load(true) === 3, 'un état vivant de version 1 (sans prévisions en attente) est encore relu après la mise à jour');
+  ok(old.summary().totals.bikes === server.summary().totals.bikes, 'et rend les mêmes totaux');
+  // fichier amputé : refusé (taille), les trois fichiers de la carte restent relus
+  const cut = await loadEngine(core, quiet);
+  cut.clock(tEnd, ms); cut.init(); cut.settings({ refreshSec: 60 });
+  for (const f of ['/vn_prof.bin', '/vn_hist.bin', '/vn_days.bin']) cut.putFile(f, a2[f]);
+  cut.putFile('/vn_live.bin', Buffer.from(live.subarray(0, live.length - 7)));
+  ok(cut.load(true) === 1, 'un état vivant amputé est refusé, les fichiers de la carte restent relus');
+}
 
 console.log(`\n${checks} vérifications, ${fails} échec(s)`);
 process.exit(fails ? 1 : 0);

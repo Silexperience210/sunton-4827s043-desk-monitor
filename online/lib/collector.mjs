@@ -93,6 +93,7 @@ export class Collector {
       case 'ingest': r = this.e.ingest(ev.feed, ev.got, ev.code, ev.body, ev.dur, ev.cyc); break;
       case 'cycle': this.e.cycleEnd(ev.ok); break;
       case 'fetching': this.e.setFetching(ev.on); break;
+      case 'iv': r = this.e.intervention(ev.sid, ev.at); break;   // intervention déclarée (lib/regulation.mjs)
       case 'reset': break;                   // l'état a été rechargé : les jumeaux le reprennent
     }
     this.events.push(ev);

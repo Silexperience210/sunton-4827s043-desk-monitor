@@ -349,6 +349,11 @@ const BIN = BINAIRES.bench_prevision;
     ok(md.status === 200 && /## 1\. Prévision/.test(md.text), 'rapport Markdown servi');
     const fc = JSON.parse((await call('/api/forecast?days=7')).text);
     ok(Array.isArray(fc.days) && fc.horizons.length === 5, 'rapport des prévisions servi');
+    ok(fc.shadow?.horizons?.length === 3 && fc.errCheck && fc.risk?.empty?.bins?.length === 6 && fc.risk.full.bins.length === 6 && fc.target && 'dayTypes' in fc
+      && /^\d{4}-\d{2}-\d{2}$/.test(fc.calendar?.schoolKnownTo || '') && Array.isArray(fc.calendar.errors) && !JSON.stringify(fc).includes('"tables"'),
+      'rapport : témoin, erreur annoncée, risque (6 tranches par côté), besoin, types de jour, calendrier — sans la table interne');
+    ok(fc.riskNow && fc.riskNow.empty === null && fc.riskNow.full === null && fc.risk.empty.verdict !== 'vérifiée',
+      `risque en direct masqué tant que la probabilité n'est pas vérifiée (« ${fc.risk.empty.verdict} »)`);
   } finally {
     srv.kill('SIGTERM');
     await new Promise((r) => srv.on('exit', r));

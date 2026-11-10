@@ -161,6 +161,43 @@ sur l'archive, en partant du profil du plus ancien instantané (le banc écarte 
 connaît déjà : pas de fuite). Rapport complet (`data/banc/AAAA-MM-JJ.md`) et extrait affiché sur la page :
 MAE par horizon, par jour, et les verdicts appariés. Il faut au moins deux instantanés (une journée).
 
+### Couples par station : la preuve sur le parc (1.4.1)
+
+Le modèle 2 choisit, à +60, +120 et +240 min, un couple de coefficients propre à chaque station. Ce levier a été
+livré sans mesure hors échantillon (`docs/mesures-modele.md`). Le serveur la fait donc lui-même, en continu : à
+chaque quart d'heure noté, il garde aussi le **témoin** — la même prévision avec le seul couple de la classe de
+jour (clé `cl` du journal `prevision/AAAA-MM-JJ.jsonl`) — et note les deux sur les mêmes relevés.
+
+`GET /api/forecast` → `shadow` : par horizon, MAE des deux, écart apparié (négatif = les couples par station se
+trompent moins), intervalle à 95 % et verdict. Une journée complète = une grappe (les quarts d'heure d'un même
+jour ne sont pas indépendants) ; intervalle de Student ; **aucun verdict avant 7 journées complètes** (« en
+cours »), puis « gagne », « perd » ou « non concluant ». Si le verdict est « perd » ou reste « non concluant »,
+le levier se coupe dans le code (`g_pred.fcStation`, `src/core/model.h`) : le témoin devient alors la prévision.
+
+### Quatre vérifications de plus (1.5.0)
+
+Toutes dans `GET /api/forecast` et dans l'onglet Prévisions ; aucune ne change ce que les écrans affichent, sauf la
+liste du risque, qui n'apparaît qu'une fois vérifiée. Verdicts par journées (une journée = une grappe), jamais
+avant 7 journées complètes. Code : `online/lib/forecast.mjs`.
+
+| clé | question | réponse |
+|---|---|---|
+| `errCheck` | L'erreur que la fiche annonce (« ± 1,2 vélo à +1 h ») est-elle celle qu'on fait ? | erreur constatée ÷ annoncée ; « fidèle » si l'intervalle tient entre 0,85 et 1,15 |
+| `risk`, `riskNow` | Peut-on annoncer un risque de rupture dans l'heure en pourcentage ? | fréquence des situations passées semblables, annoncée avec les seules journées précédentes, puis comparée au constaté par tranche ; `riskNow` (liste en direct) reste `null` tant que ce n'est pas « vérifiée » |
+| `dayTypes` | Le modèle se trompe-t-il plus pendant les vacances scolaires ou un événement ? | MAE à +1 h du modèle et de la persistance par type de jour |
+| `target` | Viser 50 % à +1 h, ou garder autant de marge des deux côtés sur 4 h ? | tranches vides ou pleines sur les 4 h suivantes si le déplacement avait été fait — une **estimation** (flux supposés inchangés) |
+
+**Événements et vacances** : le calendrier officiel des vacances scolaires est dans `online/lib/calendrier.mjs`
+(2026/2027 et 2027/2028). Les événements se **déclarent** dans `<données>/calendrier.json`, relu à chaque
+rapport :
+
+```json
+{ "evenements": [ { "du": "2027-06-12", "au": "2027-06-13", "nom": "exemple : un événement saisi à la main" } ],
+  "vacances":   [ { "du": "2028-07-14", "au": "2028-09-14", "nom": "été" } ] }
+```
+
+Une entrée mal formée est ignorée et nommée sur la page ; rien n'est corrigé en silence.
+
 ## Notifications (onglet Notifications)
 
 Sur le téléphone, via **ntfy** (application libre, iPhone et Android ; serveur public ntfy.sh ou privé,
@@ -182,7 +219,20 @@ Garde-fous : au démarrage, les ruptures déjà en cours ne sont pas annoncées 
 (les suivants attendent et partent groupés) ; filtre de stations. Un **webhook** générique reçoit le même
 objet JSON (Home Assistant, n8n…).
 
-## Brancher un Sunton (firmware 1.3.0)
+## Régulation (onglet Régulation, `/regulateur.html`, Sunton du camion)
+
+Le registre des **interventions déclarées** et le **plan des tournées** : mode d'emploi, captures, règles et API
+dans [`docs/regulation.md`](../docs/regulation.md). En bref :
+
+- onglet **Régulation** : camions et capacités, régulateurs, point exact de l'atelier (coordonnées ou lien
+  collé, jamais géocodé), stock déclaré ; tournées en cours et leur plan (**estimé**) ; déclarations et leur
+  recoupement avec le flux (déclaré et observé côte à côte) ; indicateurs, chacun avec sa classe ;
+- **Sunton du camion** : Réglages → Rôle → Régulateur ; l'onglet « Tournée » montre le prochain arrêt et fait
+  valider ce qui a vraiment été fait ; tout attend en flash quand le partage de connexion coupe ;
+- **téléphone** : `http://<machine>:8790/regulateur.html`, même API, même file hors connexion, peut rejoindre la
+  tournée du camion.
+
+## Brancher un Sunton (firmware 1.3.0 et suivants)
 
 Réglages → **Synchro en ligne** → Serveur : saisir `http://<machine>:8790` (ou, en série,
 `sync url http://<machine>:8790`, puis `sync jeton …` si `VN_TOKEN` est défini). Sans `VN_TOKEN`, la carte
@@ -236,6 +286,9 @@ origine (`403`), écriture refusée (`403`) sauf en local (127.0.0.1) ou avec `V
 | `GET /api/bench`, `/api/bench/report.md` | public | banc de nuit : état, rapport |
 | `POST /api/bench/run` | protégé | banc de nuit : lancement |
 | `GET`/`POST /api/notify`, `POST /api/notify/test`, `POST /api/notify/digest[?send=1]` | protégé | notifications : réglages, test, résumé du matin |
+| `GET`/`POST /reg/config`, `GET /reg/tour`, `POST /reg/tour/start`, `/reg/event`, `/reg/tour/end` | protégé | régulation : réglages, tournée de l'appareil (`X-VN-Device`), déclarations — détail dans [`docs/regulation.md`](../docs/regulation.md) |
+| `GET /reg/plan[?force=1]`, `GET /reg/state?days=7` | protégé | plans des tournées ouvertes ; tournées, déclarations et indicateurs |
+| `GET /regulateur.html` | public | page du régulateur (téléphone) |
 
 ## Affiner les prévisions avec l'archive
 
@@ -254,11 +307,15 @@ online/engine/build.sh            # reconstruit public/vn-core.wasm et public/vn
 node online/test/replication.test.mjs   # serveur ⇄ jumeau : mêmes octets, 3 jours simulés
 cd sim && make sync_sim && cd .. && node online/test/sync.e2e.mjs   # carte simulée ⇄ vrai serveur
 make -C sim bench_prevision && node online/test/features.test.mjs  # historique, prévisions, notifications, banc
+node online/test/regulation.test.mjs                               # registre, recoupement, plan, HTTP
+make -C sim reg_sim && node online/test/reg.e2e.mjs                # Sunton du camion simulé ⇄ vrai serveur
 docker build -f online/Dockerfile -t velohnav-ops-online .          # image (depuis la racine du dépôt)
 ```
 
 Fichiers : `server.mjs` (HTTP, sauvegarde, archive, import, tâches de nuit), `lib/collector.mjs` (la tâche
 réseau de la carte), `lib/sync.mjs` (instantanés, manifeste, registre), `lib/history.mjs` (historique long,
 import d'archive), `lib/forecast.mjs` (journal et note des prévisions), `lib/bench.mjs` (banc de nuit),
-`lib/notify.mjs` (ntfy, webhook, résumé du matin), `engine/` (API C du moteur, plateforme WebAssembly,
-jumeau LVGL), `public/` (page, tableau de bord `board.js`, séries `vn-series.js`, moteurs, enveloppe JS).
+`lib/notify.mjs` (ntfy, webhook, résumé du matin), `lib/regulation.mjs` (registre, recoupement, indicateurs),
+`lib/planner.mjs` (plan des tournées, estimé), `engine/` (API C du moteur, plateforme WebAssembly,
+jumeau LVGL), `public/` (page, tableau de bord `board.js`, séries `vn-series.js`, page du régulateur `regulateur.html`,
+moteurs, enveloppe JS).

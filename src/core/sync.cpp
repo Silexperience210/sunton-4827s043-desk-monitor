@@ -6,6 +6,7 @@
 #include "../platform/platform.h"
 #include <ArduinoJson.h>
 #include <string.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -59,6 +60,41 @@ bool syncNormalizeUrl(const char * in, char * out, size_t n) {
   if (L <= scheme || t[scheme] == '/' || L >= n) { out[0] = 0; return false; }   // pas d'hôte
   memcpy(out, t, L + 1);
   return true;
+}
+
+bool syncTokenSafe(const char * url) {
+  if (!url) return false;
+  if (!strncmp(url, "https://", 8)) return true;
+  if (strncmp(url, "http://", 7)) return false;
+  const char * p = url + 7;
+  char h[96];
+  size_t n = 0;
+  if (*p == '[') {                                          // IPv6 littérale
+    for (p++; *p && *p != ']' && n + 1 < sizeof(h); p++) h[n++] = (char)tolower((unsigned char)*p);
+    h[n] = 0;
+    if (*p != ']') return false;
+    if (!strcmp(h, "::1") || !strncmp(h, "fe8", 3) || !strncmp(h, "fe9", 3) || !strncmp(h, "fea", 3) || !strncmp(h, "feb", 3)) return true;
+    return (h[0] == 'f' && (h[1] == 'c' || h[1] == 'd')) && n >= 3;
+  }
+  for (; *p && *p != ':' && *p != '/' && n + 1 < sizeof(h); p++) h[n++] = (char)tolower((unsigned char)*p);
+  h[n] = 0;
+  if (!n || (*p && *p != ':' && *p != '/')) return false;   // hôte vide ou trop long
+  // IPv4 littérale : quatre nombres, rien d'autre
+  unsigned a, b, c, d;
+  char rest;
+  if (sscanf(h, "%3u.%3u.%3u.%3u%c", &a, &b, &c, &d, &rest) == 4 && strspn(h, "0123456789.") == n) {
+    if (a > 255 || b > 255 || c > 255 || d > 255) return false;
+    return a == 10 || a == 127 || (a == 192 && b == 168) || (a == 172 && b >= 16 && b <= 31) || (a == 169 && b == 254)
+           || (a == 100 && b >= 64 && b <= 127);
+  }
+  if (strspn(h, "0123456789.") == n) return false;          // chiffres et points sans être une IPv4 : refusé
+  if (!strchr(h, '.')) return true;                         // nom du réseau local (« umbrel », « localhost »)
+  static const char * const SUF[] = { ".local", ".lan", ".home", ".home.arpa", ".internal", ".ts.net" };
+  for (const char * suf : SUF) {
+    const size_t L = strlen(suf);
+    if (n > L && !strcmp(h + n - L, suf)) return true;
+  }
+  return false;
 }
 
 bool syncCfgLoad() {
@@ -243,6 +279,13 @@ int syncRun(SyncIo & io, const char * baseUrl, int64_t now, bool allowPush, Sync
   SyncLocal l;
   syncScanLocal(l);
   syncLocalHeader(l, io.localHdr, sizeof(io.localHdr));
+  // 0. Le jeton ne part pas en clair hors du réseau local : pas de requête du tout, et la raison à l'écran
+  if (g_sync.token[0] && !syncTokenSafe(baseUrl)) {
+    st.state = SS_FAIL; st.code = 0; st.at = now;
+    snprintf(st.text, sizeof(st.text), "jeton non envoy\xC3\xA9 en clair : passer l'adresse en https");
+    plat::logf("[sync] %s : %s (http hors r\xC3\xA9seau local)", baseUrl, st.text);
+    return -1;
+  }
   // 1. Manifeste
   char url[224];
   snprintf(url, sizeof(url), "%s/sync/manifest", baseUrl);
@@ -260,6 +303,14 @@ int syncRun(SyncIo & io, const char * baseUrl, int64_t now, bool allowPush, Sync
     else if (code > 0) snprintf(st.text, sizeof(st.text), "serveur : r\xC3\xA9ponse %d%s", code, code == 401 ? " (jeton requis)" : "");
     else snprintf(st.text, sizeof(st.text), "serveur injoignable (code %d)", code);
     plat::logf("[sync] %s : %s", url, st.text);
+    return -1;
+  }
+  // Les fichiers se lisent à l'adresse que le serveur annonce : même règle pour elle (derrière un tunnel, un
+  // serveur sans VN_PUBLIC_URL annonce « http://<nom public> » — le jeton y partirait en clair)
+  if (g_sync.token[0] && !syncTokenSafe(m.base)) {
+    st.state = SS_FAIL; st.code = 0; st.at = now;
+    snprintf(st.text, sizeof(st.text), "le serveur annonce une adresse http publique : r\xC3\xA9gler VN_PUBLIC_URL (https)");
+    plat::logf("[sync] %s : %s", m.base, st.text);
     return -1;
   }
   plat::logf("[sync] serveur \xC2\xAB %s \xC2\xBB v%s, instantan\xC3\xA9 %s", m.name, m.fw, m.id);

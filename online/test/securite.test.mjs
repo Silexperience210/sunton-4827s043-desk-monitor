@@ -106,6 +106,15 @@ try {
     ok(dir['connect-src']?.join(' ') === "'self'" && dir['base-uri']?.join(' ') === "'none'", `connect-src ${dir['connect-src']?.join(' ') || 'absent'}, base-uri ${dir['base-uri']?.join(' ') || 'absent'}`);
   }
 
+  // régulation (/reg/…) : déclarations nominatives — mêmes règles que les autres routes protégées
+  const evt = JSON.stringify({ id: 'e-secu-1', kind: 'station', sid: '1', took: { ok: 1 } });
+  ok((await req(P, { method: 'POST', path: '/reg/event', headers: lanJson, body: evt })).status === 403, 'déclaration d\'intervention depuis le réseau local sans jeton : 403');
+  ok((await req(P, { method: 'POST', path: '/reg/config', headers: lanJson, body: '{"trucks":[]}' })).status === 403, 'réglages de régulation sans jeton : 403');
+  ok((await req(P, { method: 'POST', path: '/reg/tour/start', headers: { host: LAN, origin: EVIL, 'content-type': 'text/plain' }, body: '{}' })).status === 403, 'début de tournée depuis une page tierce : 403');
+  ok((await req(P, { method: 'POST', path: '/reg/event', headers: { 'content-type': 'text/plain' }, body: evt })).status === 415, 'déclaration en text/plain, même en local : 415');
+  ok((await req(P, { path: '/reg/state', headers: { host: LAN, 'sec-fetch-site': 'cross-site' } })).status === 403, 'registre lu par une page tierce : 403');
+  ok((await req(P, { path: '/reg/state' })).json?.events?.length === 0, 'aucune de ces déclarations n\'a été enregistrée');
+
   console.log('B1. VN_OPEN=1 : écritures ouvertes au réseau local, CSRF toujours refusé');
   const s1 = await start('ouvert', { VN_OPEN: '1' });
   ok((await req(s1.port, { method: 'POST', path: '/api/notify', headers: lanJson, body: '{"digest":""}' })).status === 200, 'réglages depuis le réseau local avec VN_OPEN=1');
@@ -132,6 +141,10 @@ try {
   ok((await req(Q, { method: 'POST', path: '/api/bench/run', headers: { authorization: 'Bearer jeton-test' } })).status === 200, 'POST /api/bench/run avec le jeton : 200');
   ok((await req(Q, { method: 'POST', path: '/sync/zz/upload/vn_prof.bin', headers: { authorization: 'Bearer jeton-test', 'content-type': 'text/plain' }, body: 'x' })).status === 415,
     'envoi de carte en text/plain, même avec le jeton : 415');
+  ok((await req(Q, { path: '/reg/state' })).status === 401 && (await req(Q, { path: '/reg/tour' })).status === 401 && (await req(Q, { path: '/reg/plan' })).status === 401,
+    'registre, tournée et plan de régulation sans jeton : 401');
+  ok((await req(Q, { method: 'POST', path: '/reg/event', headers: { 'content-type': 'application/json', authorization: 'Bearer jeton-faux' }, body: '{}' })).status === 401, 'déclaration, faux jeton : 401');
+  ok((await req(Q, { path: '/reg/state', headers: { authorization: 'Bearer jeton-test' } })).status === 200, 'registre avec le jeton : 200');
   ok((await req(Q, { path: '/api/history' })).status === 200, 'lecture publique sans jeton');
 
   console.log('c1. README : l\'accès de chaque route du tableau « API » est celui que le serveur applique');

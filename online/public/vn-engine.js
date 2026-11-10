@@ -100,6 +100,9 @@ export class Engine {
   daysStation(i) { this.x.vn_days_station_json(i | 0); return JSON.parse(this._outText()); }
   digest(day) { this.x.vn_digest_json(day | 0); return JSON.parse(this._outText()); }
   localDay(t) { return this.x.vn_local_day(t); }
+  intervention(sid, t) { return this._with(String(sid), (p) => this.x.vn_intervention(p, t)); }   // intervention déclarée (1 = station connue)
+  dayClass(t) { return this.x.vn_day_class(t); }              // 0 = ouvré, 1 = week-end ou férié (classe du modèle)
+  curves() { this.x.vn_curves_json(); return JSON.parse(this._outText()); }   // courbes prévues 0–240 min par station
 
   // ── jumeau d'écran ──
   uiInit() { return this.x.vn_ui_init() === 1; }

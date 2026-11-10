@@ -110,6 +110,9 @@ bool Model::init() {
   fcL = (FcLearn *)plat::psAlloc(sizeof(FcLearn));
   fcPend = (FcIssue *)plat::psAlloc(sizeof(FcIssue) * FC_PEND * VN_MAX_ST);
   fcLotErr = (uint32_t *)plat::psAlloc(sizeof(uint32_t) * FC_NG);
+  ivAt = (int64_t *)plat::psAlloc(sizeof(int64_t) * VN_MAX_ST);
+  if (!ivAt) return false;
+  memset(ivAt, 0, sizeof(int64_t) * VN_MAX_ST);
   fcS = (FcSt *)plat::psAlloc(sizeof(FcSt) * VN_MAX_ST);
   if (!fcL || !fcPend || !fcLotErr || !fcS) return false;
   memset(fcL, 0, sizeof(FcLearn));
@@ -118,6 +121,8 @@ bool Model::init() {
   memset(fcPendT, 0, sizeof(fcPendT));
   memset(fcPendC, 0, sizeof(fcPendC));
   fcPendHead = -1;
+  if (ivAt) memset(ivAt, 0, sizeof(int64_t) * VN_MAX_ST);
+  fcIvSkipped = 0;
   fcSelect();
   if (!st || !ringT || !ring || !net || !recT || !rec || !prof || !cellN || !alerts || !log || !dispSince) return false;
   memset(log, 0, sizeof(AlertLog) * VN_ALERT_LOG);
@@ -806,6 +811,39 @@ void Model::fcCoefAt(int cls, float hMin, float & a, float & b, int s) const {
   a = A[FC_NH - 1]; b = B[FC_NH - 1];                // au-delà de 4 h : non mesuré, gardé tel quel
 }
 
+void Model::noteIntervention(int i, int64_t t) {
+  if (!ivAt || i < 0 || i >= n || t <= 0) return;
+  if (t > ivAt[i]) ivAt[i] = t;                           // la plus récente : c'est elle qui borne les fenêtres encore ouvertes
+}
+
+bool Model::fcErrAt(int i, int cls, int h, int64_t now, FcErr & e) const {
+  e.mae = 0; e.n = 0; e.own = false;
+  if (!fcL || i < 0 || i >= n || cls < 0 || cls >= FC_NC || h < 0 || h >= FC_NH) return false;
+  float p0, n0, ph, nh;
+  // sans profil à t ou à t + h, la station n'émet aucune prévision d'apprentissage et se prévoit par la persistance
+  if (!profileAt(i, now, p0, n0) || !profileAt(i, now + (int64_t)FC_HMIN[h] * 60, ph, nh)) return false;
+  // le couple appliqué à cet horizon d'ancrage (fcCoefAt le rend tel quel), ramené aux indices de la grille
+  float a, b;
+  fcCoefAt(cls, (float)FC_HMIN[h], a, b, i);
+  const int ia = (int)lroundf(a * 10.f), ib = (int)lroundf(b * 20.f);
+  if (ia < 0 || ia >= FC_NA || ib < 0 || ib >= FC_NB) return false;
+  if (h >= FC_SH0 && fcS) {
+    const FcSt & S = fcS[i];
+    const float w = S.w[cls][h - FC_SH0];
+    int ja = -1, jb = -1;
+    for (int k = 0; k < FC_SNA; k++) if (FC_SA[k] == ia) ja = k;
+    for (int k = 0; k < FC_SNB; k++) if (FC_SB[k] == ib) jb = k;
+    if (ja >= 0 && jb >= 0 && w >= FC_ERR_MIN) {
+      e.mae = S.err[cls][h - FC_SH0][ja * FC_SNB + jb] / w; e.n = w; e.own = true;
+      return true;
+    }
+  }
+  const float w = fcL->w[cls][h];
+  if (!(w >= FC_ERR_MIN)) return false;
+  e.mae = fcL->err[cls][h][ia * FC_NB + ib] / w; e.n = w;
+  return true;
+}
+
 // Couple appliqué par (classe, horizon) : erreur moyenne minimale + FC_PEN·(a + b), le premier dans l'ordre de la
 // grille (a croissant, puis b croissant) en cas d'égalité — donc le plus proche de la persistance.
 void Model::fcSelect() {
@@ -873,6 +911,8 @@ void Model::fcLearnSlot(int64_t slotT, int64_t now) {
     for (int i = 0; i < n; i++) {
       const FcIssue & e = fcPend[(size_t)lb * VN_MAX_ST + i];
       if (e.cur == 255 || !(e.use & (1u << h)) || row[i] == 255) continue;
+      // intervention déclarée entre l'émission (tranche `at`) et la fin de la tranche jugée : non jugée
+      if (ivAt && ivAt[i] >= at && ivAt[i] < slotT + VN_RING_STEP_S) { fcIvSkipped++; continue; }
       const int32_t y = row[i], hi = (int32_t)e.cap * FC_UNIT, x1 = e.x1[h], x2 = e.x2[h];
       for (int ia = 0; ia < FC_NA; ia++) {
         const int32_t base = (int32_t)e.cur * FC_UNIT + 2 * ia * x1;
