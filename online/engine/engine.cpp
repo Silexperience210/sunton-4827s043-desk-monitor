@@ -167,7 +167,8 @@ EXPORT(vn_recompute) void vn_recompute() { if (g_model.lastUpdate) g_model.recom
 // propre au moteur en ligne (le firmware ne le lit pas) : il n'est échangé qu'entre deux copies du
 // MÊME module, d'où les tailles de structure dans l'en-tête — un module différent le refuse.
 static const uint32_t LIVE_MAGIC = 0x314C4E56;   // "VNL1"
-static const uint16_t LIVE_VER = 2;            // 2 : + prévisions d'apprentissage en attente (modèle 2, fcPend)
+static const uint16_t LIVE_VER = 3;            // 2 : + prévisions d'apprentissage en attente (modèle 2, fcPend) ;
+                                               // 3 : + heure de la dernière intervention déclarée par station (ivAt)
 static const uint16_t LIVE_VER_NOPEND = 1;     // 1.3.0 – 1.4.0 : relu sans les prévisions en attente
 struct LiveHdr {
   uint32_t magic;
@@ -244,12 +245,15 @@ static void liveSerialize(std::string & o) {
   { int32_t hd = g_model.fcPendHead; o.append((const char *)&hd, sizeof(hd)); }
   for (int k = 0; k < FC_PEND; k++)
     for (int i = 0; i < n; i++) { FcIssue c = cleanIssue(g_model.fcPend[(size_t)k * VN_MAX_ST + i]); o.append((const char *)&c, sizeof(c)); }
+  // Interventions déclarées : elles décident de ce qui sera jugé dans les 4 h qui suivent (Model::fcLearnSlot)
+  o.append((const char *)g_model.ivAt, sizeof(int64_t) * n);
+  o.append((const char *)&g_model.fcIvSkipped, sizeof(uint32_t));     // et leur compte, pour qu'un jumeau publie le même résumé
 }
 
 static bool liveLoad(const std::vector<uint8_t> & b) {
   if (b.size() < sizeof(LiveHdr)) return false;
   LiveHdr h; memcpy(&h, b.data(), sizeof(h));
-  if (h.magic != LIVE_MAGIC || (h.ver != LIVE_VER && h.ver != LIVE_VER_NOPEND) || h.szStation != sizeof(Station)
+  if (h.magic != LIVE_MAGIC || h.ver < LIVE_VER_NOPEND || h.ver > LIVE_VER || h.szStation != sizeof(Station)
       || h.szWeather != sizeof(Weather) || h.szElec != sizeof(ElecTypes) || h.szFeed != sizeof(FeedStat)
       || h.szLog != sizeof(AlertLog) || h.nSt > VN_MAX_ST)
     return false;
@@ -259,7 +263,8 @@ static bool liveLoad(const std::vector<uint8_t> & b) {
   size_t need = sizeof(h) + sizeof(Station) * n + sizeof(int64_t) * VN_RECENT_SLOTS + (size_t)VN_RECENT_SLOTS * n
                 + sizeof(AlertLog) * VN_ALERT_LOG + sizeof(Weather) + sizeof(ElecTypes) + sizeof(float) * n
                 + sizeof(int16_t) * n + sizeof(g_feed)
-                + (hasPend ? LIVE_PEND_FIXED + sizeof(FcIssue) * (size_t)FC_PEND * n : 0);
+                + (hasPend ? LIVE_PEND_FIXED + sizeof(FcIssue) * (size_t)FC_PEND * n : 0)
+                + (h.ver >= 3 ? sizeof(int64_t) * (size_t)n + sizeof(uint32_t) : 0);
   if (b.size() != need) return false;
   const uint8_t * p = b.data() + sizeof(h);
   // Les stations du fichier, retrouvées par sid (créées si absentes) ; map[j] = index dans le modèle
@@ -317,6 +322,15 @@ static bool liveLoad(const std::vector<uint8_t> & b) {
       }
     }
     p += sizeof(FcIssue) * (size_t)FC_PEND * n;
+  }
+  memset(g_model.ivAt, 0, sizeof(int64_t) * VN_MAX_ST);
+  if (h.ver >= 3) {
+    for (int j = 0; j < n; j++) {
+      int64_t v; memcpy(&v, p + sizeof(int64_t) * j, sizeof(v));
+      if (map[j] >= 0 && v > 0 && v <= h.savedAt + 300) g_model.ivAt[map[j]] = v;      // une heure dans le futur n'est pas relue
+    }
+    p += sizeof(int64_t) * (size_t)n;
+    memcpy(&g_model.fcIvSkipped, p, sizeof(uint32_t)); p += sizeof(uint32_t);
   }
   g_model.lastUpdate = h.lastUpdate; g_model.feedUpdated = h.feedUpdated;
   eng::g_typesAt = h.typesAt; eng::g_infoAt = h.infoAt;
@@ -421,6 +435,7 @@ EXPORT(vn_summary_json) size_t vn_summary_json() {
   j.num("learnSince", (double)g_model.learnSince);
   j.num("learnSamples", g_model.learnSamples);
   j.num("learnPct", g_model.learnPct());
+  j.num("fcIvSkipped", g_model.fcIvSkipped);                  // prévisions d'apprentissage non jugées : intervention déclarée
   j.num("netConf", g_model.netConf);
   j.num("histMinutes", t.histMinutes);
   j.num("daysKept", g_model.days.count);
@@ -774,6 +789,14 @@ EXPORT(vn_digest_json) size_t vn_digest_json(int day) {
 }
 
 EXPORT(vn_local_day) int vn_local_day(double t) { return localDay((int64_t)t); }
+// Intervention DÉCLARÉE sur une station (registre de régulation, lib/regulation.mjs) : les prévisions d'apprentissage
+// dont la fenêtre la contient ne seront pas jugées. 1 = station connue. Rejoué tel quel par les jumeaux (évènement « iv »).
+EXPORT(vn_intervention) int vn_intervention(const char * sid, double t) {
+  const int i = g_model.find(sid);
+  if (i < 0) return 0;
+  g_model.noteIntervention(i, (int64_t)t);
+  return 1;
+}
 // Classe de jour du modèle à l'instant t : 0 = ouvré, 1 = week-end ou jour férié légal (Model::fcClassAt)
 EXPORT(vn_day_class) int vn_day_class(double t) { return g_model.fcClassAt((int64_t)t); }
 

@@ -56,6 +56,10 @@ const scratchEngine = async () => loadEngine(CORE_WASM, { onLog: () => {} });
 const notifier = new Notifier({ dataDir: CONFIG.dataDir, log });
 const bench = new NightBench({ dataDir: CONFIG.dataDir, archiveDir: store.archiveDir, log });
 const regulation = new Regulation({ dataDir: CONFIG.dataDir, history, log });
+// Une intervention déclarée en station qui a déplacé des vélos en service : la prévision ne pouvait pas la voir
+// venir. Elle n'est ni jugée par l'apprentissage du modèle (évènement « iv », rejoué par les jumeaux) ni notée.
+const movedBikes = (e) => e.kind === 'station' && !e.impossible && (e.took?.ok || 0) + (e.dropped?.ok || 0) > 0;
+forecasts.interventions = (t0, t1) => [...regulation.events.values()].filter((e) => movedBikes(e) && e.at >= t0 && e.at < t1).map((e) => ({ sid: e.sid, at: e.at }));
 
 // ── Import d'un vidage de carte ──────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -114,6 +118,15 @@ if (ia >= 0) {
   // l'anneau relu comble l'historique long depuis sa dernière tranche écrite
   const n = history.capture(engine);
   if (n) log(`[historique] ${n} tranche(s) reprises de l'anneau relu`);
+}
+
+// Interventions déclarées des dernières heures, redites au moteur : un état vivant d'avant la 1.6.0 ne les porte
+// pas, et une déclaration arrivée pendant l'arrêt non plus (Model::noteIntervention garde la plus récente).
+{
+  const since = nowS() - 5 * 3600;
+  let n = 0;
+  for (const e of regulation.events.values()) if (movedBikes(e) && e.at >= since && engine.intervention(e.sid, e.at)) n++;
+  if (n) log(`[régulation] ${n} intervention(s) déclarée(s) des 5 dernières heures redite(s) au modèle`);
 }
 
 // ── Sauvegarde, archive ──────────────────────────────────────────────
@@ -556,6 +569,7 @@ const server = createServer(async (req, res) => {
           if (!r.duplicate) {
             planCache = null;
             const e = r.event;
+            if (movedBikes(e)) collector.call({ k: 'iv', sid: e.sid, at: e.at });
             log(`[régulation] ${regulation.tour(e.tour)?.regulatorName || e.regulator} · ${e.kind === 'atelier' ? 'atelier' : `${e.name || e.sid}`} : ${e.impossible ? `impossible (${e.impossible})` : `pris ${e.took.ok}+${e.took.hs} HS, déposé ${e.dropped.ok}${e.dropped.hs ? `+${e.dropped.hs} HS` : ''}`} · à bord ${r.load.ok}+${r.load.hs}`);
           }
           return sendJson(req, res, r);

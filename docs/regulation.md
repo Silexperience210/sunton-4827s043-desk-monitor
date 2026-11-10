@@ -30,6 +30,10 @@ livrés : **interventions déclarées** et **tournées proposées**. Une seule r
    Réglages → Synchro en ligne → l'adresse du serveur (et le jeton si `VN_TOKEN` est défini) ;
    Réglages → **Rôle de ce Sunton** → **Régulateur** (la carte redémarre ; l'onglet « Tournée » remplace
    « Réseau »). En série : `role regulateur`, `reg` pour l'état.
+   **Adresse du serveur depuis le camion** : avec un jeton, elle doit être en `https://` (tunnel, `VN_PUBLIC_URL`
+   réglé sur le serveur) ou passer par un réseau privé du type Tailscale. En `http://` vers une adresse publique,
+   la carte n'envoie rien — le jeton serait lisible sur le partage de connexion — garde les gestes en file et
+   affiche « jeton non envoyé en clair : passer l'adresse en https » (1.4.1).
    La version **résistive** (`-r`) se manie avec des gants, la capacitive non.
 3. **Sur le téléphone** : ouvrir `http://<serveur>:8790/regulateur.html` (jeton demandé s'il y en a un), l'ajouter
    à l'écran d'accueil.
@@ -64,6 +68,22 @@ Captures du simulateur (`sim/sim ../docs/donnees <dossier> regulateur`), état d
 | recoupement (concordant / écart / non visible) | **déclaré recoupé avec le flux** | voir la règle ci-dessous |
 | délai station vide → dépose | **déclaré + mesuré** | début de la rupture dans l'historique au pas de 5 min, heure de la dépose déclarée |
 | plan : arrêts, nombres, arrivées, minutes de rupture évitées | **estimé** | prévision de la carte et sa marge d'erreur **mesurée** |
+
+### Les interventions déclarées et la prévision (1.6.0)
+
+Un camion qui dépose dix vélos, la prévision ne pouvait pas le voir venir. Depuis la 1.6.0, pour toute déclaration
+en station qui déplace des vélos en service :
+
+- **l'apprentissage du modèle 2 ne juge pas** les prévisions dont la fenêtre (du quart d'heure d'émission à la fin
+  de la tranche visée, jusqu'à 4 h) contient l'intervention — sinon le réglage de la station apprendrait l'erreur
+  du camion (`Model::fcLearnSlot`, `/api/summary` → `fcIvSkipped`) ;
+- **la note des prévisions ne les compte pas** non plus (erreur par horizon, alertes, risque de rupture, besoin),
+  et dit combien elle en a écarté (`skipped.intervention`, onglet Prévisions).
+
+Rien n'est déduit du flux : sans déclaration, tout est jugé comme avant. Limites, dites plutôt que cachées :
+les **profils** (niveaux habituels) ne sont pas touchés — le vélo déposé est bien là ; une déclaration arrivée en
+retard (file hors connexion) ne défait pas ce qui a déjà été jugé entre-temps ; seul le **serveur** connaît le
+registre — les Sunton reprennent son apprentissage à la synchro, leur propre apprentissage juge tout.
 
 ### Recoupement
 

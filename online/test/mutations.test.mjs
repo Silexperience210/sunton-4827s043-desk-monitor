@@ -43,6 +43,11 @@ const MUTATIONS = [
     from: 'ec.real += Math.abs(v[1 + h] - tv);', to: 'ec.real += Math.abs(cur - tv);', tests: ['prevision.test.mjs'] },
   { id: 'besoin-borne', what: 'besoin témoin non borné par ce que la station peut donner', file: 'lib/forecast.mjs',
     from: 'dP = Math.max(-cur, Math.min(cap - cur, nd[1]));', to: 'dP = nd[1];', tests: ['prevision.test.mjs'] },
+  // 1.6.0 : interventions déclarées
+  { id: 'camion-note', what: 'prévisions traversées par une intervention déclarée notées quand même', file: 'lib/forecast.mjs',
+    from: 'return !!l && l.some((t) => t >= t0 && t < t1); };', to: 'return false; };', tests: ['prevision.test.mjs'] },
+  { id: 'camion-jumeaux', what: 'intervention déclarée non rejouée par les jumeaux', file: 'server.mjs',
+    from: "if (movedBikes(e)) collector.call({ k: 'iv', sid: e.sid, at: e.at });", to: 'if (movedBikes(e)) engine.intervention(e.sid, e.at);', tests: ['regulation.test.mjs'] },
   { id: 'heure-ete', what: 'heure d\'été supprimée (Etc/GMT-1)', file: 'public/vn-series.js',
     from: 'timeZone: \'Europe/Luxembourg\', year:', to: 'timeZone: \'Etc/GMT-1\', year:', tests: ['series.test.mjs'] },
   { id: 'crc-envoi', what: 'CRC32 des envois des cartes ignoré', file: 'server.mjs',

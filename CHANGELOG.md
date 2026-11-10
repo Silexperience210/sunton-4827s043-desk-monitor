@@ -4,6 +4,31 @@ Les notes de chaque version, de la plus récente à la plus ancienne. La procéd
 (sauvegarde de la partition de fichiers, flash sans effacement, retour arrière) est dans le
 [README](README.md#mise-à-jour-dune-carte-déjà-en-service).
 
+## 1.6.0 — la régulation rejoint `main`, et le camion ne fausse plus l'apprentissage
+
+> **1.5.0 → 1.6.0 : aucune migration sur la carte.** Mêmes fichiers appris. Nouveaux fichiers, absents tant qu'on
+> ne s'en sert pas : `/vn_reg.cfg` (rôle), `/vn_regq.bin` (file des déclarations du Sunton régulateur), `/vn_regsnap.json`. Côté serveur,
+> `/vn_live.bin` passe en version 3 (les versions 1 et 2 sont relues) ; le registre de régulation est dans
+> `<données>/regulation/`.
+
+- **Interventions déclarées, tournées, rôle « régulateur »** (chantiers 1 et 2 de la feuille de route) : le code
+  écrit le 27/10 sur la branche `dashboard-online` n'avait jamais rejoint `main`. Il y est. Mode d'emploi :
+  [`docs/regulation.md`](docs/regulation.md) ; feuille de route : [`docs/feuille-de-route.md`](docs/feuille-de-route.md).
+  Réglages → **Rôle de ce Sunton** → Régulateur : l'onglet « Tournée » fait valider chaque arrêt, garde les
+  validations en flash hors connexion et les envoie dès que le réseau revient. Sur le serveur : onglet
+  Régulation, page de secours `regulateur.html` pour le téléphone.
+- **Mis aux règles posées depuis par `main`** : les routes `/reg/…` sont protégées comme les autres (jeton ; sans
+  jeton, écritures fermées hors requête locale ; origine tierce refusée ; corps JSON exigé) ; le Sunton du camion
+  n'envoie jamais son jeton en clair (même règle que la synchro : `https`, ou réseau privé) ; les tests de
+  régulation entrent dans `npm test` avec leurs planchers.
+- **Le camion ne fausse plus l'apprentissage** (la dernière des cinq idées). Une prévision traversée par une
+  intervention **déclarée** n'est ni jugée par l'apprentissage du modèle 2, ni comptée dans la note des
+  prévisions ; les deux disent combien ils en ont écarté. Jamais déduit du flux : sans déclaration, rien n'est
+  écarté. Limites dans `docs/regulation.md` (profils non touchés, déclarations tardives, serveur seulement).
+- **À éprouver sur le terrain** — rien de ce chantier n'a tourné sur une vraie carte ni dans un vrai camion :
+  transport HTTP de la carte, partage de connexion du téléphone, lisibilité, recoupement sur de vraies
+  interventions, qualité du plan (`docs/regulation.md`, dernière section).
+
 ## 1.5.0 — la prévision dit son erreur, et quatre vérifications tournent sur le vrai parc
 
 > **1.4.1 → 1.5.0 : aucune migration.** Aucun format de fichier ne change, ni sur la carte ni sur le serveur.

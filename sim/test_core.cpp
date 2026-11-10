@@ -3003,8 +3003,8 @@ static void testErreurMesuree() {
   CHECK(!m.fcErrAt(0, 0, 2, T0 + 86400 - 300, e) && !fcErrText(m, 0, T0 + 86400 - 300, txt, sizeof(txt)) && strstr(txt, "pas encore mesur"),
         "erreur mesurée : rien appris → rien d'annoncé (« %s »)", txt);
   m2Run(m, T0 + 86400, 20, w, ir);                          // jusqu'au dimanche 25/10 inclus
-  const int64_t T1 = T0 + 21 * 86400;                       // lundi 26/10 0 h (heure d'hiver depuis la veille)
-  // (1) lundi 8 h : l'erreur annoncée = Σ erreurs du couple appliqué ÷ prévisions jugées, relue des champs bruts
+  const int64_t T1 = T0 + 21 * 86400;                       // dimanche 25/10 à 23 h (l'heure d'hiver a commencé ce dimanche)
+  // (1) lundi 7 h : l'erreur annoncée = Σ erreurs du couple appliqué ÷ prévisions jugées, relue des champs bruts
   float ann[6]; bool own[6]; int nOwn = 0, exact = 0;
   {
     StatusRec sr[6];
@@ -3023,7 +3023,7 @@ static void testErreurMesuree() {
         && fabsf(a - FC_SA[j / FC_SNB] / 10.f) < 1e-6f && fabsf(b - FC_SB[j % FC_SNB] / 20.f) < 1e-6f) exact++;
   }
   CHECK(nOwn == 6 && exact == 6, "erreur mesurée : 6 stations jugées sur leurs propres prévisions, chiffre = champs bruts du couple appliqué (%d propres, %d exactes)", nOwn, exact);
-  // (2) le reste de la semaine (lundi 8 h → vendredi 22 h) : ce que l'écran prévoit à +1 h contre le relevé 1 h après
+  // (2) le reste de la semaine (lundi 7 h → vendredi 23 h) : ce que l'écran prévoit à +1 h contre le relevé 1 h après
   double sumReal[6] = {}, sumAnn = 0, sumRealAll = 0; int nReal[6] = {};
   {
     static int pend[5 * 288][6];                              // prévision arrondie émise à la tranche k, −1 = aucune
@@ -3039,7 +3039,7 @@ static void testErreurMesuree() {
       for (int q = 0; q < 6; q++) pend[k][q] = emit ? (int)lroundf(m.st[q].fc[12]) : -1;
     }
   }
-  printf("  erreur à +1 h, annoncée lundi 8 h puis constatée sur la semaine :");
+  printf("  erreur à +1 h, annoncée lundi 7 h puis constatée sur la semaine :");
   for (int i = 0; i < 6; i++) {
     const double real = nReal[i] ? sumReal[i] / nReal[i] : -1;
     printf(" st%d %.2f → %.2f", i, ann[i], real);
@@ -3051,7 +3051,7 @@ static void testErreurMesuree() {
         sumAnn, sumRealAll, nReal[0]);
   CHECK(ann[2] < 0.05f && sumReal[2] == 0, "erreur mesurée : station immobile → ± 0 annoncé, 0 constaté (%.2f)", ann[2]);
   // phrase : la station, ses prévisions jugées, virgule décimale
-  const int64_t tB = T1 + 4 * 86400 + 10 * 3600;            // vendredi 10 h
+  const int64_t tB = T1 + 4 * 86400 + 10 * 3600;            // vendredi 9 h
   CHECK(fcErrText(m, 3, tB, txt, sizeof(txt)) && strstr(txt, "Erreur mesur\xC3\xA9" "e : \xC2\xB1 ") && strstr(txt, "+1 h") && strstr(txt, "+2 h")
         && strstr(txt, "de la station") && !strchr(txt, '.'), "erreur mesurée : phrase de la fiche (« %s »)", txt);
   // (3) station trop peu jugée : l'erreur de sa classe, dite « sur le parc »
@@ -3078,6 +3078,56 @@ static void testErreurMesuree() {
           "erreur mesurée : station sans profil → rien d'annoncé");
   }
   CHECK(!m.fcErrAt(-1, 0, 2, tB, e) && !m.fcErrAt(0, 2, 2, tB, e) && !m.fcErrAt(0, 0, 5, tB, e), "erreur mesurée : index hors bornes refusés");
+}
+
+// ── Interventions déclarées : la prévision qui les traverse n'est pas jugée ──
+// Deux modèles nourris du même monde ; à 10 h 02 un camion dépose 15 vélos à la station 3. Le premier le sait
+// (déclaration), le second non. Rien n'est jamais déduit du saut lui-même : sans déclaration, tout est jugé.
+static void testIntervention() {
+  settingsDefaults(g_set);
+  g_pred = PredictOpts();
+  const int64_t T0 = 1791842400 - 86400 * 8;                // lundi 05/10/2026 0 h
+  InfoRec ir[6] = { mkInfo("1", 49.60f, 6.13f, 20), mkInfo("2", 49.61f, 6.14f, 20), mkInfo("3", 49.62f, 6.15f, 20),
+                    mkInfo("4", 49.63f, 6.16f, 40), mkInfo("5", 49.64f, 6.17f, 40), mkInfo("6", 49.65f, 6.18f, 40) };
+  static Model A, B;
+  CHECK(A.init() && B.init() && A.ivAt && B.ivAt, "intervention : init");
+  A.applyInfo(ir, 6, T0); B.applyInfo(ir, 6, T0);
+  M2World wa, wb;
+  m2Run(A, T0, 21, wa, ir); m2Run(B, T0, 21, wb, ir);
+  // T0 + 21 jours = dimanche 25/10 à 23 h (l'heure d'hiver a commencé ce dimanche) ; le camion passe lundi à 10 h 02
+  const int64_t T1 = T0 + 21 * 86400, tau = lux(2026, 10, 26, 10, 2);
+  CHECK(memcmp(A.fcL, B.fcL, sizeof(FcLearn)) == 0 && A.fcIvSkipped == 0, "intervention : mêmes modèles avant le camion, rien d'écarté");
+  StatusRec sr[6];
+  for (Model * m : { &A, &B }) {
+    M2World & w = m == &A ? wa : wb;
+    for (int64_t t = T1; t < T1 + 17 * 3600; t += 300) {
+      w.step(t);
+      if (t <= tau && tau < t + 300) {                      // le camion : 15 vélos, visibles à ce relevé
+        w.walk[3] += w.walk[3] > 20 ? -15 : 15;             // 15 vélos pris ou déposés, selon la place
+        if (m == &A) A.noteIntervention(A.find("4"), tau);
+      }
+      for (int q = 0; q < 6; q++) sr[q] = mkStat(ir[q].sid, w.at(q, t), q >= 3 ? 40 : 20);
+      m->applyStatus(sr, 6, t);
+    }
+  }
+  // Fenêtres [émission, fin de la tranche jugée] qui contiennent 10 h 02, quarts d'heure émis de 6 h à 22 h :
+  // +15 min : 9 h 45, 10 h · +30 : 9 h 30 … 10 h (3) · +60 : 9 h … 10 h (5) · +120 : 8 h … 10 h (9) · +240 : 6 h … 10 h (17)
+  CHECK(A.fcIvSkipped == 2 + 3 + 5 + 9 + 17 && B.fcIvSkipped == 0, "intervention déclarée : %u prévisions d'apprentissage non jugées (36 attendues) ; sans déclaration : %u",
+        (unsigned)A.fcIvSkipped, (unsigned)B.fcIvSkipped);
+  const int s = A.find("4");
+  bool lessW = true, lessErr = true, others = true;
+  for (int hh = 0; hh < FC_NSH; hh++) {
+    lessW &= A.fcS[s].w[0][hh] < B.fcS[s].w[0][hh];
+    lessErr &= A.fcS[s].err[0][hh][0] + 20.f < B.fcS[s].err[0][hh][0];      // couple (0 ; 0) : la persistance, qui prend le saut de plein fouet
+  }
+  for (int i = 0; i < 6; i++) if (i != s) others &= memcmp(A.fcS[i].err, B.fcS[i].err, sizeof(A.fcS[i].err)) == 0 && memcmp(A.fcS[i].w, B.fcS[i].w, sizeof(A.fcS[i].w)) == 0;
+  CHECK(lessW && lessErr && others, "intervention : la station visitée a moins de prévisions jugées et n'a pas appris le saut du camion (persistance à +60 : %.0f contre %.0f) ; les autres stations sont identiques",
+        A.fcS[s].err[0][0][0], B.fcS[s].err[0][0][0]);
+  bool sameProf = memcmp(A.prof, B.prof, sizeof(ProfCell) * 6 * 672) == 0;
+  CHECK(sameProf, "intervention : les profils (niveaux habituels) ne sont pas touchés — le vélo déposé est bien là");
+  // bornes : la plus récente est gardée, index et heures invalides ignorés
+  A.noteIntervention(s, tau - 3600); A.noteIntervention(-1, tau); A.noteIntervention(99, tau); A.noteIntervention(s, 0);
+  CHECK(A.ivAt[s] == tau, "intervention : une déclaration plus ancienne, un index ou une heure invalides ne changent rien");
 }
 
 static void testModele2() {
@@ -3821,6 +3871,7 @@ int main(int argc, char ** argv) {
   testHorsLigne(argc > 1 ? argv[1] : "");
   testModele2();
   testErreurMesuree();
+  testIntervention();
   testVersion();
   testClosedNotLearned();
   testDaysBadTimes();

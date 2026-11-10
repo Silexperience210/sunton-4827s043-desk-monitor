@@ -329,6 +329,14 @@ struct Model {
   int       fcPendHead = -1;             // dernier lot émis
   float     fcA[FC_NC][FC_NH] = {}, fcB[FC_NC][FC_NH] = {};
   FcSt *    fcS = nullptr;               // [VN_MAX_ST], PSRAM : couples par station (sauvegardé, v6)
+  // Interventions DÉCLARÉES (registre de régulation) : heure de la dernière par station, 0 = aucune. Une prévision
+  // d'apprentissage dont la fenêtre [émission, échéance] contient une intervention déclarée n'est pas jugée : son
+  // erreur est celle du camion, que rien ne permettait de prévoir, pas celle du réglage. Jamais déduit du flux
+  // (feuille de route) : sans déclaration, rien n'est écarté. En mémoire seulement ; le serveur les garde dans
+  // /vn_live.bin. Les profils (niveaux habituels) ne sont pas touchés : le vélo déposé est bien là.
+  int64_t * ivAt = nullptr;              // [VN_MAX_ST], PSRAM
+  uint32_t  fcIvSkipped = 0;             // prévisions d'apprentissage écartées pour cette raison (depuis le démarrage)
+  void  noteIntervention(int i, int64_t t);
   Alert *   alerts = nullptr;            // [VN_MAX_ALERTS] — les plus graves, pas les premières
   int       nAlerts = 0;
   int       nAlertsTotal = 0;            // toutes, y compris celles écartées par le plafond

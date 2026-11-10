@@ -88,6 +88,7 @@ function replay(ev) {
     case 'ingest': engine.ingest(ev.feed, ev.got, ev.code, ev.body, ev.dur, ev.cyc); break;
     case 'cycle': engine.cycleEnd(ev.ok); break;
     case 'fetching': engine.setFetching(ev.on); break;
+    case 'iv': engine.intervention(ev.sid, ev.at); break;
   }
   seq = ev.seq;
   return true;

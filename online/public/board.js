@@ -479,6 +479,8 @@ function renderForecast(f, b) {
   $('prevMeta').textContent = days.length
     ? `${days.length} jour${days.length > 1 ? 's' : ''} mesuré${days.length > 1 ? 's' : ''} · ${fmtNum(days.reduce((a, d) => a + d.preds, 0))} quarts d'heure notés · dernier ${f.lastSlot ? fHour.format(new Date(f.lastSlot * 1000)) : '—'}`
     : 'Aucune prévision notée pour l\'instant (de 6 h à 22 h, tous les quarts d\'heure).';
+  // prévisions traversées par une intervention DÉCLARÉE : non notées (le camion ne se prévoit pas), et dites
+  if (f.skipped?.intervention) $('prevMeta').textContent += ` · ${fmtNum(f.skipped.intervention)} prévision${f.skipped.intervention > 1 ? 's' : ''} non notée${f.skipped.intervention > 1 ? 's' : ''} : une intervention déclarée est passée entre-temps`;
   // erreur selon l'horizon
   const hl = f.horizons.map((h) => h.replace(' min', '').replace('+', '+ '));
   lineChart($('prevHorizon'), {

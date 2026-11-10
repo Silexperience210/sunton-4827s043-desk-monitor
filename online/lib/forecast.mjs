@@ -23,7 +23,7 @@ import { FEED } from '../public/vn-engine.js';
 export const HK = [3, 6, 12, 24, 48];                     // horizons en tranches de 5 min
 export const HL = ['+15 min', '+30 min', '+60 min', '+120 min', '+240 min'];
 const H60 = 2;
-const NOTE_VERSION = 5;                                    // 3 : stations figées et hors service écartées ; 4 : témoin (shadow) ;
+const NOTE_VERSION = 6;                                    // 6 : prévisions traversées par une intervention déclarée écartées                                    // 3 : stations figées et hors service écartées ; 4 : témoin (shadow) ;
                                                            // 5 : erreur annoncée, risque de rupture, besoin témoin
 const FROZEN_S = 24 * 3600;
 
@@ -275,6 +275,7 @@ export class ForecastLog {
     this.curDay = '';
     this.curKey = '';
     this.live = { at: 0, v: null };
+    this.interventions = null;                              // (t0, t1) → [{ sid, at }] : interventions déclarées, posé par le serveur
     this.dayType = null;                                    // (jour 'AAAA-MM-JJ') → type de jour, posé par le serveur (lib/calendrier.mjs)
     const fs = this.files();
     for (let i = fs.length - 1; i >= 0 && !this.lastSlot; i--) {
@@ -360,7 +361,15 @@ export class ForecastLog {
     const model = HK.map(() => new Acc()), per = HK.map(() => new Acc()), prof = HK.map(() => new Acc());
     const byHour = {}, bySt = {};
     const al = { emptyPred: 0, emptyHit: 0, emptyReal: 0, emptyCaught: 0, fullPred: 0, fullHit: 0, fullReal: 0, fullCaught: 0 };
-    const skipped = { frozen: 0, notRenting: 0 };
+    const skipped = { frozen: 0, notRenting: 0, intervention: 0 };
+    // Interventions déclarées (registre de régulation) : { sid → heures triées }. Une prévision dont la fenêtre
+    // [tranche d'émission, fin de la tranche visée] en contient une n'est pas notée — même règle que l'apprentissage
+    // (Model::fcLearnSlot) : son erreur est celle du camion, pas celle de la prévision. Comptées (skipped.intervention).
+    const iv = new Map();
+    if (this.interventions && preds.length) {
+      for (const e of this.interventions(preds[0].slot, preds.at(-1).slot + (HK.at(-1) + 1) * SLOT_S)) { if (!iv.has(e.sid)) iv.set(e.sid, []); iv.get(e.sid).push(e.at); }
+    }
+    const crossed = (sid, t0, t1) => { const l = iv.get(sid); return !!l && l.some((t) => t >= t0 && t < t1); };
     // Témoin : sur les seules lignes qui le portent, modèle livré (couples par station) et couple de la classe,
     // notés sur exactement les mêmes paires (prévision, relevé)
     const shModel = HK.map(() => new Acc()), shCls = HK.map(() => new Acc());
@@ -398,6 +407,7 @@ export class ForecastLog {
           const c = col(r, sid);
           const tv = c === undefined ? null : r.b[c];
           if (tv === null || tv === undefined) continue;
+          if (crossed(sid, p.slot, p.slot + (HK[h] + 1) * SLOT_S)) { skipped.intervention++; continue; }
           model[h].add(v[1 + h] - tv);
           per[h].add(cur - tv);
           prof[h].add(v[6 + h] - tv);
@@ -424,6 +434,7 @@ export class ForecastLog {
           if (cap > 0 && x >= cap) sawF = true;
         }
         if (known < 6) return;                    // heure suivante trop peu relevée pour juger
+        if (crossed(sid, p.slot, p.slot + 13 * SLOT_S)) return;   // camion déclaré dans l'heure : ni alerte, ni risque, ni besoin jugés
         const predE = etaE > 0 && etaE <= 60, predF = etaF > 0 && etaF <= 60;
         if (cur > 0) {
           if (predE) { al.emptyPred++; if (sawE) al.emptyHit++; }
@@ -439,7 +450,7 @@ export class ForecastLog {
         // besoin conseillé : la trajectoire réellement relevée sur 4 h, décalée du déplacement (borné par ce que la
         // station peut donner ou recevoir à l'instant) ; tranche « en rupture » = vide ou pleine
         const nd = p.nd?.[i];
-        if (nd && nd[0] !== 0 && cap > 0) {
+        if (nd && nd[0] !== 0 && cap > 0 && !crossed(sid, p.slot, p.slot + 49 * SLOT_S)) {
           const d50 = Math.max(-cur, Math.min(cap - cur, nd[0])), dP = Math.max(-cur, Math.min(cap - cur, nd[1]));
           let seen = 0, b0 = 0, b50 = 0, bP = 0;
           const bad = (y) => y <= 0 || y >= cap;
@@ -530,7 +541,7 @@ export class ForecastLog {
     const H = HK.length;
     const tot = { model: HK.map(() => new Acc()), per: HK.map(() => new Acc()), prof: HK.map(() => new Acc()) };
     const hours = {}, st = {};
-    const al = {}, skipped = { frozen: 0, notRenting: 0 };
+    const al = {}, skipped = { frozen: 0, notRenting: 0, intervention: 0 };
     for (const n of list) {
       for (const k of Object.keys(skipped)) skipped[k] += n.skipped?.[k] || 0;
       for (let h = 0; h < H; h++) { tot.model[h].merge(Acc.from(n.model[h])); tot.per[h].merge(Acc.from(n.per[h])); tot.prof[h].merge(Acc.from(n.prof[h])); }

@@ -201,12 +201,18 @@ try {
   ok(tt.j.tour?.id === 'tour-http-1' && tt.j.plan && Array.isArray(tt.j.plan.stops) && /ESTIMÉES/.test(tt.j.method), 'l\'appareil reçoit sa tournée, son chargement et son plan');
   const e1 = await call('/reg/event', { id: 'ev-http-0001', tour: 'tour-http-1', kind: 'station', sid: '1001', name: 'Station 1001', at: Math.floor(Date.now() / 1000), dropped: { ok: 5 } });
   ok(e1.status === 200 && e1.j.load.ok === 3, 'déclaration acceptée, chargement à jour');
+  // la dépose déclarée est dite au modèle (évènement « iv », rejoué par les jumeaux) — une seule fois
+  const evs = async () => (await (await fetch(base + '/api/twin/events?since=0')).json()).events?.filter((x) => x.k === 'iv') || [];
+  const iv1 = await evs();
+  ok(iv1.length === 1 && iv1[0].sid === '1001' && iv1[0].at === e1.j.event.at, `intervention déclarée transmise au modèle et aux jumeaux (${iv1.length} évènement, station ${iv1[0]?.sid})`);
   const e1b = await call('/reg/event', { id: 'ev-http-0001', tour: 'tour-http-1', kind: 'station', sid: '1001', dropped: { ok: 5 } });
   ok(e1b.j.duplicate && e1b.j.load.ok === 3, 'renvoi de la même déclaration : doublon reconnu');
   const e2 = await call('/reg/event', { id: 'ev-http-0002', tour: 'tour-http-1', kind: 'station', sid: '1002', at: Math.floor(Date.now() / 1000), dropped: { ok: 9 } });
   ok(e2.status === 409 && /négatif/.test(e2.j.error), 'dépose impossible (pas assez à bord) refusée avec la raison');
   const other = await call('/reg/event', { id: 'ev-http-0003', tour: 'tour-http-1', kind: 'atelier', at: Math.floor(Date.now() / 1000), dropped: { hs: 0 }, took: { ok: 2 } }, 'telephone-paul');
   ok(other.status === 200 && other.j.event.device === 'telephone-paul', 'le téléphone de secours déclare dans la même tournée');
+  ok((await evs()).length === 1 && typeof (await (await fetch(base + '/api/summary')).json()).fcIvSkipped === 'number',
+    'doublon, dépose refusée et passage à l\'atelier : rien de plus dit au modèle ; le résumé publie le compte des prévisions non jugées');
   const stt = await call('/reg/state?days=7');
   ok(stt.j.open.length === 1 && stt.j.events.length === 2 && stt.j.kpi.days.length >= 1, 'tableau de bord : tournée ouverte, déclarations, indicateurs');
   const end = await call('/reg/tour/end', { tour: 'tour-http-1', load: { ok: 5, hs: 0 } });

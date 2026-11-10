@@ -221,6 +221,29 @@ try {
     const s0 = writeDay(fresh()).score(DAY);
     ok(s0.errCheck.n === 0 && s0.target.n === 0 && Object.keys(s0.risk.e).length > 5, 'journal d\'avant la 1.5.0 : ni erreur annoncée ni besoin témoin ; le risque se note quand même (relevé, prévision et alerte y sont)');
   }
+  console.log('interventions déclarées : les prévisions qu\'elles traversent ne sont pas notées, et sont comptées');
+  {
+    // un camion à la station A à 9 h 02 (tranche K0 + 36, + 120 s)
+    const tau = T0 + (K0 + 36) * 300 + 120;
+    const fl = writeDay(fresh(), { with15: true });
+    fl.interventions = (t0, t1) => [{ sid: 'A', at: tau }, { sid: 'E', at: T0 - 86400 }].filter((e) => e.at >= t0 && e.at < t1);
+    const s = fl.score(DAY), ref = writeDay(fresh(), { with15: true }).score(DAY);
+    // calcul indépendant : paires (prévision k, horizon) de A dont [tranche k, fin de la tranche k + h] contient tau
+    let crossed = 0, m60 = 0, n60 = 0;
+    const hit = (k, hk) => tau >= T0 + k * 300 && tau < T0 + (k + hk + 1) * 300;
+    for (const k of PRED_K) HK.forEach((hk, h) => { if (hit(k, hk)) crossed++; });
+    for (const k of PRED_K) for (const sid of ['A', 'E']) { if (sid === 'A' && hit(k, 12)) continue; m60 += Math.abs(VAL[sid](k) + 3 - VAL[sid](k + 12)); n60++; }
+    // quarts d'heure émis depuis 6 h dont la fenêtre contient 9 h 02 : 2 à +15 min, 3 à +30, 5 à +60, 9 à +120, 13 à +240 (6 h … 9 h)
+    ok(s.skipped.intervention === crossed && crossed === 2 + 3 + 5 + 9 + 13 && ref.skipped.intervention === 0, `${s.skipped.intervention} paires écartées (32 attendues : 2, 3, 5, 9 et 13 quarts d'heure selon l'horizon) ; sans registre : ${ref.skipped.intervention}`);
+    ok(s.model[2].n === n60 && same(s.model[2].s, m60) && s.model[2].n === ref.model[2].n - 5, `+60 min : ${s.model[2].n} prévisions notées (${ref.model[2].n} sans le camion), somme des erreurs conforme au calcul indépendant`);
+    // risque : les 5 prévisions de A à une heure du camion, moins celles où A était déjà vide (jamais comptées) ;
+    // besoin : les conseils donnés pour A dans les 4 h qui précèdent le camion
+    const hour = PRED_K.filter((k) => hit(k, 12)), riskGone = hour.filter((k) => VAL.A(k) > 0).length, needGone = PRED_K.filter((k) => hit(k, 48) && ND('A', VAL.A(k))[0] !== 0).length;
+    const cases = (x) => Object.values(x.risk.e).reduce((a, c) => a + c[0], 0);
+    ok(hour.length === 5 && s.errCheck.n === ref.errCheck.n - 5 && cases(s) === cases(ref) - riskGone && riskGone >= 3 && s.target.n === ref.target.n - needGone && needGone >= 3,
+      `erreur annoncée (−5), risque (−${riskGone}) et besoin (−${needGone}) : les prévisions traversées par le camion sont écartées partout`);
+    ok(JSON.stringify(s.stations.find((x) => x.sid === 'E')) === JSON.stringify(ref.stations.find((x) => x.sid === 'E')), 'une intervention ancienne ou sur une autre station ne change rien à E');
+  }
   console.log('erreur annoncée : fidèle, trop optimiste, trop prudente, en cours');
   {
     const D = (k) => `2026-11-${String(k).padStart(2, '0')}`;

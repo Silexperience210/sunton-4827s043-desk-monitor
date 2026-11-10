@@ -148,8 +148,8 @@ jour après jour (progression visible dans **Réglages → Prédiction**).
 
 | Version | Tactile | Environnement PlatformIO | Binaire |
 |---|---|---|---|
-| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.5.0.bin` |
-| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.5.0.bin` |
+| **ESP32-4827S043C** (la plus courante) | capacitif GT911 | `esp32-4827s043c` | `dist/velohnav-ops-esp32-4827s043c-v1.6.0.bin` |
+| ESP32-4827S043R | résistif XPT2046 | `esp32-4827s043r` | `dist/velohnav-ops-esp32-4827s043r-v1.6.0.bin` |
 | C monté tête en bas | capacitif, rotation 180° | `esp32-4827s043c-180` | — |
 
 Brochage (dans `src/hal/board.h`), recoupé avec deux références indépendantes
@@ -189,8 +189,8 @@ L'étalonnage détecte seul un axe inversé ou des axes échangés et s'enregist
 ### A. Binaire prêt à flasher (le plus simple)
 
 Télécharger le binaire de sa version de carte :
-[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.5.0.bin) ·
-[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.5.0.bin)
+[version C (capacitif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043c-v1.6.0.bin) ·
+[version R (résistif)](https://github.com/Silexperience210/sunton-4827s043-desk-monitor/raw/main/dist/velohnav-ops-esp32-4827s043r-v1.6.0.bin)
 
 **Sans rien installer (Chrome ou Edge)** :
 
@@ -206,7 +206,7 @@ En ligne de commande :
 ```bash
 pip install esptool
 esptool.py --chip esp32s3 --baud 460800 erase_flash
-esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.5.0.bin
+esptool.py --chip esp32s3 --baud 460800 write_flash 0x0 dist/velohnav-ops-esp32-4827s043c-v1.6.0.bin
 ```
 
 ### Mise à jour d'une carte déjà en service
@@ -223,7 +223,7 @@ sans sauvegarde, c'est repartir d'un profil vide. Donc :
    python3 tools/sauvegarde_littlefs.py sauver --port /dev/ttyUSB0 --sortie littlefs-avant.bin
    ```
 2. Flasher **sans « Erase Flash »** : l'effacement détruit aussi la partition de fichiers. L'image fusionnée
-   s'arrête vers 1,5 Mo et ne touche pas la partition (0xC90000) ; `pio run -t upload` non plus.
+   s'arrête vers 1,7 Mo et ne touche pas la partition (0xC90000) ; `pio run -t upload` non plus.
 3. Retour arrière, si besoin : reflasher l'ancienne version, **puis**
    `python3 tools/sauvegarde_littlefs.py restaurer --port /dev/ttyUSB0 littlefs-avant.bin`.
 

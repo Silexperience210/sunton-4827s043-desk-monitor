@@ -22,8 +22,8 @@ export function decompte(out) {
 // échoue aussi : un nouveau test s'inscrit ici.
 export const PLANCHER = {
   'banc.test.mjs': 14, 'features.test.mjs': 93, 'flux.test.mjs': 9, 'harnais.test.mjs': 16, 'integrite.test.mjs': 80,
-  'mutations.test.mjs': 30, 'prevision.test.mjs': 65, 'replication.test.mjs': 84, 'securite.test.mjs': 102,
-  'series.test.mjs': 18, 'sync.e2e.mjs': 10, 'regulation.test.mjs': 67, 'reg.e2e.mjs': 26,
+  'mutations.test.mjs': 33, 'prevision.test.mjs': 69, 'replication.test.mjs': 86, 'securite.test.mjs': 102,
+  'series.test.mjs': 18, 'sync.e2e.mjs': 10, 'regulation.test.mjs': 69, 'reg.e2e.mjs': 26,
 };
 // Raison de l'échec si le fichier a compté moins que son plancher (ou n'en a pas) ; null sinon
 export function sousPlancher(file, d, plancher = PLANCHER) {

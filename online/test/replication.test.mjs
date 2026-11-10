@@ -70,6 +70,8 @@ function* scenario(t0, cycles) {
       yield { k: 'ingest', t: t + 1, feed: FEED.STATUS, got: true, code: 200, body: statusAt(t + 1), dur: 300, cyc: 900 };
     }
     yield { k: 'fetching', on: false, t: t + 2 };
+    // une intervention déclarée de temps en temps (registre de régulation) : rejouée telle quelle par les jumeaux
+    if (k % 211 === 100) yield { k: 'iv', t: t + 2, sid: st0.data.stations[k % 7].station_id, at: t - 30 };
     if (!wxAt || t - wxAt >= 900) {
       wxAt = t;
       yield k % 50 === 3 ? { k: 'ingest', t: t + 3, feed: FEED.WEATHER, got: false, code: 503, body: '', dur: 2000, cyc: 0 }
@@ -83,6 +85,7 @@ function apply(e, ev, ms) {
     case 'ingest': return e.ingest(ev.feed, ev.got, ev.code, ev.body, ev.dur, ev.cyc);
     case 'cycle': return e.cycleEnd(ev.ok);
     case 'fetching': return e.setFetching(ev.on);
+    case 'iv': return e.intervention(ev.sid, ev.at);
   }
 }
 const files = ['/vn_prof.bin', '/vn_hist.bin', '/vn_days.bin', '/vn_live.bin'];
@@ -169,8 +172,23 @@ console.log('5. état vivant : prévisions d\'apprentissage en attente gardées,
   const live = a2['/vn_live.bin'];
   const dv = new DataView(live.buffer, live.byteOffset, live.byteLength);
   const nSt = dv.getUint16(6, true), szIssue = dv.getUint16(18, true), PEND = 17;
-  ok(dv.getUint16(4, true) === 2 && szIssue > 0, `état vivant en version 2 avec les prévisions en attente (version ${dv.getUint16(4, true)}, ${szIssue} o)`);
-  const tail = PEND * 8 + PEND + 4 + szIssue * PEND * nSt;
+  ok(dv.getUint16(4, true) === 3 && szIssue > 0, `état vivant en version 3 avec les prévisions en attente (version ${dv.getUint16(4, true)}, ${szIssue} o)`);
+  // fin du fichier : [prévisions en attente] puis [heure de la dernière intervention déclarée, par station]
+  const ivBytes = nSt * 8 + 4, tail = PEND * 8 + PEND + 4 + szIssue * PEND * nSt + ivBytes;      // + le compte des prévisions non jugées
+  const ivs = [];
+  for (let j = 0; j < nSt; j++) ivs.push(Number(dv.getBigInt64(live.length - ivBytes + j * 8, true)));
+  ok(ivs.filter((t) => t > 0).length >= 5 && ivs.every((t) => t === 0 || (t > t0 && t <= tEnd)) && server.summary().fcIvSkipped > 0,
+    `interventions déclarées gardées dans l'état vivant (${ivs.filter((t) => t > 0).length} stations) ; ${server.summary().fcIvSkipped} prévisions d'apprentissage non jugées`);
+  {
+    // version 2 fabriquée (1.4.1 – 1.5.0) : sans le bloc des interventions
+    const v2 = Buffer.from(live.subarray(0, live.length - ivBytes));
+    v2.writeUInt16LE(2, 4);
+    const mid = await loadEngine(core, quiet);
+    mid.clock(tEnd, ms); mid.init(); mid.settings({ refreshSec: 60 });
+    for (const f of ['/vn_prof.bin', '/vn_hist.bin', '/vn_days.bin']) mid.putFile(f, a2[f]);
+    mid.putFile('/vn_live.bin', v2);
+    ok(mid.load(true) === 3, 'un état vivant de version 2 (sans interventions) est encore relu');
+  }
   const pendT = [];
   for (let k = 0; k < PEND; k++) pendT.push(Number(dv.getBigInt64(live.length - tail + k * 8, true)));
   ok(pendT.filter((t) => t > tEnd - 4 * 3600 - 900 && t <= tEnd).length >= 1, 'des lots émis dans les 4 dernières heures sont dans le fichier');
