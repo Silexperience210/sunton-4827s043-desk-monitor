@@ -22,7 +22,7 @@ namespace vn {
 // ── Réglage (fichier texte /vn_sync.cfg, séparé de /settings.bin dont la taille est figée) ─
 struct SyncCfg {
   char url[128];               // adresse du serveur, « http://umbrel.local:8790 » ; vide = aucune synchro
-  char token[48];              // jeton du serveur (VN_TOKEN), envoyé en « Authorization: Bearer » ; vide = aucun
+  char token[96];              // jeton du serveur (VN_TOKEN), envoyé en « Authorization: Bearer » ; vide = aucun
   bool atBoot;                 // synchroniser au démarrage (avant de relire l'historique)
   bool push;                   // envoyer au serveur ce que la carte a appris de plus que lui
 };
@@ -30,6 +30,9 @@ extern SyncCfg g_sync;
 static const char * const SYNC_CFG_PATH = "/vn_sync.cfg";
 void syncCfgDefaults(SyncCfg & c);      // VN_SYNC_URL / VN_SYNC_TOKEN de secrets.h si définis, démarrage et envoi actifs
 bool syncCfgLoad();
+// Vrai si `stocke` est un PRÉFIXE STRICT de `compile` : signature exacte d'un jeton tronqué par
+// l'ancien champ de 48 octets. Sert à réparer sans écraser un jeton volontairement différent.
+bool syncTokenTruncated(const char * stocke, const char * compile);
 bool syncCfgSave();
 // Adresse saisie → base normalisée (espaces retirés, « http:// » ajouté s'il manque, « / » final et
 // « /sync/manifest » retirés). false si l'adresse est vide ou n'est pas http(s).

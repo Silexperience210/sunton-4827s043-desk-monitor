@@ -33,3 +33,4 @@ sim/dump_sim
 
 # Captures et journaux produits par les scénarios du simulateur
 sim/ops/
+dist/velohnav-ops-esp32-4827s043c-v1.6.1.bin
