@@ -305,9 +305,11 @@ static vn::DataState curState(int64_t nowT) {
 }
 
 static void refresh() {
+#ifdef VN_SIM
   // Crochet de SIMULATION uniquement : VN_EC=1 force 1 semaine, VN_EC=2 force 1 mois, au
-  // premier rafraîchissement. Le simulateur peut ainsi capturer les trois vues sans piloter
-  // le tactile. Sans la variable, rien ne change.
+  // premier rafraîchissement, pour que le simulateur capture les trois vues sans piloter le
+  // tactile. Sous #ifdef VN_SIM : getenv() tire un import WASI (environ_get) que le banc du
+  // serveur ne fournit pas — laissé dans le firmware, il cassait replication.test.mjs.
   {
     static bool fait = false;
     if (!fait) {
@@ -316,6 +318,7 @@ static void refresh() {
       if (ec) { const int v = atoi(ec); if (v >= 0 && v <= 2) { s_ec = v; ecStyle(); } }
     }
   }
+#endif
   const vn::Totals & t = g_model.tot;
   int64_t nowT = now();
   char b[192], c2[32];
