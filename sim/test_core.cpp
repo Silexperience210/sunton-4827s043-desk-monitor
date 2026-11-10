@@ -3838,6 +3838,7 @@ static void testRegul() {
 }
 
 #include "test_move_days.inc"
+#include "test_sens_jour.inc"
 
 int main(int argc, char ** argv) {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
@@ -3880,6 +3881,7 @@ int main(int argc, char ** argv) {
   testSync();
   testRegul();
   testMoveDays();
+  testSensJour();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;
 }

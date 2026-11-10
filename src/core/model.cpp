@@ -450,6 +450,24 @@ static bool profileLocal(const ProfCell * p, int dow, int mod, float & avg, floa
   return false;
 }
 
+int8_t Model::sensJour(int s, int64_t now) const {
+  if (s < 0 || s >= n) return 0;
+  int dow, mod;
+  profDM(now, dow, mod);
+  (void)mod;
+  if (dow == 0 || dow == 6) return 0;          // week-end : le motif pendulaire n'existe pas
+  const ProfCell * c = prof + (size_t)s * PROF_STRIDE;
+  float a6, n6, a9, n9, a18, n18;
+  if (!profileLocal(c, dow, 6 * 60, a6, n6)) return 0;
+  if (!profileLocal(c, dow, 9 * 60, a9, n9)) return 0;
+  if (!profileLocal(c, dow, 18 * 60, a18, n18)) return 0;
+  const float MIN_N = 3.f, MIN_ECART = 3.f;     // sous ce nombre de relevés, on ne conclut pas
+  if (n6 < MIN_N || n9 < MIN_N || n18 < MIN_N) return 0;
+  if (a6 - a9 >= MIN_ECART && a18 - a9 >= MIN_ECART) return 1;    // vide le matin, plein le soir
+  if (a9 - a6 >= MIN_ECART && a9 - a18 >= MIN_ECART) return -1;   // plein le matin, vide le soir
+  return 0;
+}
+
 bool Model::holidayProfile(int64_t t) const { return g_pred.holidaySunday && holidayAt(t); }
 
 bool Model::profileAt(int s, int64_t t, float & avg, float & nEff) const {
@@ -1211,6 +1229,7 @@ void Model::recompute(int64_t now) {
                && (now - s.lastChange) >= (int64_t)g_set.frozenHours * 3600;
     forecastStation(*this, i, fcDays, now);
     anomalyStation(*this, s, i, now, activeHours);
+    s.sens = sensJour(i, now);
 
     // Besoin de régulation (viser 50 % de la capacité utile à +1 h)
     float capE = s.capEff(), fc60 = s.fc[12];
@@ -1221,6 +1240,18 @@ void Model::recompute(int64_t now) {
       int nd = (int)lroundf(capE * 0.5f - fc60);
       if (nd > 60) nd = 60;
       if (nd < -60) nd = -60;
+      // Garde de l'ALLER-RETOUR, et seulement dans la PHASE DE REMPLISSAGE (à partir de midi) :
+      // sur une station qui se vide le matin et se remplit le soir, retirer jusqu'à la moitié ce
+      // soir prive les départs de demain (mesuré : −94 le matin, +53 le soir à Gare Centrale 2,
+      // 12 jours sur 12). Le retrait est plafonné, jamais supprimé : un vélo ou deux de moins sur
+      // une station pleine rendent service à ceux qui rentrent tard.
+      // Le matin, on ne touche à rien : une station pendulaire pleine à 8 h doit se vider, c'est
+      // justement là que les gens partent.
+      if (nd < 0 && s.sens > 0) {
+        int dwG, mdG;
+        localDM(now, dwG, mdG);
+        if (mdG >= 12 * 60) nd = -((-nd + 1) / 2);
+      }
       if (abs(nd) >= 2) s.need = (int8_t)nd;
     }
     // Priorité d'intervention
@@ -1493,7 +1524,18 @@ void Model::recompute(int64_t now) {
     donorLeft[i] = 0;
     if (!s.active || s.status == ST_CLOSED || !s.renting) continue;
     float capE = s.capEff();
-    int give = s.need < 0 ? -s.need : (int)lroundf(fminf(s.fc[12], (float)s.bikes) - capE * 0.6f);
+    // Plancher de retrait : 60 % de la capacité, porté AU MOINS au niveau que le profil réclame
+    // demain matin (8 h) sur une station pendulaire. Sans ce plancher, la règle des 60 % vide
+    // le soir exactement les stations dont les gens ont besoin pour partir le matin.
+    float keep = capE * 0.6f;
+    if (s.sens > 0) {
+      float mat = 0, nm = 0;
+      int dNext, mNext;
+      profDM(now + 86400, dNext, mNext);
+      if (profileLocal(prof + (size_t)i * PROF_STRIDE, dNext, 8 * 60, mat, nm) && nm >= 3.f)
+        keep = fmaxf(keep, mat);
+    }
+    int give = s.need < 0 ? -s.need : (int)lroundf(fminf(s.fc[12], (float)s.bikes) - keep);
     if (give > s.bikes) give = s.bikes;
     if (give >= 2) donorLeft[i] = (int16_t)give;
   }

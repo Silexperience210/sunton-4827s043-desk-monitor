@@ -160,6 +160,15 @@ static void fill() {
     snprintf(b, sizeof(b), "Tendance %s v\xC3\xA9lo%s en 30 min \xC2\xB7 profil habituel en cours d'apprentissage", c2,
              abs(s.delta30) > 1 ? "s" : "");
   }
+  // Motif de la journée, appris : c'est ce qui empêche de lire « pleine ce soir » comme
+  // « à vider ». Placé sur la ligne d'explication, il ne coûte aucune place.
+  if (W.st >= 0 && g_model.st[W.st].sens > 0) {
+    const size_t l = strlen(b);
+    snprintf(b + l, sizeof(b) - l, " \xC2\xB7 se vide le matin, se remplit le soir");
+  } else if (W.st >= 0 && g_model.st[W.st].sens < 0) {
+    const size_t l = strlen(b);
+    snprintf(b + l, sizeof(b) - l, " \xC2\xB7 se remplit le matin, se vide le soir");
+  }
   lv_label_set_text(W.insWhy, b);
   if (s.need) {
     char nd[24];

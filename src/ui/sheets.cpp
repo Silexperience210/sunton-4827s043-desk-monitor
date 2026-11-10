@@ -87,6 +87,17 @@ void openTransfers() {
   fmtDist(d, sizeof(d), dist);
   snprintf(m, sizeof(m), "%d v\xC3\xA9los \xC3\xA0 d\xC3\xA9placer \xC2\xB7 %s cumul\xC3\xA9s (vol d'oiseau)", total, d);
   label(body, &vn_inter_12, HX_TEXT2, m);
+  // Combien de ces retraits touchent une station pendulaire : ces vélos-là ne doivent pas
+  // disparaître, ils doivent être rapportÉS le soir (ou laissÉs sur place).
+  int pendulaires = 0;
+  for (int k = 0; k < g_model.nTr; k++)
+    if (g_model.st[g_model.tr[k].from].sens > 0) pendulaires += g_model.tr[k].n;
+  if (pendulaires > 0) {
+    char pb[128];
+    snprintf(pb, sizeof(pb), "%d v\xC3\xA9lo%s pris sur une station qui se remplit le soir : "
+             "\xC3\xA0 rapporter demain matin", pendulaires, pendulaires > 1 ? "s" : "");
+    label(body, &vn_inter_12, HX_TRANSIT, pb);
+  }
 }
 
 // ── Wi-Fi ────────────────────────────────────────────────────────────

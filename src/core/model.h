@@ -133,6 +133,9 @@ struct Station {
   bool     frozen;           // aucun mouvement depuis g_set.frozenHours (heures actives)
   int16_t  etaEmpty, etaFull;      // minutes, ‑1 = pas dans l'horizon
   int8_t   need;             // vélos à apporter (+) / retirer (‑) pour viser 50 % à +1 h
+  int8_t   sens;             // motif appris de la journée : +1 = se vide le matin et se remplit
+                             // le soir (pendulaire) ; ‑1 = l'inverse (arrivées au travail) ;
+                             // 0 = pas de motif net, ou pas assez de relevés pour le dire
   uint8_t  risk;             // 0…100 (priorité d'intervention)
   uint8_t  conf;             // 0…100 (confiance du profil appris)
   int16_t  delta30;          // variation des vélos sur 30 min
@@ -371,6 +374,11 @@ struct Model {
 
   // Profil appris : moyenne attendue des vélos à l'instant t (lissée ±15 min, pool semaine/week-end)
   bool  profileAt(int s, int64_t t, float & avg, float & nEff) const;
+  // Motif de la journée, lu dans le PROFIL APPRIS (6 h / 9 h / 18 h) : dit si la station se vide
+  // le matin pour se remplir le soir (+1), l'inverse (‑1), ou rien de net (0). Sert à ne pas
+  // confondre « pleine ce soir » et « à vider » : mesuré sur 12 jours ouvrés réels, 69 stations
+  // sur 139 s'inversent (Gare Centrale 2 : −94 vélos le matin, +53 le soir, 12 j sur 12).
+  int8_t sensJour(int s, int64_t now) const;
   // Vrai si l'instant t est un jour férié prévu avec le profil du dimanche (étape 5a-ii) : provenance affichable
   bool  holidayProfile(int64_t t) const;
   // Dispersion habituelle (écart absolu moyen au profil, vélos) à l'instant t, lissée comme le profil ;
