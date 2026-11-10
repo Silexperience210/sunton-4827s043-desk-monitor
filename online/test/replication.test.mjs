@@ -133,7 +133,21 @@ const a2 = saved(server, tEnd, ms), c2 = saved(late, tEnd, ms);
 for (const f of files) ok(same(a2[f], c2[f]), `${f} diffère entre le serveur et le jumeau tardif`);
 ok(JSON.stringify(server.summary()) === JSON.stringify(late.summary()), 'résumé identique pour le jumeau tardif');
 
-console.log('3. chemin de la carte : Model::load sur les seuls fichiers de la carte');
+console.log('3. témoin « couple de la classe » : aligné sur les prévisions, identique sur le serveur et le jumeau');
+{
+  const fs = server.forecast(), ft = twin.forecast();
+  ok(JSON.stringify(fs) === JSON.stringify(ft), 'prévisions notées et témoin identiques sur le serveur et le jumeau');
+  ok(Array.isArray(fs.cl) && fs.cl.length === fs.st.length && fs.st.every((v, i) => (v === null) === (fs.cl[i] === null)),
+    `un témoin par station prévue, null aux mêmes places (${fs.cl?.length} pour ${fs.st.length})`);
+  const rows = fs.st.map((v, i) => [v, fs.cl[i]]).filter(([v]) => v);
+  ok(rows.length > 100 && rows.every(([v, c]) => c.length === 3 && c.every((x) => Number.isInteger(x) && x >= 0 && x <= v[13])),
+    `témoin : trois entiers par station (+60, +120, +240 min), entre 0 et la capacité (${rows.length} stations)`);
+  const differ = rows.filter(([v, c]) => c[0] !== v[3] || c[1] !== v[4] || c[2] !== v[5]).length;
+  console.log(`   ${differ} station(s) sur ${rows.length} où le couple par station change un chiffre affiché`);
+  ok(differ < rows.length, 'le témoin reprend le chiffre du modèle là où le couple ne change rien');
+}
+
+console.log('4. chemin de la carte : Model::load sur les seuls fichiers de la carte');
 const card = await loadEngine(core, quiet);
 card.clock(tEnd, ms); card.init(); card.settings({ refreshSec: 60 });
 for (const f of ['/vn_prof.bin', '/vn_hist.bin', '/vn_days.bin']) card.putFile(f, a2[f]);
@@ -148,7 +162,7 @@ ok(cs.learnSamples === ss.learnSamples, `même apprentissage (${cs.learnSamples}
 ok(cs.daysKept === ss.daysKept, 'mêmes jours résumés');
 ok(cs.histMinutes === ss.histMinutes, `même profondeur d'historique (${cs.histMinutes} contre ${ss.histMinutes} min)`);
 
-console.log('4. état vivant : prévisions d\'apprentissage en attente gardées, et fichier d\'une version 1 encore relu');
+console.log('5. état vivant : prévisions d\'apprentissage en attente gardées, et fichier d\'une version 1 encore relu');
 {
   // En-tête LiveHdr : version à l'octet 4, nSt à 6, taille d'une prévision en attente à 18 (0 en version 1).
   // Le bloc des prévisions en attente est en fin de fichier : 17 dates, 17 classes, la tête, puis 17 lots × nSt.

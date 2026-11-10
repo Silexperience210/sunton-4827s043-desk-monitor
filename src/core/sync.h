@@ -71,6 +71,13 @@ struct SyncManifest {
 };
 bool syncParseManifest(const char * json, size_t len, SyncManifest & m);
 
+// ── Jeton : jamais en clair hors d'un réseau local ───────────────────
+// true si le jeton peut partir vers cette adresse : https (chiffré), ou http vers une machine du réseau local —
+// adresse privée (10/8, 172.16/12, 192.168/16, 127/8, 169.254/16, 100.64/10 des tunnels du type Tailscale ;
+// IPv6 ::1, fe80::/10, fc00::/7), nom sans point (« umbrel »), « localhost », ou suffixe .local, .lan, .home,
+// .home.arpa, .internal, .ts.net. Toute autre adresse http ferait lire le jeton à quiconque est sur le trajet.
+bool syncTokenSafe(const char * url);
+
 // ── Décision ─────────────────────────────────────────────────────────
 struct SyncPlan {
   bool take[SK_COUNT];         // à télécharger

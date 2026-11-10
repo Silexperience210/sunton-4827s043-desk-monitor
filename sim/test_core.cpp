@@ -3289,6 +3289,25 @@ static void testSync() {
   CHECK(syncNormalizeUrl("https://ops.exemple.lu/sync/manifest", u, sizeof(u)) && !strcmp(u, "https://ops.exemple.lu"), "/sync/manifest retiré : %s", u);
   CHECK(!syncNormalizeUrl("ftp://x.y", u, sizeof(u)), "protocole autre que http(s) refusé");
   CHECK(!syncNormalizeUrl("   ", u, sizeof(u)) && !syncNormalizeUrl("http://", u, sizeof(u)), "adresse vide refusée");
+  // Jeton : https, ou http vers le réseau local seulement
+  {
+    static const struct { const char * url; bool safe; } T[] = {
+      { "https://ops.exemple.lu", true }, { "https://203.0.113.9:8443", true },
+      { "http://192.168.1.2:8790", true }, { "http://10.0.0.5:8790", true }, { "http://172.16.0.1", true }, { "http://172.31.255.254/x", true },
+      { "http://127.0.0.1:8790", true }, { "http://169.254.3.4", true }, { "http://100.100.20.3:8790", true },
+      { "http://umbrel:8790", true }, { "http://localhost:8790", true }, { "http://umbrel.local:8790", true }, { "http://nas.lan", true },
+      { "http://ops.home.arpa:8790", true }, { "http://velo.tail1234.ts.net:8790", true }, { "http://[::1]:8790", true }, { "http://[fd12:3456::1]:8790", true },
+      { "http://[fe80::1]:8790", true }, { "http://UMBREL.LOCAL:8790", true },
+      { "http://ops.exemple.lu:8790", false }, { "http://203.0.113.9:8790", false }, { "http://172.32.0.1", false }, { "http://172.15.0.1", false },
+      { "http://100.63.0.1", false }, { "http://100.128.0.1", false }, { "http://192.169.1.1", false }, { "http://11.0.0.1", false },
+      { "http://[2001:db8::1]:8790", false }, { "http://192.168.1.2.exemple.lu", false }, { "http://local.exemple.lu", false },
+      { "http://999.1.1.1", false }, { "http://10.1", false }, { "http://", false }, { "ftp://10.0.0.5", false }, { "http://exemple.locale", false },
+    };
+    int bad = 0;
+    for (const auto & t : T) if (syncTokenSafe(t.url) != t.safe) { bad++; printf("  jeton : %s attendu %s\n", t.url, t.safe ? "permis" : "refusé"); }
+    CHECK(bad == 0, "jeton en clair : %d adresse(s) mal classée(s) sur %d", bad, (int)(sizeof(T) / sizeof(T[0])));
+    CHECK(!syncTokenSafe(nullptr), "jeton : adresse absente refusée");
+  }
 
   sim::g_fsDir = "/tmp/vn_test_sync";
   for (const char * f : { "/vn_prof.bin", "/vn_hist.bin", "/vn_days.bin", "/vn_sync.cfg" }) plat::fsRemove(f);
@@ -3406,6 +3425,33 @@ static void testSync() {
   char line[160];
   syncStatusLine(st, now, line, sizeof(line));
   CHECK(strstr(line, "injoignable") != nullptr, "ligne d'état : %s", line);
+  // f) jeton réglé et adresse http publique : aucune requête ne part (le jeton serait lisible sur le trajet)
+  fs.failGet = 0;
+  snprintf(g_sync.token, sizeof(g_sync.token), "secret-de-test");
+  size_t getsBefore = fs.gets.size(), postsBefore = fs.posts.size();
+  r = syncRun(fio.io, "http://ops.exemple.lu:8790", now, true, st);
+  CHECK(r == -1 && st.state == SS_FAIL && strstr(st.text, "https") && fs.gets.size() == getsBefore && fs.posts.size() == postsBefore,
+        "jeton + http public : refus sans aucune requête (%s)", st.text);
+  //    même jeton, réseau local : la synchro se fait
+  r = syncRun(fio.io, "http://10.0.0.5:8790", now, true, st);
+  CHECK(r >= 0 && st.state != SS_FAIL && fs.gets.size() > getsBefore, "jeton + réseau local : synchro faite (%s)", st.text);
+  //    adresse https, mais le serveur annonce ses fichiers en http public (tunnel sans VN_PUBLIC_URL) : arrêt
+  //    après le manifeste, aucun fichier lu ni envoyé à cette adresse
+  {
+    FakeSrv f2;
+    f2.files.push_back({ "https://ops.exemple.lu/sync/manifest", vec((const uint8_t *)"", 0) });
+    std::string man = manifestOf("http://ops.exemple.lu/sync/abc/", sb, 999999, now, 30, now);
+    f2.files.back().second = vec((const uint8_t *)man.data(), man.size());
+    FakeIo io2; memset(&io2.io, 0, sizeof(io2.io)); io2.srv = &f2;
+    io2.io.ctx = &io2.io; io2.io.get = fakeGet; io2.io.post = fakePost;
+    r = syncRun(io2.io, "https://ops.exemple.lu", now, true, st);
+    CHECK(r == -1 && st.state == SS_FAIL && strstr(st.text, "VN_PUBLIC_URL") && f2.gets.size() == 1 && f2.posts.empty(),
+          "manifeste qui renvoie vers du http public : arrêt après le manifeste (%s ; %zu lecture(s))", st.text, f2.gets.size());
+    //  sans jeton, la même configuration reste permise (rien de secret ne circule)
+    g_sync.token[0] = 0;
+    r = syncRun(io2.io, "https://ops.exemple.lu", now, true, st);
+    CHECK(f2.gets.size() > 2, "sans jeton : la synchro suit l'adresse annoncée (%zu lectures)", f2.gets.size());
+  }
   plat::psFree(sb.prof); plat::psFree(sb.hist); plat::psFree(sb.days);
   syncCfgDefaults(g_sync);
 }

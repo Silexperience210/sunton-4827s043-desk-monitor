@@ -8,6 +8,8 @@
 //   <données>/prevision/AAAA-MM-JJ.jsonl     {"sid":[…]} puis une ligne par quart d'heure :
 //                                            {"slot":…, "t":…, "net60":…, "bikes":…, "st":[[relevé, m15…m240, p15…p240, échéance vide, échéance pleine, capacité, en service] | null, …]}
 //                                            (en service : 1 si la station loue et rend ; absent des journaux d'avant le 02/11/2026)
+//                                            "cl":[[c60, c120, c240] | null, …] : témoin « couple de la classe » (la même prévision sans les
+//                                            couples par station) — absent des journaux d'avant la 1.4.1
 //   <données>/prevision/note/AAAA-MM-JJ.json la note du jour (voir score())
 import { mkdirSync, readdirSync, readFileSync, existsSync, statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,7 +21,7 @@ import { FEED } from '../public/vn-engine.js';
 export const HK = [3, 6, 12, 24, 48];                     // horizons en tranches de 5 min
 export const HL = ['+15 min', '+30 min', '+60 min', '+120 min', '+240 min'];
 const H60 = 2;
-const NOTE_VERSION = 3;                                    // 3 : stations figées et hors service écartées (skipped)
+const NOTE_VERSION = 4;                                    // 3 : stations figées et hors service écartées (skipped) ; 4 : témoin (shadow)
 const FROZEN_S = 24 * 3600;
 
 class Acc {
@@ -28,6 +30,49 @@ class Acc {
   merge(o) { this.s += o.s; this.q += o.q; this.n += o.n; }
   json() { return { n: this.n, mae: this.n ? +(this.s / this.n).toFixed(4) : null, rmse: this.n ? +Math.sqrt(this.q / this.n).toFixed(4) : null, s: +this.s.toFixed(2), q: +this.q.toFixed(2) }; }
   static from(o) { const a = new Acc(); if (o) { a.s = o.s; a.q = o.q; a.n = o.n; } return a; }
+}
+
+// ── Témoin : couples par station contre couple de la classe, hors échantillon ──
+// Écart apparié de MAE (modèle livré − témoin, négatif = les couples par station se trompent moins), sur les
+// journées COMPLÈTES qui portent le témoin. Une journée = une grappe : les quarts d'heure d'un même jour ne sont
+// pas indépendants (une prévision à +4 h recouvre les 16 suivantes), les jours le sont bien davantage. Estimateur
+// par quotient R = Σ s_j / Σ n_j (s_j = somme des écarts du jour j, n_j = ses paires), variance linéarisée
+// Σ (s_j − R·n_j)² · J / (J − 1) / (Σ n_j)², intervalle à 95 % de Student à J − 1 degrés de liberté.
+// Aucun verdict avant SHADOW_MIN_DAYS journées (une semaine : les deux classes de jour y sont) : « en cours ».
+export const SHADOW_MIN_DAYS = 7;
+const T975 = [0, 12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160, 2.145, 2.131,
+  2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042];
+const t975 = (df) => (df < 1 ? Infinity : df <= 30 ? T975[df] : 1.96 + 2.4 / df);
+export function shadowVerdict(notes, today = '') {
+  const days = notes.filter((n) => n.complete && n.day !== today && n.shadow?.model?.[H60]?.n > 0);
+  const out = { days: days.length, minDays: SHADOW_MIN_DAYS, from: days[0]?.day || null, to: days.at(-1)?.day || null, horizons: [] };
+  for (let h = H60; h < HK.length; h++) {
+    let S = 0, N = 0, sm = 0, sc = 0;
+    const per = [];
+    for (const n of days) {
+      const m = n.shadow.model[h], c = n.shadow.cls[h];
+      if (!m?.n || m.n !== c?.n) continue;
+      per.push([m.s - c.s, m.n]);
+      S += m.s - c.s; N += m.n; sm += m.s; sc += c.s;
+    }
+    const J = per.length;
+    const row = { h: HL[h], n: N, days: J, model: N ? +(sm / N).toFixed(4) : null, cls: N ? +(sc / N).toFixed(4) : null,
+      diff: null, lo: null, hi: null, pct: null, verdict: 'en cours' };
+    if (N) {
+      const R = S / N;
+      row.diff = +R.toFixed(4);
+      row.pct = sc ? +(100 * S / sc).toFixed(1) : null;
+      if (J >= 2) {
+        let q = 0;
+        for (const [s, n] of per) q += (s - R * n) ** 2;
+        const half = t975(J - 1) * Math.sqrt(q * J / (J - 1)) / N;
+        row.lo = +(R - half).toFixed(4); row.hi = +(R + half).toFixed(4);
+        if (J >= SHADOW_MIN_DAYS) row.verdict = row.hi < 0 ? 'gagne' : row.lo > 0 ? 'perd' : 'non concluant';
+      }
+    }
+    out.horizons.push(row);
+  }
+  return out;
 }
 
 export class ForecastLog {
@@ -99,7 +144,7 @@ export class ForecastLog {
     if (k !== this.curKey) { s += JSON.stringify({ sid }) + '\n'; this.curKey = k; }
     // « en service » au moment de la prévision (même ordre de stations) : la notation écarte les autres
     const st = f.st.map((v, i) => (v ? [...v, stations[i]?.renting && stations[i]?.returning ? 1 : 0] : v));
-    s += JSON.stringify({ slot: head, t: f.t, net60: f.net60, bikes: f.bikes, st }) + '\n';
+    s += JSON.stringify({ slot: head, t: f.t, net60: f.net60, bikes: f.bikes, st, ...(f.cl ? { cl: f.cl } : {}) }) + '\n';
     appendLines(p, s);
     this.lastSlot = head;
     return true;
@@ -126,6 +171,9 @@ export class ForecastLog {
     const byHour = {}, bySt = {};
     const al = { emptyPred: 0, emptyHit: 0, emptyReal: 0, emptyCaught: 0, fullPred: 0, fullHit: 0, fullReal: 0, fullCaught: 0 };
     const skipped = { frozen: 0, notRenting: 0 };
+    // Témoin : sur les seules lignes qui le portent, modèle livré (couples par station) et couple de la classe,
+    // notés sur exactement les mêmes paires (prévision, relevé)
+    const shModel = HK.map(() => new Acc()), shCls = HK.map(() => new Acc());
     const frozen = this.frozenAt(day, preds);
     let lastNeeded = 0, missing = 0;
     const colCache = new Map();
@@ -156,6 +204,7 @@ export class ForecastLog {
           model[h].add(v[1 + h] - tv);
           per[h].add(cur - tv);
           prof[h].add(v[6 + h] - tv);
+          if (h >= H60 && p.cl?.[i]) { shModel[h].add(v[1 + h] - tv); shCls[h].add(p.cl[i][h - H60] - tv); }
           if (h === H60) {
             (byHour[hour] ||= [new Acc(), new Acc()])[0].add(v[1 + h] - tv);
             byHour[hour][1].add(cur - tv);
@@ -196,6 +245,7 @@ export class ForecastLog {
       missing60: missing, horizons: HL,
       model: model.map((a) => a.json()), per: per.map((a) => a.json()), prof: prof.map((a) => a.json()),
       hours, stations, alerts: al, skipped, scoredAt: now,
+      shadow: { model: shModel.map((a) => a.json()), cls: shCls.map((a) => a.json()) },
     };
   }
   // Stations immobiles depuis 24 h ou plus à l'instant de chaque prévision : { slot → Set(sid) }, d'après
@@ -218,6 +268,10 @@ export class ForecastLog {
     }
     while (j < slots.length) snap(slots[j++]);
     return out;
+  }
+  // Notes des journées finies pour le témoin : jusqu'à 60 jours (la demi-vie de l'apprentissage est de 7 jours)
+  shadowNotes(today, max = 60) {
+    return this.files().filter((f) => f.day < today).slice(-max).map((f) => this.readNote(f.day)).filter(Boolean);
   }
   noteFile(day) { return join(this.noteDir, `${day}.json`); }
   readNote(day) { try { const n = JSON.parse(readFileSync(this.noteFile(day), 'utf8')); return n.v === NOTE_VERSION ? n : null; } catch { return null; } }
@@ -273,7 +327,7 @@ export class ForecastLog {
       hardest: stations.slice(0, 8), easiest: stations.slice(-5).reverse(), stationsScored: stations.length, skipped,
       alerts: { ...al, emptyPrecision: pct(al.emptyHit || 0, al.emptyPred || 0), emptyRecall: pct(al.emptyCaught || 0, al.emptyReal || 0),
         fullPrecision: pct(al.fullHit || 0, al.fullPred || 0), fullRecall: pct(al.fullCaught || 0, al.fullReal || 0) },
-      lastSlot: this.lastSlot,
+      lastSlot: this.lastSlot, shadow: shadowVerdict(this.shadowNotes(today), today),
     };
   }
 }

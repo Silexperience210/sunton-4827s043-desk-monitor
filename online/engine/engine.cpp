@@ -579,13 +579,20 @@ EXPORT(vn_forecast_json) size_t vn_forecast_json() {
   s_out += ",\"bikes\":";
   numOrNull(s_out, g_model.tot.bikes);
   s_out += ",\"st\":[";
-  static float tmp[49], cf[49];
+  static float tmp[49], cf[49], tcl[49];
+  // Témoin « couple de la classe » (clé "cl") : la même prévision SANS les couples par station (g_pred.fcStation),
+  // à +60, +120 et +240 min — les seuls horizons où ils existent. Le serveur note les deux sur les mêmes relevés
+  // (lib/forecast.mjs) : c'est la mesure hors échantillon que docs/mesures-modele.md dit manquer. Rien n'est
+  // affiché ni appris avec ce témoin : il se calcule à côté, le levier est remis aussitôt.
+  std::string cl;
+  const bool witness = g_pred.fcRule == FC_RULE_V2 && g_pred.fcStation;
   const uint8_t * row = head < 0 ? nullptr : g_model.ring + (size_t)head * VN_MAX_ST;
   for (int i = 0; i < g_model.n; i++) {
-    if (i) s_out += ",";
+    if (i) { s_out += ","; cl += ","; }
     const Station & st = g_model.st[i];
-    if (!row || row[i] == 255 || !st.live || st.status == ST_CLOSED) { s_out += "null"; continue; }
+    if (!row || row[i] == 255 || !st.live || st.status == ST_CLOSED) { s_out += "null"; cl += "null"; continue; }
     g_model.project(i, t, 5, 49, tmp, cf);
+    if (witness) { g_pred.fcStation = false; g_model.project(i, t, 5, 49, tcl, nullptr); g_pred.fcStation = true; }
     float p0, n0, ph, nh;
     const bool has0 = g_model.profileAt(i, t, p0, n0);
     int v[16], k = 0;
@@ -601,8 +608,21 @@ EXPORT(vn_forecast_json) size_t vn_forecast_json() {
     s_out += "[";
     for (int q = 0; q < k; q++) { if (q) s_out += ","; snprintf(b, sizeof(b), "%d", v[q]); s_out += b; }
     s_out += "]";
+    // Témoin : là où les deux règles donnent le même chiffre arrondi, la valeur notée du modèle est reprise
+    // telle quelle (aucun écart ne peut venir d'autre chose que du couple).
+    cl += "[";
+    for (int h = 2; h < 5; h++) {
+      const int kk = FC_HK[h];
+      const int vm = v[1 + h];
+      const int vc = !witness || (int)roundf(tcl[kk]) == (int)roundf(tmp[kk]) ? vm : (int)roundf(tcl[kk]);
+      snprintf(b, sizeof(b), "%s%d", h > 2 ? "," : "", vc);
+      cl += b;
+    }
+    cl += "]";
   }
-  s_out += "]}";
+  s_out += "]";
+  if (witness) { s_out += ",\"cl\":["; s_out += cl; s_out += "]"; }
+  s_out += "}";
   return s_out.size();
 }
 

@@ -73,6 +73,7 @@ int main(int argc, char ** argv) {
   settingsDefaults(g_set);
   syncCfgDefaults(g_sync);
   if (!syncNormalizeUrl(argv[1], g_sync.url, sizeof(g_sync.url))) { fprintf(stderr, "adresse refusée\n"); return 2; }
+  snprintf(g_sync.token, sizeof(g_sync.token), "%s", s_token);   // comme la carte : syncRun refuse un jeton en clair hors réseau local
   SyncIo io = {};
   io.ctx = &io;
   io.get = curlGet;

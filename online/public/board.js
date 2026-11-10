@@ -515,8 +515,27 @@ function renderForecast(f, b) {
   });
   table($('prevHard'), ['Station', 'Erreur +1 h', 'Persistance', 'n'], f.hardest.map((s) => [s.name, fmtNum(s.model, 2), fmtNum(s.per, 2), fmtNum(s.n)]));
   table($('prevTable'), ['Horizon', 'Prévision', 'Persistance', 'Profil seul', 'n'], f.horizons.map((h, i) => [h, fmtNum(f.total.model[i].mae, 3), fmtNum(f.total.per[i].mae, 3), fmtNum(f.total.prof[i].mae, 3), fmtNum(f.total.model[i].n)]));
+  renderShadow(f.shadow);
   // banc de nuit
   renderBench(b);
+}
+// Témoin : la prévision livrée (un couple par station à +1 h, +2 h, +4 h) contre la même prévision avec le seul
+// couple de la classe, notées sur les mêmes relevés depuis que le serveur garde le témoin (lib/forecast.mjs)
+function renderShadow(sh) {
+  const meta = $('shadowMeta'), host = $('shadowTable');
+  if (!meta || !host) return;
+  host.replaceChildren();
+  if (!sh || !sh.days) {
+    meta.textContent = 'Le serveur note chaque prévision deux fois : avec le couple propre à la station (ce que l\'écran affiche) et avec le seul couple de sa classe de jour. Première journée complète notée demain.';
+    return;
+  }
+  const signed = (v, d) => (v === null || v === undefined ? '—' : `${v > 0 ? '+' : v < 0 ? '−' : ''}${fmtNum(Math.abs(v), d)}`);
+  const left = Math.max(0, sh.minDays - sh.days);
+  meta.textContent = `${sh.days} journée${sh.days > 1 ? 's' : ''} complète${sh.days > 1 ? 's' : ''} notée${sh.days > 1 ? 's' : ''} (${dayLabel(sh.from)} → ${dayLabel(sh.to)}). `
+    + (left ? `Verdict dans ${left} jour${left > 1 ? 's' : ''} : il en faut ${sh.minDays}, pour que les deux types de jour y soient.` : 'Écart négatif = les couples par station se trompent moins. Intervalle à 95 %, une journée = une grappe.');
+  table(host, ['Horizon', 'Par station', 'Classe seule', 'Écart', 'Intervalle à 95 %', 'Verdict', 'n'], sh.horizons.map((r) => [
+    r.h, fmtNum(r.model, 3), fmtNum(r.cls, 3), r.diff === null ? '—' : `${signed(r.diff, 4)}${r.pct === null ? '' : ` (${signed(r.pct, 1)} %)`}`,
+    r.lo === null ? '—' : `${signed(r.lo, 4)} ; ${signed(r.hi, 4)}`, r.verdict, fmtNum(r.n)]));
 }
 function renderBench(b) {
   const box = $('benchBody');
