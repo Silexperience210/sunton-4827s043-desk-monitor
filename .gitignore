@@ -18,6 +18,7 @@ sim_fs/
 .deps/
 
 # Outils locaux / sorties de CI
+.venv
 .venv/
 dist-build/
 qemu_out/

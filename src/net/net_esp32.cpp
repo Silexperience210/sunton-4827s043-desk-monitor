@@ -538,7 +538,7 @@ static void task(void *) {
   }
 
   bool loaded = false, wasUp = false, timeLogged = false, s_bootSyncDone = false;
-  uint32_t lastFetch = 0, lastSave = millis(), wifiSince = millis(), lastWait = 0, discSeen = 0, discLogAt = 0, lastReg = 0;
+  uint32_t lastFetch = 0, lastSave = millis(), wifiSince = millis(), lastWait = 0, discSeen = 0, discLogAt = 0, lastReg = 0, lastSyncAt = millis();
   uint8_t lastBl = 255;
   for (;;) {
     if (s_connectReq) {
@@ -659,10 +659,20 @@ static void task(void *) {
     }
     // Synchro demandée (écran, port série) : l'état courant est d'abord sauvegardé, pour que la comparaison
     // et l'envoi portent sur lui ; un fichier adopté se relit par un redémarrage (Model::load au démarrage).
+    // Synchro PÉRIODIQUE (voir VN_SYNC_PERIOD_S). Sans elle, une carte dont le serveur était
+    // indisponible au démarrage restait muette : rien ne rejouait la tentative. On ne force pas
+    // le redémarrage ici — c'est le bloc ci-dessous qui décide, et seulement si un fichier a été
+    // adopté.
+    if (!s_syncReq && up && timeOk && loaded && vn::g_sync.url[0]
+        && (uint32_t)(millis() - lastSyncAt) >= (uint32_t)VN_SYNC_PERIOD_S * 1000UL) {
+      s_syncReq = true;
+      plat::logf("[sync] p\xC3\xA9riodique : toutes les %d s", (int)VN_SYNC_PERIOD_S);
+    }
     if (s_syncReq && up && timeOk && loaded) {
       s_syncReq = false;
       saveHistory();
       lastSave = millis();
+      lastSyncAt = millis();
       if (doSync() > 0) {
         plat::logf("[sync] red\xC3\xA9marrage pour relire l'\xC3\xA9tat adopt\xC3\xA9");
         plat::restart();

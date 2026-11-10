@@ -3,8 +3,14 @@
 // Cible : Sunton ESP32-4827S043 (ESP32-S3 N16R8, dalle RGB 480×272, tactile)
 #pragma once
 
-#define VN_VERSION      "1.7.0"
+#define VN_VERSION      "1.7.1"
 #define VN_NAME         "VelohNav Ops"
+#define VN_SYNC_PERIOD_S 900
+
+// Synchro PÉRIODIQUE avec le serveur en ligne (secondes). La carte ne se présentait qu'au
+// démarrage et sur demande : un serveur indisponible au boot la laissait muette jusqu'à ce qu'on
+// la réveille — constaté après un déploiement. 15 min suffit pour un poste d'exploitation, et
+// n'envoie rien quand les fichiers sont identiques (la comparaison le décide).
 
 // ── Données ──────────────────────────────────────────────────────────
 // GBFS v3 public (sans clé) — mêmes flux que l'app VelohNav (src/utils/gbfs.js)

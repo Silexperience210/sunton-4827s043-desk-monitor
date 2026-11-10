@@ -41,7 +41,9 @@ def merge(build, out_path):
     if not os.path.exists(boot_app0):
         sys.exit("introuvable : %s" % boot_app0)
 
-    cmd = [sys.executable, esptool, "--chip", "esp32s3", "merge_bin", "-o", out_path] + FLASH_ARGS + [
+    # Interpréteur : celui qui porte esptool. Le venv local peut avoir disparu ou être cassé ;
+# VN_PYTHON permet de désigner un interpréteur qui sait exécuter esptool.py.
+    cmd = [os.environ.get("VN_PYTHON", sys.executable), esptool, "--chip", "esp32s3", "merge_bin", "-o", out_path] + FLASH_ARGS + [
         "0x0", os.path.join(build, "bootloader.bin"),
         "0x8000", os.path.join(build, "partitions.bin"),
         "0xe000", boot_app0,
