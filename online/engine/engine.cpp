@@ -167,12 +167,13 @@ EXPORT(vn_recompute) void vn_recompute() { if (g_model.lastUpdate) g_model.recom
 // propre au moteur en ligne (le firmware ne le lit pas) : il n'est échangé qu'entre deux copies du
 // MÊME module, d'où les tailles de structure dans l'en-tête — un module différent le refuse.
 static const uint32_t LIVE_MAGIC = 0x314C4E56;   // "VNL1"
-static const uint16_t LIVE_VER = 1;
+static const uint16_t LIVE_VER = 2;            // 2 : + prévisions d'apprentissage en attente (modèle 2, fcPend)
+static const uint16_t LIVE_VER_NOPEND = 1;     // 1.3.0 – 1.4.0 : relu sans les prévisions en attente
 struct LiveHdr {
   uint32_t magic;
   uint16_t ver, nSt;
   uint16_t szStation, szWeather, szElec, szFeed, szLog;
-  uint16_t pad;
+  uint16_t szIssue;            // sizeof(FcIssue) × FC_PEND lots (0 en version 1)
   int64_t  savedAt;
   int64_t  lastUpdate, feedUpdated, typesAt, infoAt;
   int32_t  fetchErrors, rHead, rCount, nLog, logHead;
@@ -201,11 +202,22 @@ static AlertLog cleanLog(const AlertLog & e) {
   return c;
 }
 
+static FcIssue cleanIssue(const FcIssue & e) {
+  FcIssue c;
+  memset((void *)&c, 0, sizeof(c));
+  c.cur = e.cur;
+  if (e.cur == 255) return c;                           // rien d'émis : seul ce champ compte
+  for (int h = 0; h < FC_NH; h++) { c.x1[h] = e.x1[h]; c.x2[h] = e.x2[h]; }
+  c.cap = e.cap; c.use = e.use;
+  return c;
+}
+static const size_t LIVE_PEND_FIXED = sizeof(g_model.fcPendT) + sizeof(g_model.fcPendC) + sizeof(int32_t);
+
 static void liveSerialize(std::string & o) {
   LiveHdr h{};
   h.magic = LIVE_MAGIC; h.ver = LIVE_VER; h.nSt = (uint16_t)g_model.n;
   h.szStation = sizeof(Station); h.szWeather = sizeof(Weather); h.szElec = sizeof(ElecTypes);
-  h.szFeed = sizeof(FeedStat); h.szLog = sizeof(AlertLog);
+  h.szFeed = sizeof(FeedStat); h.szLog = sizeof(AlertLog); h.szIssue = sizeof(FcIssue);
   h.savedAt = plat::now();
   h.lastUpdate = g_model.lastUpdate; h.feedUpdated = g_model.feedUpdated;
   h.typesAt = eng::g_typesAt; h.infoAt = eng::g_infoAt;
@@ -224,18 +236,30 @@ static void liveSerialize(std::string & o) {
   o.append((const char *)g_model.dispPendDev, sizeof(float) * n);
   o.append((const char *)g_model.dispPendCell, sizeof(int16_t) * n);
   o.append((const char *)g_feed, sizeof(g_feed));
+  // Modèle 2 : prévisions d'apprentissage en attente de leur échéance (jusqu'à 4 h). Sans elles, un moteur
+  // relancé sur cet instantané perd les jugements des 4 h suivantes et son /vn_prof.bin s'écarte de celui
+  // du serveur (couples par station compris) : le jumeau ne calculerait plus « au bit près ».
+  o.append((const char *)g_model.fcPendT, sizeof(g_model.fcPendT));
+  o.append((const char *)g_model.fcPendC, sizeof(g_model.fcPendC));
+  { int32_t hd = g_model.fcPendHead; o.append((const char *)&hd, sizeof(hd)); }
+  for (int k = 0; k < FC_PEND; k++)
+    for (int i = 0; i < n; i++) { FcIssue c = cleanIssue(g_model.fcPend[(size_t)k * VN_MAX_ST + i]); o.append((const char *)&c, sizeof(c)); }
 }
 
 static bool liveLoad(const std::vector<uint8_t> & b) {
   if (b.size() < sizeof(LiveHdr)) return false;
   LiveHdr h; memcpy(&h, b.data(), sizeof(h));
-  if (h.magic != LIVE_MAGIC || h.ver != LIVE_VER || h.szStation != sizeof(Station) || h.szWeather != sizeof(Weather)
-      || h.szElec != sizeof(ElecTypes) || h.szFeed != sizeof(FeedStat) || h.szLog != sizeof(AlertLog) || h.nSt > VN_MAX_ST)
+  if (h.magic != LIVE_MAGIC || (h.ver != LIVE_VER && h.ver != LIVE_VER_NOPEND) || h.szStation != sizeof(Station)
+      || h.szWeather != sizeof(Weather) || h.szElec != sizeof(ElecTypes) || h.szFeed != sizeof(FeedStat)
+      || h.szLog != sizeof(AlertLog) || h.nSt > VN_MAX_ST)
     return false;
+  const bool hasPend = h.ver >= 2;
+  if (hasPend && h.szIssue != sizeof(FcIssue)) return false;
   const int n = h.nSt;
   size_t need = sizeof(h) + sizeof(Station) * n + sizeof(int64_t) * VN_RECENT_SLOTS + (size_t)VN_RECENT_SLOTS * n
                 + sizeof(AlertLog) * VN_ALERT_LOG + sizeof(Weather) + sizeof(ElecTypes) + sizeof(float) * n
-                + sizeof(int16_t) * n + sizeof(g_feed);
+                + sizeof(int16_t) * n + sizeof(g_feed)
+                + (hasPend ? LIVE_PEND_FIXED + sizeof(FcIssue) * (size_t)FC_PEND * n : 0);
   if (b.size() != need) return false;
   const uint8_t * p = b.data() + sizeof(h);
   // Les stations du fichier, retrouvées par sid (créées si absentes) ; map[j] = index dans le modèle
@@ -269,7 +293,31 @@ static bool liveLoad(const std::vector<uint8_t> & b) {
   p += sizeof(float) * n;
   for (int j = 0; j < n; j++) if (map[j] >= 0) memcpy(&g_model.dispPendCell[map[j]], p + sizeof(int16_t) * j, sizeof(int16_t));
   p += sizeof(int16_t) * n;
-  memcpy(g_feed, p, sizeof(g_feed));
+  memcpy(g_feed, p, sizeof(g_feed)); p += sizeof(g_feed);
+  if (hasPend) {
+    // Lots relus seulement s'ils sont cohérents (tête dans l'anneau, classes connues) : sinon rien en attente,
+    // comme après un redémarrage de la carte — l'apprentissage reprend au prochain quart d'heure.
+    int64_t pt[FC_PEND]; uint8_t pc[FC_PEND]; int32_t hd;
+    memcpy(pt, p, sizeof(pt)); p += sizeof(pt);
+    memcpy(pc, p, sizeof(pc)); p += sizeof(pc);
+    memcpy(&hd, p, sizeof(hd)); p += sizeof(hd);
+    bool sane = hd >= -1 && hd < FC_PEND;
+    for (int k = 0; k < FC_PEND && sane; k++) sane = pc[k] < FC_NC && pt[k] >= 0 && pt[k] <= h.savedAt + 300;
+    if (sane) {
+      memcpy(g_model.fcPendT, pt, sizeof(pt));
+      memcpy(g_model.fcPendC, pc, sizeof(pc));
+      g_model.fcPendHead = hd;
+      for (int k = 0; k < FC_PEND; k++) {
+        FcIssue * lot = g_model.fcPend + (size_t)k * VN_MAX_ST;
+        for (int i = 0; i < VN_MAX_ST; i++) { memset((void *)&lot[i], 0, sizeof(FcIssue)); lot[i].cur = 255; }
+        for (int j = 0; j < n; j++) {
+          FcIssue e; memcpy((void *)&e, p + sizeof(FcIssue) * ((size_t)k * n + j), sizeof(FcIssue));
+          if (map[j] >= 0) lot[map[j]] = cleanIssue(e);
+        }
+      }
+    }
+    p += sizeof(FcIssue) * (size_t)FC_PEND * n;
+  }
   g_model.lastUpdate = h.lastUpdate; g_model.feedUpdated = h.feedUpdated;
   eng::g_typesAt = h.typesAt; eng::g_infoAt = h.infoAt;
   g_model.fetchErrors = h.fetchErrors; g_model.rHead = h.rHead; g_model.rCount = h.rCount;

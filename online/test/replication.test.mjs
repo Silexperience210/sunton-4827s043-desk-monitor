@@ -148,5 +148,34 @@ ok(cs.learnSamples === ss.learnSamples, `même apprentissage (${cs.learnSamples}
 ok(cs.daysKept === ss.daysKept, 'mêmes jours résumés');
 ok(cs.histMinutes === ss.histMinutes, `même profondeur d'historique (${cs.histMinutes} contre ${ss.histMinutes} min)`);
 
+console.log('4. état vivant : prévisions d\'apprentissage en attente gardées, et fichier d\'une version 1 encore relu');
+{
+  // En-tête LiveHdr : version à l'octet 4, nSt à 6, taille d'une prévision en attente à 18 (0 en version 1).
+  // Le bloc des prévisions en attente est en fin de fichier : 17 dates, 17 classes, la tête, puis 17 lots × nSt.
+  const live = a2['/vn_live.bin'];
+  const dv = new DataView(live.buffer, live.byteOffset, live.byteLength);
+  const nSt = dv.getUint16(6, true), szIssue = dv.getUint16(18, true), PEND = 17;
+  ok(dv.getUint16(4, true) === 2 && szIssue > 0, `état vivant en version 2 avec les prévisions en attente (version ${dv.getUint16(4, true)}, ${szIssue} o)`);
+  const tail = PEND * 8 + PEND + 4 + szIssue * PEND * nSt;
+  const pendT = [];
+  for (let k = 0; k < PEND; k++) pendT.push(Number(dv.getBigInt64(live.length - tail + k * 8, true)));
+  ok(pendT.filter((t) => t > tEnd - 4 * 3600 - 900 && t <= tEnd).length >= 1, 'des lots émis dans les 4 dernières heures sont dans le fichier');
+  // version 1 fabriquée : même fichier sans le bloc, version et taille remises comme en 1.4.0
+  const v1 = Buffer.from(live.subarray(0, live.length - tail));
+  v1.writeUInt16LE(1, 4); v1.writeUInt16LE(0, 18);
+  const old = await loadEngine(core, quiet);
+  old.clock(tEnd, ms); old.init(); old.settings({ refreshSec: 60 });
+  for (const f of ['/vn_prof.bin', '/vn_hist.bin', '/vn_days.bin']) old.putFile(f, a2[f]);
+  old.putFile('/vn_live.bin', v1);
+  ok(old.load(true) === 3, 'un état vivant de version 1 (sans prévisions en attente) est encore relu après la mise à jour');
+  ok(old.summary().totals.bikes === server.summary().totals.bikes, 'et rend les mêmes totaux');
+  // fichier amputé : refusé (taille), les trois fichiers de la carte restent relus
+  const cut = await loadEngine(core, quiet);
+  cut.clock(tEnd, ms); cut.init(); cut.settings({ refreshSec: 60 });
+  for (const f of ['/vn_prof.bin', '/vn_hist.bin', '/vn_days.bin']) cut.putFile(f, a2[f]);
+  cut.putFile('/vn_live.bin', Buffer.from(live.subarray(0, live.length - 7)));
+  ok(cut.load(true) === 1, 'un état vivant amputé est refusé, les fichiers de la carte restent relus');
+}
+
 console.log(`\n${checks} vérifications, ${fails} échec(s)`);
 process.exit(fails ? 1 : 0);
