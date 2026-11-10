@@ -2598,7 +2598,7 @@ static void testRecurWorld() {
   sim::g_fsDir = "/tmp/vn_test_days";
   if (system("rm -rf /tmp/vn_test_days") != 0) {}
   Model::Blob bl;
-  CHECK(m.serialize(bl) && bl.days && bl.daysLen == 40 + 60 * 8 + 28 * (204 + 60 * 16) + 60 * 6,
+  CHECK(m.serialize(bl) && bl.days && bl.daysLen == 40 + 60 * 8 + 28 * ((size_t)sizeof(DayNet) + 60 * 16) + 60 * 6,
         "/vn_days.bin : %zu octets pour 28 jours × 60 stations (en-tête 40 + sid + jours + tranche en cours)", bl.daysLen);
   std::vector<uint8_t> v1(bl.days, bl.days + bl.daysLen);
   Model::writeSaved(bl);
@@ -2634,12 +2634,12 @@ static void testRecurWorld() {
   {
     std::vector<uint8_t> x;
     DaysFileHdr h; memcpy(&h, v1.data(), sizeof(h));
-    h.netSz = 204 + 8; h.stSz = 16 + 4;
+    h.netSz = (uint16_t)(sizeof(DayNet) + 8); h.stSz = 16 + 4;   // format « plus récent » : doit rester lisible
     x.insert(x.end(), (uint8_t *)&h, (uint8_t *)&h + sizeof(h));
     x.insert(x.end(), v1.begin() + 40, v1.begin() + 40 + 60 * 8);
     size_t o = 40 + 60 * 8;
     for (int k = 0; k < h.nDays; k++) {
-      x.insert(x.end(), v1.begin() + o, v1.begin() + o + 204); x.insert(x.end(), 8, 0xAB); o += 204;
+      x.insert(x.end(), v1.begin() + o, v1.begin() + o + sizeof(DayNet)); x.insert(x.end(), 8, 0xAB); o += sizeof(DayNet);
       for (int j = 0; j < 60; j++) { x.insert(x.end(), v1.begin() + o, v1.begin() + o + 16); x.insert(x.end(), 4, 0xCD); o += 16; }
     }
     x.insert(x.end(), v1.begin() + o, v1.end());
@@ -2667,7 +2667,7 @@ static void testRecurWorld() {
   }
   { // un jour incohérent (date dans le futur, comptes impossibles) : écarté seul
     auto x = v1;
-    size_t o = 40 + 60 * 8 + 5 * (204 + 60 * 16);                 // 6e jour
+    size_t o = 40 + 60 * 8 + 5 * ((size_t)sizeof(DayNet) + 60 * 16);   // 6e jour
     x[o + 4 + 2 + 2] = 200;                                       // slots[0] = 200 > 12
     plat::fsWrite("/vn_days.bin", x.data(), x.size());
     static Model q; q.init(); q.load(tl);
@@ -3837,6 +3837,8 @@ static void testRegul() {
   regCfgDefaults(g_regCfg);
 }
 
+#include "test_move_days.inc"
+
 int main(int argc, char ** argv) {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   testNames();
@@ -3877,6 +3879,7 @@ int main(int argc, char ** argv) {
   testDaysBadTimes();
   testSync();
   testRegul();
+  testMoveDays();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;
 }

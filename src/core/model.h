@@ -404,6 +404,9 @@ struct Model {
   bool  fcErrAt(int i, int cls, int h, int64_t now, FcErr & e) const;
   float learnPct() const;                // 0…100
   int   ringIndex(int back) const;       // index du point « back » tranches en arrière (‑1)
+  // Mouvements (départs + retours) de la tranche courante : la même grandeur que les barres
+  // « mouvements / heure », versée dans le résumé du jour pour les échelles 1 semaine / 1 mois.
+  int   slotMoves() const { return head >= 0 ? (int)net[head].dep + (int)net[head].ret : 0; }
 
   // Sauvegarde : serialize() sous verrou (rapide), puis writeSaved() hors verrou (flash lente)
   struct Blob { uint8_t * prof = nullptr; size_t profLen = 0; uint8_t * hist = nullptr; size_t histLen = 0;

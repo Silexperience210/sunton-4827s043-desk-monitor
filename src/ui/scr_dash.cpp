@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
 
 using vn::g_model;
 using vn::g_set;
@@ -32,6 +33,19 @@ static lv_obj_t * s_chart, * s_chartMeta;
 static lv_obj_t * s_arc, * s_arcPct, * s_arcOk, * s_cnt[5];
 static lv_obj_t * s_wxIc, * s_wxTemp, * s_wxLbl, * s_wxScore, * s_fcVal, * s_fcDelta, * s_fcIc;
 static lv_obj_t * s_actChart, * s_actMeta, * s_histChart, * s_histMeta;
+// ── Échelles du graphique d'activité : 1d / 1w / 1m ──────────────────────────
+// Une seule grandeur — les MOUVEMENTS (départs + retours) — à trois profondeurs : le débit
+// horaire sur 24 h (l'anneau), puis le total par jour sur 7 et 30 jours (le résumé du jour).
+// Changer d'échelle change le PAS de temps, jamais la grandeur mesurée, et l'unité affichée
+// suit (« / HEURE » puis « / JOUR »). Un jour sans relevé reste un trou, jamais un zéro.
+enum { EC_1D = 0, EC_1W = 1, EC_1M = 2 };
+static int s_ec = EC_1D;
+static float s_day[30];                  // total du jour, le plus ancien en tête
+static int s_dayN = 0;                   // jours réellement disponibles
+static lv_obj_t * s_ecBtn[3];
+static lv_obj_t * s_actTitle;
+static const char * const EC_TXT[3] = { "1d", "1w", "1m" };
+static const int EC_JOURS[3] = { 0, 7, 30 };
 static lv_obj_t * s_prio, * s_prioRows[5], * s_modelLbl;
 static lv_obj_t * s_fresh, * s_freshTitle, * s_freshMsg;
 static int s_freshKey = -1;
@@ -62,6 +76,30 @@ static void openPrio(lv_event_t * e) {
   lv_obj_t * t = lv_event_get_current_target(e);
   int s = (int)(intptr_t)lv_obj_get_user_data(t);
   if (s >= 0) openStation(s);
+}
+
+static void refresh();                   // les pastilles d'échelle recâblent le graphique
+
+// Style des trois pastilles : l'échelle active est pleine, les autres en gris.
+static void ecStyle() {
+  for (int i = 0; i < 3; i++) {
+    lv_obj_t * o = s_ecBtn[i];
+    if (!o) continue;
+    const bool on = (i == s_ec);
+    lv_obj_set_style_bg_opa(o, on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(o, C(HX_ACCENT), 0);
+    lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_pad_hor(o, 4, 0);
+    lv_obj_set_style_text_color(o, on ? C(HX_S1) : C(HX_TEXT3), 0);
+  }
+}
+
+static void ecClick(lv_event_t * e) {
+  const int i = (int)(intptr_t)lv_event_get_user_data(e);
+  if (i < 0 || i > 2 || i == s_ec) return;
+  s_ec = i;
+  ecStyle();
+  refresh();
 }
 
 static void build(lv_obj_t * root) {
@@ -185,7 +223,14 @@ static void build(lv_obj_t * root) {
   lv_obj_set_size(ac, W, 104);
   lv_obj_t * ah = row(ac, 6);
   lv_obj_set_width(ah, LV_PCT(100));
-  eyebrow(ah, "ACTIVIT\xC3\x89 \xC2\xB7 MOUVEMENTS / HEURE");
+  s_actTitle = eyebrow(ah, "MOUVEMENTS / HEURE");
+  lv_obj_set_flex_grow(s_actTitle, 1);
+  for (int i = 0; i < 3; i++) {
+    s_ecBtn[i] = label(ah, &vn_mono_10, HX_TEXT3, EC_TXT[i]);
+    lv_obj_add_flag(s_ecBtn[i], LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_ecBtn[i], ecClick, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+  }
+  ecStyle();                                              // 1d actif par défaut
   s_actMeta = label(ah, &vn_inter_11, HX_TEXT2, "");
   lv_obj_set_flex_grow(s_actMeta, 1);
   lv_obj_set_style_text_align(s_actMeta, LV_TEXT_ALIGN_RIGHT, 0);
@@ -260,6 +305,17 @@ static vn::DataState curState(int64_t nowT) {
 }
 
 static void refresh() {
+  // Crochet de SIMULATION uniquement : VN_EC=1 force 1 semaine, VN_EC=2 force 1 mois, au
+  // premier rafraîchissement. Le simulateur peut ainsi capturer les trois vues sans piloter
+  // le tactile. Sans la variable, rien ne change.
+  {
+    static bool fait = false;
+    if (!fait) {
+      fait = true;
+      const char * ec = getenv("VN_EC");
+      if (ec) { const int v = atoi(ec); if (v >= 0 && v <= 2) { s_ec = v; ecStyle(); } }
+    }
+  }
   const vn::Totals & t = g_model.tot;
   int64_t nowT = now();
   char b[192], c2[32];
@@ -388,37 +444,87 @@ static void refresh() {
     lv_obj_set_style_text_color(s_fcDelta, dc, 0);
   }
 
-  // Activité par heure (24 dernières heures) : chaque tranche dans l'heure de SON horodatage
-  for (int h = 0; h < 24; h++) s_moves[h] = NAN;
-  float mvMax = 10, mvSum[24] = {};
-  int mvN[24] = {};
-  for (int bk = 0; bk < g_model.count; bk++) {
-    int idx = g_model.ringIndex(bk);
-    if (idx < 0) break;
-    const vn::NetSample & ns = g_model.net[idx];
-    if (ns.avail == 0xFFFF) continue;
-    int64_t h = (nowT > 0 && ns.t > 0) ? (slotNow - ns.t) / 3600 : bk / 12;
-    if (h < 0 || h >= 24) continue;
-    mvSum[h] += ns.dep + ns.ret; mvN[h]++;
-  }
-  for (int h = 0; h < 24; h++)
-    if (mvN[h]) { s_moves[23 - h] = mvSum[h] * 12.f / mvN[h]; mvMax = fmaxf(mvMax, s_moves[23 - h]); }
+  // ── Graphique d'activité, selon l'échelle choisie ──────────────────────
+  // Même grandeur dans les trois cas : les mouvements. À 1d c'est le débit horaire de
+  // l'anneau 24 h ; à 1w et 1m c'est le total de chaque jour, lu dans le résumé du jour.
   d = chartData(s_actChart);
-  d->ymin = 0; d->ymax = ceilf(mvMax / 50) * 50;
-  snprintf(d->ylab[0], sizeof(d->ylab[0]), "%d", (int)d->ymax);
-  snprintf(d->ylab[1], sizeof(d->ylab[1]), "0");
-  d->nxl = 0;
-  for (int h = 0; h < 24; h++) {
-    struct tm lt;
-    plat::localTime(nowT - (int64_t)(23 - h) * 3600, &lt);
-    if (lt.tm_hour % 6 == 0 && d->nxl < 6) { d->xlPos[d->nxl] = h; snprintf(d->xl[d->nxl], 8, "%02dh", lt.tm_hour); d->nxl++; }
+  char a1[16], a2[16];
+  if (s_ec == EC_1D) {
+    lv_label_set_text(s_actTitle, "MOUVEMENTS / HEURE");
+    for (int h = 0; h < 24; h++) s_moves[h] = NAN;
+    float mvSum[24] = {};
+    int mvN[24] = {};
+    for (int bk = 0; bk < g_model.count; bk++) {
+      int idx = g_model.ringIndex(bk);
+      if (idx < 0) break;
+      const vn::NetSample & ns = g_model.net[idx];
+      if (ns.avail == 0xFFFF) continue;
+      int64_t h = (nowT > 0 && ns.t > 0) ? (slotNow - ns.t) / 3600 : bk / 12;
+      if (h < 0 || h >= 24) continue;
+      mvSum[h] += ns.dep + ns.ret; mvN[h]++;
+    }
+    float mvMax = 10;
+    for (int h = 0; h < 24; h++)
+      if (mvN[h]) { s_moves[23 - h] = mvSum[h] * 12.f / mvN[h]; mvMax = fmaxf(mvMax, s_moves[23 - h]); }
+    d->s[0].y = s_moves; d->s[0].n = 24; d->nx = 24; d->endDot = false;
+    d->ymin = 0; d->ymax = ceilf(mvMax / 50) * 50;
+    snprintf(d->ylab[0], sizeof(d->ylab[0]), "%d", (int)d->ymax);
+    snprintf(d->ylab[1], sizeof(d->ylab[1]), "0");
+    d->nxl = 0;
+    for (int h = 0; h < 24; h++) {
+      struct tm lt;
+      plat::localTime(nowT - (int64_t)(23 - h) * 3600, &lt);
+      if (lt.tm_hour % 6 == 0 && d->nxl < 6) { d->xlPos[d->nxl] = h; snprintf(d->xl[d->nxl], 8, "%02dh", lt.tm_hour); d->nxl++; }
+    }
+    if (t.actValid) {
+      fmtInt(a1, sizeof(a1), t.dep1h); fmtInt(a2, sizeof(a2), t.ret1h);
+      // Sans « 1 h : » : le titre dit déjà « / HEURE », et le texte tenait sur deux lignes.
+      snprintf(b, sizeof(b), "retraits %s \xC2\xB7 retours %s", a1, a2);
+    } else snprintf(b, sizeof(b), "activit\xC3\xA9 : recul de 1 h requis");
+  } else {
+    // 1 semaine / 1 mois : un point par jour, total réel de la journée.
+    const int nd = EC_JOURS[s_ec];
+    s_dayN = 0;
+    float dvMax = 10;
+    for (int k = 0; k < nd; k++) {
+      s_day[k] = NAN;
+      const vn::DayNet * dn = g_model.days.dayAt(nd - 1 - k);   // le plus ancien en tête
+      if (!dn) continue;
+      float tot = 0;
+      if (vn::dayMovesTotal(*dn, tot)) { s_day[k] = tot; s_dayN++; dvMax = fmaxf(dvMax, tot); }
+    }
+    // Sans le « (7 J) » / « (30 J) » : la pastille active le dit déjà, et le titre tenait
+    // sur deux lignes à cause de la place prise par les pastilles et le texte de couverture.
+    lv_label_set_text(s_actTitle, "MOUVEMENTS / JOUR");
+    d->s[0].y = s_day; d->s[0].n = nd; d->nx = nd; d->endDot = true;
+    d->ymin = 0; d->ymax = ceilf(dvMax / 100) * 100;
+    snprintf(d->ylab[0], sizeof(d->ylab[0]), "%d", (int)d->ymax);
+    snprintf(d->ylab[1], sizeof(d->ylab[1]), "0");
+    // Étiquettes de date : posées sur les jours RÉELLEMENT présents et réparties entre eux.
+    // Les placer à des positions fixes (k % 7) laissait un mois à un seul jour sans aucune
+    // date sous la barre — une barre orpheline se lit comme un bug, pas comme « provisoire ».
+    d->nxl = 0;
+    int presents[30], np = 0;
+    for (int k = 0; k < nd; k++) if (!isnan(s_day[k])) presents[np++] = k;
+    if (np > 0) {
+      const int maxLbl = 5;
+      const int saut = np <= maxLbl ? 1 : (np + maxLbl - 1) / maxLbl;
+      for (int i = 0; i < np && d->nxl < maxLbl; i += saut) {
+        const int k = presents[i];
+        const vn::DayNet * dn = g_model.days.dayAt(nd - 1 - k);
+        if (!dn) continue;
+        struct tm lt;
+        plat::localTime((int64_t)dn->day * 86400 + 43200, &lt);
+        d->xlPos[d->nxl] = k;
+        snprintf(d->xl[d->nxl], sizeof(d->xl[0]), "%02d/%02d", lt.tm_mday, lt.tm_mon + 1);
+        d->nxl++;
+      }
+    }
+    // Couverture annoncée : un mois à moitié rempli ne doit pas se lire comme un mois plein.
+    if (s_dayN < nd) snprintf(b, sizeof(b), "provisoire \xC2\xB7 %d/%d jours", s_dayN, nd);
+    else snprintf(b, sizeof(b), "%d jours complets", s_dayN);
   }
   chartInvalidate(s_actChart);
-  char a1[16], a2[16];
-  if (t.actValid) {
-    fmtInt(a1, sizeof(a1), t.dep1h); fmtInt(a2, sizeof(a2), t.ret1h);
-    snprintf(b, sizeof(b), "1 h : %s retraits \xC2\xB7 %s retours", a1, a2);
-  } else snprintf(b, sizeof(b), "activit\xC3\xA9 : recul de 1 h requis");
   lv_label_set_text(s_actMeta, b);
 
   // Histogramme de remplissage

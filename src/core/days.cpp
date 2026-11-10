@@ -6,7 +6,10 @@
 
 namespace vn {
 
-static_assert(sizeof(DayNet) == 204, "format v1 de /vn_days.bin (DayNet)");
+// 204 -> 236 : ajout du trafic (useSum/useN/useMax). Extension par PREFIXE, pas de
+// changement de DAYS_VER : un fichier v1 se relit avec useN = 0 (« aucune donnee »),
+// et une version anterieure relit ce fichier par son prefixe de 204 octets.
+static_assert(sizeof(DayNet) == 252, "format de /vn_days.bin (DayNet) : 252 o depuis l'ajout des mouvements (204 + 48)");
 static_assert(sizeof(DaySt) == 16, "format v1 de /vn_days.bin (DaySt)");
 static_assert(sizeof(DaysFileHdr) == 40, "en-tête de /vn_days.bin");
 
@@ -111,6 +114,16 @@ void DayBook::addSlot(const Model & m, int64_t slotT) {
   DayNet & dn = net[head];
   DaySt * row = st + (size_t)head * VN_MAX_ST;
   if (inHours) dn.slots[h] = inc8(dn.slots[h]);
+  // Vélos disponibles du créneau : la même grandeur que la courbe 24 h (Totals::bikes),
+  // versée dans le résumé du jour pour pouvoir la tracer à 1 semaine et à 1 mois.
+  // addSlot n'est appelé que sur une tranche réellement relevée : tout ce qui entre ici
+  // est une mesure, et avN porte le dénominateur de la moyenne (jamais slots[]).
+  if (inHours) {
+    const int mv = m.slotMoves();
+    const uint16_t mv16 = (uint16_t)(mv > 65535 ? 65535 : mv);
+    dn.mvSum[h] = (uint16_t)(dn.mvSum[h] > 65535 - mv16 ? 65535 : dn.mvSum[h] + mv16);
+    dn.mvN[h] = inc8(dn.mvN[h]);
+  }
   for (int i = 0; i < m.n && i < VN_MAX_ST; i++) {
     const Station & s = m.st[i];
     if (!s.active || !s.live) { prev[i] = 255; continue; }
@@ -183,7 +196,33 @@ static bool dayNetSane(const DayNet & d) {
     if (d.slots[h] > DAY_SLOTS_H) return false;
     if (d.obs[h] > (uint32_t)d.slots[h] * VN_MAX_ST) return false;
     if ((uint32_t)d.closed[h] + d.empty[h] + d.full[h] > d.obs[h]) return false;
+    // Trafic : jamais plus de tranches valides que de tranches relevées (useN = 0 sur un
+    // fichier d'avant l'extension, donc cette garde laisse passer l'ancien format).
+    if (d.mvN[h] > d.slots[h]) return false;
   }
+  return true;
+}
+
+// ── Mouvements d'un jour (débit horaire / total) ─────────────────────
+// Le débit est ramené à l'heure (× 12 / n) pour rester comparable aux barres 24 h, qui
+// affichent des mouvements par heure. Le total n'est pas mis à l'échelle : c'est le compte
+// réel de la journée.
+bool dayMovesSlot(const DayNet & d, int h, float & out) {
+  if (h < 0 || h >= DAY_NH || d.mvN[h] == 0) return false;
+  out = (float)d.mvSum[h] * (float)DAY_SLOTS_H / (float)d.mvN[h];
+  return true;
+}
+
+bool dayMovesTotal(const DayNet & d, float & out) {
+  double sum = 0;
+  bool any = false;
+  for (int h = 0; h < DAY_NH; h++) {
+    if (d.mvN[h] == 0) continue;
+    sum += (double)d.mvSum[h] * (double)DAY_SLOTS_H / (double)d.mvN[h];
+    any = true;
+  }
+  if (!any) return false;
+  out = (float)sum;
   return true;
 }
 static bool dayStSane(const DaySt & r) {

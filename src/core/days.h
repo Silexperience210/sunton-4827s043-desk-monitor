@@ -56,6 +56,13 @@ struct DayNet {
   uint16_t full[DAY_NH];         //   dont pleines
   uint16_t evEmpty[DAY_NH];      // entrées en rupture (passage à vide) constatées
   uint16_t evFull[DAY_NH];       // entrées en saturation (passage à plein) constatées
+  // MOUVEMENTS du créneau (départs + retours) : exactement la grandeur que tracent les
+  // barres « mouvements / heure » — une échelle qui changerait de sujet en changeant de
+  // période ne servirait à rien. Ajouté après coup (extension par préfixe, cf. persistance) :
+  // un fichier écrit par une version antérieure se relit avec mvN = 0, c'est-à-dire
+  // « aucune donnée » — jamais « zéro mouvement », qui serait un chiffre faux.
+  uint16_t mvSum[DAY_NH];        // somme des mouvements des tranches du créneau
+  uint8_t  mvN[DAY_NH];          // tranches comptées dans le créneau (0 = pas de donnée)
   uint16_t rsv;                  // réservé (0) : taille multiple de 4, explicite
 };
 
@@ -99,6 +106,12 @@ struct DayBook {
   // aucune station)
   static bool check(const uint8_t * b, size_t len);
 };
+
+// Mouvements d'un jour : débit horaire d'un créneau (mouvements/heure, même unité que les
+// barres 24 h) et total du jour. Renvoient false quand mvN = 0 — « aucune donnée », à
+// distinguer d'un zéro (un jour sans relevé n'a pas vu zéro mouvement).
+bool dayMovesSlot(const DayNet & d, int h, float & out);
+bool dayMovesTotal(const DayNet & d, float & out);
 
 // ── Dates locales ────────────────────────────────────────────────────
 bool    plausibleTime(int64_t t);   // 0 < t < 01/01/2100 : une date de fichier qu'on peut convertir
