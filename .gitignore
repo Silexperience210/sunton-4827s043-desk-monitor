@@ -29,11 +29,12 @@ qemu_out/
 __pycache__/
 tools/build/
 result.json
-sim/dump_sim
 
 # Captures et journaux produits par les scénarios du simulateur
 sim/ops/
 # Les images fusionnees portent le JETON DE SYNCHRO compile (include/secrets.h) :
 # aucune ne doit entrer dans le depot. Regle par motif, pas par nom de version.
 dist/*.bin
-dist-build/
+dist/velohnav-ops-esp32-4827s043c-v1.6.1.bin
+
+# Environnement virtuel local : jamais dans le depot
