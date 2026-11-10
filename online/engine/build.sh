@@ -66,7 +66,30 @@ wasm() {
                -Wl,--strip-debug -lc++ -lc++abi -lm )
   "$CLANGXX" "${core[@]}" "${LINK[@]}" -o "$OUT/vn-core.wasm"
   "$CLANGXX" "${core[@]}" "${ui[@]}" "${lv[@]}" "${LINK[@]}" -o "$OUT/vn-twin.wasm"
+  noSecrets "$OUT/vn-core.wasm" "$OUT/vn-twin.wasm"
   ls -la "$OUT"/vn-*.wasm
+}
+
+# Les deux modules sont PUBLICS (dépôt public, servis à tout navigateur) : aucune valeur de include/secrets.h ne
+# doit s'y trouver. Le source les écarte (#if !defined(VN_ONLINE) dans sync.cpp et settings.cpp) ; ce contrôle
+# le vérifie sur le résultat, valeur par valeur, et SUPPRIME les modules si l'une y est — mieux vaut un build
+# en échec qu'un jeton publié. Sans secrets.h (CI), il n'y a rien à chercher.
+noSecrets() {
+  local S="$ROOT/include/secrets.h"
+  [ -f "$S" ] || return 0
+  local bad=0 n=0 v f
+  while IFS= read -r v; do
+    [ ${#v} -ge 6 ] || continue
+    n=$((n + 1))
+    for f in "$@"; do
+      if grep -qaF -- "$v" "$f"; then
+        echo "ÉCHEC : une valeur de include/secrets.h (${#v} caractères) est dans $(basename "$f")" >&2
+        bad=1
+      fi
+    done
+  done < <(sed -n 's/^[[:space:]]*#[[:space:]]*define[[:space:]][[:alnum:]_]*[[:space:]]*"\(.*\)".*/\1/p' "$S")
+  if [ "$bad" = 1 ]; then rm -f "$@"; echo "modules supprimés : rien de ce build ne doit être publié" >&2; exit 1; fi
+  echo "secrets.h : ${n} valeur(s) cherchée(s), aucune dans les modules"
 }
 
 wasm

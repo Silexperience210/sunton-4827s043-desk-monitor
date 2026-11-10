@@ -2,7 +2,10 @@
 #include "../platform/platform.h"
 #include <string.h>
 
-#if __has_include("secrets.h")
+// JAMAIS dans les moteurs WebAssembly du serveur (VN_ONLINE) : ils sont publics — versionnés dans un dépôt
+// public et servis à tout navigateur qui ouvre la page. Avant ce garde, online/engine/build.sh lisait
+// include/secrets.h comme le firmware et y gravait l'adresse et le jeton de synchro (1.7.0, 1.7.1).
+#if __has_include("secrets.h") && !defined(VN_ONLINE)
 #include "secrets.h"      // facultatif : VN_WIFI_SSID / VN_WIFI_PASS par défaut
 #endif
 
