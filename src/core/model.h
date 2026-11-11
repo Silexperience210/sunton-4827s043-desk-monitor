@@ -379,6 +379,11 @@ struct Model {
   // confondre « pleine ce soir » et « à vider » : mesuré sur 12 jours ouvrés réels, 69 stations
   // sur 139 s'inversent (Gare Centrale 2 : −94 vélos le matin, +53 le soir, 12 j sur 12).
   int8_t sensJour(int s, int64_t now) const;
+  // Plancher de retrait d'une station : ce qu'il ne faut pas descendre ce soir pour que demain
+  // matin tienne — 60 % de la capacité utile, porté au niveau que le profil réclame demain au PIC
+  // DU MATIN (6 h). Lu sur DEMAIN, donc valable même un dimanche soir ; appliqué à tous les
+  // prélèvements, y compris ceux décidés par la cible 50 % (`need < 0`).
+  float plancherDemain(int s, int64_t now) const;
   // Vrai si l'instant t est un jour férié prévu avec le profil du dimanche (étape 5a-ii) : provenance affichable
   bool  holidayProfile(int64_t t) const;
   // Dispersion habituelle (écart absolu moyen au profil, vélos) à l'instant t, lissée comme le profil ;

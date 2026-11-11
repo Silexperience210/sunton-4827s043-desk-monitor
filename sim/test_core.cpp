@@ -3861,6 +3861,7 @@ static void testRegul() {
 
 #include "test_move_days.inc"
 #include "test_sens_jour.inc"
+#include "test_plancher_retrait.inc"
 #include "test_sync_token.inc"
 
 int main(int argc, char ** argv) {
@@ -3906,6 +3907,7 @@ int main(int argc, char ** argv) {
   testRegul();
   testMoveDays();
   testSensJour();
+  testPlancherRetrait();
   printf("\n%d vérifications réussies, %d échec(s)\n", s_ok, s_fail);
   return s_fail ? 1 : 0;
 }

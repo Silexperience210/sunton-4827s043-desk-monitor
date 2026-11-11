@@ -409,7 +409,7 @@ git clone -b v8.3.11 --depth 1 https://github.com/lvgl/lvgl.git .deps/lvgl
 git clone -b v7.4.2 --depth 1 https://github.com/bblanchon/ArduinoJson.git .deps/ArduinoJson
 cd sim
 make sim test_core bench_prevision dump_sim
-./test_core ../docs/donnees     # 1 173 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
+./test_core ../docs/donnees     # 1 301 vérifications, 0 échec : noms, GBFS, parc/en-trajet, prédiction, alertes, étalonnage,
                                  # ingestion, fraîcheur, provenance, prévision 24 h, écart au profil,
                                  # météo dans l'historique, coefficient météo appris, migration de /vn_hist.bin et /vn_prof.bin (v1, v2, v3 → v4),
                                  # écart habituel (dispersion apprise, affichée pour information, textes de l'écart),
@@ -420,7 +420,8 @@ make sim test_core bench_prevision dump_sim
                                  # à vérité connue, /vn_days.bin : migration et fichiers abîmés),
                                  # vidage série « dump » (CRC32, base64, émetteur, lecteur de commandes),
                                  # synchro en ligne (adresse, décision, contrôles, fichiers corrompus, envois),
-                                 # rôle régulateur (réponse du serveur, contrôles, file hors connexion, refus, échange)
+                                 # rôle régulateur (réponse du serveur, contrôles, file hors connexion, refus, échange),
+                                 # plancher de retrait (pic du matin lu sur DEMAIN, appliqué aux retraits)
 ./sim ../docs/donnees /tmp/captures   # scénario tactile, captures, audit des zones tactiles, étalonnage
 ./sim ../docs/donnees /tmp/boot boot              # premier démarrage : sans heure, sans Wi-Fi, sans données
 ./sim ../docs/donnees /tmp/boot2 boot-wifi-ko     # réseau enregistré mais injoignable

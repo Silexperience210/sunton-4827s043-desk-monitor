@@ -470,6 +470,30 @@ int8_t Model::sensJour(int s, int64_t now) const {
 
 bool Model::holidayProfile(int64_t t) const { return g_pred.holidaySunday && holidayAt(t); }
 
+// Plancher de retrait d'une station : 60 % de la capacité utile, porté AU MOINS au niveau que le
+// profil réclame demain au PIC DU MATIN (6 h) — l'ancre du motif pendulaire, et pas 8 h.
+// Deux raisons, toutes deux mesurées :
+//  1. à 8 h la station est DÉJÀ entamée par la première heure de départs. Sur 6 jours ouvrés réels
+//     (3→10/11/2026), Gare Centrale 2 perd une médiane de 12 vélos entre 6 h et 9 h alors que son
+//     niveau de 8 h ne vaut qu'environ 10 sur 21 : un plancher posé à 8 h laisse repartir des vélos
+//     qui manqueront avant 9 h (les quatre stations du noyau perdent 16 à 24 vélos sur ce créneau) ;
+//  2. il ne dépend plus de `sens` : la question porte sur DEMAIN matin, pas sur le motif du jour.
+//     Un dimanche soir n'a aucun motif à lui (`sensJour` rend 0) alors que le lundi matin qui suit
+//     est un pic de départs — la station se vidait donc sans plancher.
+float Model::plancherDemain(int i, int64_t now) const {
+  if (i < 0 || i >= n) return 0;
+  float keep = st[i].capEff() * 0.6f;
+  int dNext, mNext;
+  profDM(now + 86400, dNext, mNext);
+  (void)mNext;
+  if (dNext >= 1 && dNext <= 5) {            // 0 = dimanche, 6 = samedi : pas de pic de départs
+    float mat = 0, nm = 0;
+    if (profileLocal(prof + (size_t)i * PROF_STRIDE, dNext, 6 * 60, mat, nm) && nm >= 3.f)
+      keep = fmaxf(keep, mat);
+  }
+  return keep;
+}
+
 bool Model::profileAt(int s, int64_t t, float & avg, float & nEff) const {
   if (s < 0 || s >= n) return false;
   int dow, mod;
@@ -1252,6 +1276,13 @@ void Model::recompute(int64_t now) {
         localDM(now, dwG, mdG);
         if (mdG >= 12 * 60) nd = -((-nd + 1) / 2);
       }
+      // Le retrait AFFICHÉ ne peut pas dépasser ce que le plancher de demain laisse partir. Sans
+      // cette borne, la fiche conseillait « RETIRER n » et le planificateur de transferts n'en
+      // prenait qu'une partie : deux réponses pour le même chiffre.
+      if (nd < 0) {
+        const int allow = (int)lroundf((float)s.bikes - plancherDemain(i, now));
+        if (-nd > allow) nd = allow < 0 ? 0 : -allow;
+      }
       if (abs(nd) >= 2) s.need = (int8_t)nd;
     }
     // Priorité d'intervention
@@ -1523,19 +1554,15 @@ void Model::recompute(int64_t now) {
     const Station & s = st[i];
     donorLeft[i] = 0;
     if (!s.active || s.status == ST_CLOSED || !s.renting) continue;
-    float capE = s.capEff();
     // Plancher de retrait : 60 % de la capacité, porté AU MOINS au niveau que le profil réclame
-    // demain matin (8 h) sur une station pendulaire. Sans ce plancher, la règle des 60 % vide
-    // le soir exactement les stations dont les gens ont besoin pour partir le matin.
-    float keep = capE * 0.6f;
-    if (s.sens > 0) {
-      float mat = 0, nm = 0;
-      int dNext, mNext;
-      profDM(now + 86400, dNext, mNext);
-      if (profileLocal(prof + (size_t)i * PROF_STRIDE, dNext, 8 * 60, mat, nm) && nm >= 3.f)
-        keep = fmaxf(keep, mat);
-    }
+    // demain au PIC DU MATIN (plancherDemain). Sans ce plancher, la règle des 60 % vide le soir
+    // exactement les stations dont les gens ont besoin pour partir le matin. Il vaut pour TOUS les
+    // prélèvements, y compris ceux décidés par la cible 50 % (`need < 0`) : auparavant cette
+    // branche le contournait entièrement.
+    float keep = plancherDemain(i, now);
     int give = s.need < 0 ? -s.need : (int)lroundf(fminf(s.fc[12], (float)s.bikes) - keep);
+    const int allow = (int)lroundf((float)s.bikes - keep);
+    if (give > allow) give = allow;
     if (give > s.bikes) give = s.bikes;
     if (give >= 2) donorLeft[i] = (int16_t)give;
   }
